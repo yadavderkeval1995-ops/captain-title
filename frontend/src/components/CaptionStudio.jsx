@@ -20,6 +20,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rendering, setRendering] = useState(false);
+  const [mediaRetry, setMediaRetry] = useState(0);
   const videoRef = useRef(null);
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
   const visibleWords = useMemo(() => {
@@ -69,7 +70,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         <ThemePanel theme={theme} onTheme={chooseTheme} selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
         <section className="preview-panel" data-testid="video-preview-panel">
           <div className="video-frame">
-            <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media`} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
+            <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
             <button className="preview-play" onClick={togglePlayback} data-testid="video-preview-play-button"><Play size={28} weight="fill" /></button>
             <div className={`caption-overlay theme-${theme}`} data-testid="live-caption-preview">
               {visibleWords.map((word) => <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={{ color: word.color, fontSize: `${Math.max(20, word.font_size * .62)}px` }} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>)}

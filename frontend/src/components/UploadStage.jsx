@@ -8,6 +8,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
   const input = useRef(null);
   const [file, setFile] = useState(null);
   const [duration, setDuration] = useState(null);
+  const [probing, setProbing] = useState(false);
   const [processing, setProcessing] = useState(false);
 
   const inspect = (selected) => {
@@ -15,14 +16,19 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
     if (!/\.(mp4|mov)$/i.test(selected.name)) return toast.error("Choose an MP4 or MOV video");
     setFile(selected);
     setDuration(null);
+    setProbing(true);
     const video = document.createElement("video");
+    const finishProbe = () => setProbing(false);
+    const probeTimer = window.setTimeout(finishProbe, 2500);
     video.preload = "metadata";
     video.onloadedmetadata = () => {
       URL.revokeObjectURL(video.src);
+      window.clearTimeout(probeTimer);
+      finishProbe();
       if (video.duration > 120) return toast.error("Video must be 120 seconds or shorter");
       setDuration(video.duration);
     };
-    video.onerror = () => URL.revokeObjectURL(video.src);
+    video.onerror = () => { URL.revokeObjectURL(video.src); window.clearTimeout(probeTimer); finishProbe(); };
     video.src = URL.createObjectURL(selected);
   };
 
@@ -36,7 +42,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
       toast.success("Hinglish captions are ready");
     } catch (error) {
       if (error.response?.status === 402) onPaywall();
-      toast.error(errorMessage(error));
+      else toast.error(errorMessage(error));
     } finally {
       setProcessing(false);
     }
@@ -55,10 +61,10 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
         <div className="upload-icon"><FilmStrip size={42} weight="duotone" /></div>
         {file ? <>
           <h2 data-testid="selected-video-name">{file.name}</h2>
-          <p data-testid="selected-video-metadata">{duration ? `${duration.toFixed(1)} sec · ` : "Duration checked on upload · "}{(file.size / 1048576).toFixed(1)} MB</p>
+          <p data-testid="selected-video-metadata">{duration ? `${duration.toFixed(1)} sec · ` : probing ? "Checking duration · " : "Duration checked on upload · "}{file.size < 1048576 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / 1048576).toFixed(1)} MB`}</p>
           <div className="upload-buttons">
             <Button variant="outline" onClick={() => input.current.click()} data-testid="replace-video-button">Replace</Button>
-            <Button onClick={generate} disabled={processing} data-testid="generate-captions-button">{processing ? "Transcribing & styling…" : "Generate Hinglish captions"}</Button>
+            <Button onClick={generate} disabled={processing || probing} data-testid="generate-captions-button">{processing ? "Transcribing & styling…" : probing ? "Checking video…" : "Generate Hinglish captions"}</Button>
           </div>
         </> : <>
           <h2 data-testid="upload-dropzone-heading">Drag your video here</h2>

@@ -63,8 +63,8 @@ async def _create_session(db, user_id: str) -> str:
     await db.user_sessions.insert_one({
         "session_token": token,
         "user_id": user_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
     })
     return token
 

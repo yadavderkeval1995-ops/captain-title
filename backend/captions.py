@@ -176,9 +176,12 @@ def _write_ass(path, words, theme):
 
 
 def _render(source, ass_path, output):
-    subprocess.run([FFMPEG, "-y", "-i", source, "-vf", f"subtitles={ass_path}",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-c:a", "aac",
-                    "-movflags", "+faststart", output], capture_output=True, check=True)
+    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", f"subtitles={ass_path}",
+                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-c:a", "aac",
+                             "-movflags", "+faststart", output], capture_output=True, text=True)
+    if result.returncode:
+        logger.error("FFmpeg render failed: %s", result.stderr[-2000:])
+        raise RuntimeError("FFmpeg could not render this video")
 
 
 @projects_router.post("/projects/{project_id}/render")

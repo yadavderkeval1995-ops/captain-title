@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
@@ -25,6 +26,9 @@ def _request(method: str, path: str, **kwargs):
     response = requests.request(method, f"{STORAGE_URL}/objects/{path}", headers=headers, **kwargs)
     if response.status_code == 404:
         headers["X-Storage-Key"] = init_storage(force=True)
+        response = requests.request(method, f"{STORAGE_URL}/objects/{path}", headers=headers, **kwargs)
+    elif response.status_code in {500, 503}:
+        time.sleep(1)
         response = requests.request(method, f"{STORAGE_URL}/objects/{path}", headers=headers, **kwargs)
     response.raise_for_status()
     return response
