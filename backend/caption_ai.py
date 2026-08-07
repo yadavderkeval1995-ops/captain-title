@@ -53,6 +53,8 @@ def _transcription_pass_sync(audio_path: str, language: str | None):
             language=language,
             temperature=0.0,
             timestamp_granularities=["word", "segment"],
+            prompt=("Hindi Hinglish cricket product video. Preserve every spoken word, including "
+                    "opening hooks, English product terms, and short impact phrases."),
         )
 
 
@@ -68,27 +70,43 @@ def _as_dict(value):
     return value.__dict__ if hasattr(value, "__dict__") else {}
 
 
-def _split_wav(audio_path: str, output_dir: str, seconds: int = 10):
+def _split_wav(audio_path: str, output_dir: str, seconds: int = 10, overlap: float = 1.5):
     chunks = []
     with wave.open(audio_path, "rb") as source:
         params = source.getparams()
+        total_frames = source.getnframes()
         frames_per_chunk = params.framerate * seconds
-        offset = 0.0
+        stride = max(1, int(params.framerate * (seconds - overlap)))
+        start = 0
         index = 0
-        while True:
-            frames = source.readframes(frames_per_chunk)
+        while start < total_frames:
+            source.setpos(start)
+            frames = source.readframes(min(frames_per_chunk, total_frames - start))
             if not frames:
                 break
             path = Path(output_dir) / f"speech-{index}.wav"
             with wave.open(str(path), "wb") as target:
                 target.setparams(params)
                 target.writeframes(frames)
-            chunks.append((str(path), offset))
-            bytes_per_frame = params.sampwidth * params.nchannels
-            frames_read = len(frames) // bytes_per_frame
-            offset += frames_read / params.framerate
+            chunks.append((str(path), start / params.framerate))
+            if start + frames_per_chunk >= total_frames:
+                break
+            start += stride
             index += 1
     return chunks
+
+
+def _merge_timed_words(words: list[dict], incoming: list[dict]):
+    for candidate in incoming:
+        key = "".join(_tokens(candidate["original"]))
+        duplicate = any(
+            "".join(_tokens(existing["original"])) == key and
+            abs(float(existing["start"]) - float(candidate["start"])) < .45
+            for existing in words[-20:])
+        if not duplicate:
+            words.append(candidate)
+    words.sort(key=lambda word: (float(word["start"]), float(word["end"])))
+    return words
 
 
 def _normalize_word_timings(words: list[dict]):
@@ -187,9 +205,9 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
             selected_chunks.append(selected)
     words = []
     for selected in selected_chunks:
-        for word in selected["words"]:
-            word["index"] = len(words)
-            words.append(word)
+        words = _merge_timed_words(words, selected["words"])
+    for index, word in enumerate(words):
+        word["index"] = index
     words = _normalize_word_timings(words)
     overall = _repetition_metrics(_tokens(" ".join(word["original"] for word in words)))
     if not words or (len(words) >= 12 and (
