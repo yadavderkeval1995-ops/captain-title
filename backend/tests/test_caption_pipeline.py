@@ -116,7 +116,8 @@ def test_caption_groups_preserve_order_and_use_pause_punctuation_limits():
     groups = create_caption_groups(words, max_words=4)
     flattened = [w["original"] for group in groups for w in group["words"]]
     assert flattened == [w["original"] for w in words]
-    assert [g["text"] for g in groups] == ["Aaj hum shuru.", "Phir important baat karenge"]
+    assert [g["text"] for g in groups] == ["Aaj hum shuru.", "Phir important baat", "karenge"]
+    assert all(len(group["words"]) <= 3 for group in groups)
     assert sum(w["important"] for g in groups for w in g["words"]) <= 1
 
 

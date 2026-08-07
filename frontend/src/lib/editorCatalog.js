@@ -10,7 +10,6 @@ const style = (overrides = {}) => ({
   fontFamily: "Outfit", fontWeight: 800, fontSize: 56, color: "#FFFFFF",
   accentColor: "#FF3B30", colorMode: "solid", backgroundColor: "#00000000",
   outlineColor: "#050505", outlineWidth: 4, shadow: 2, x: 50, y: 78,
-  width: 82, scaleX: 100, scaleY: 100,
   align: "center", uppercase: false, italic: false, underline: false,
   letterSpacing: 0, animation: "pop", ...overrides,
 });

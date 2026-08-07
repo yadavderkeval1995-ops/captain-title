@@ -377,15 +377,9 @@ def _write_ass(path, words, theme, caption_groups=None, editor_style=None):
             x = max(0, min(100, float(style.get("x", 50)))) * 10.8
             y = max(0, min(100, float(style.get("y", 78)))) * 19.2
             text = _safe_ass_text(group.get("text", ""))
-            scale_x = max(50, min(180, int(style.get("scaleX", 100))))
-            scale_y = max(50, min(180, int(style.get("scaleY", 100))))
-            width = max(30, min(96, float(style.get("width", 82))))
-            wrap_width = max(260, int(1080 * width / 100))
-            margin = max(0, int((1080 - wrap_width) / 2))
             tags = (f"{{\\an5\\pos({x:.0f},{y:.0f})\\fn{font}\\fs{size}"
-                    f"\\fscx{scale_x}\\fscy{scale_y}\\q2"
                     f"\\c{_ass_color(color)}\\bord{outline}\\shad{shadow}}}")
-            lines.append(f"Dialogue: 0,{_ass_time(group['start'])},{_ass_time(group['end'])},Default,,{margin},{margin},0,,{tags}{text}\n")
+            lines.append(f"Dialogue: 0,{_ass_time(group['start'])},{_ass_time(group['end'])},Default,,0,0,0,,{tags}{text}\n")
     else:
         for word in words:
             safe = _safe_ass_text(word["text"])

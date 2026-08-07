@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -5,6 +7,7 @@ import re
 import tempfile
 import wave
 from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from openai import OpenAI
@@ -73,20 +76,89 @@ async def _coverage_pass(audio_path: str, language: str | None):
     return await asyncio.to_thread(_coverage_pass_sync, audio_path, language)
 
 
-def _coverage_words(response, chunk_duration: float):
+def _coverage_tokens(response):
     data = _as_dict(response)
     text = str(getattr(response, "text", "") or data.get("text", "")).strip()
-    tokens = re.findall(r"[^\s]+", text)
-    if not tokens:
-        return []
-    padding = min(.18, chunk_duration * .03)
-    usable = max(.2, chunk_duration - padding * 2)
-    step = usable / len(tokens)
-    return [{"index": index, "original": token, "text": token,
-             "start": round(padding + index * step, 3),
-             "end": round(min(chunk_duration, padding + (index + 1) * step), 3),
-             "important": False, "uncertain": True}
-            for index, token in enumerate(tokens)]
+    return re.findall(r"[^\s]+", text)
+
+
+def _pathological_repetition(tokens: list[str]):
+    """Reject obvious coverage-model loops without penalizing normal repetition."""
+    normalized = _tokens(" ".join(tokens))
+    if len(normalized) < 8:
+        return False
+    metrics = _repetition_metrics(normalized)
+    bigrams = list(zip(normalized, normalized[1:]))
+    common_bigram = Counter(bigrams).most_common(1)[0][1] if bigrams else 0
+    return (metrics["unique_ratio"] < .24 or
+            (common_bigram >= 3 and metrics["bigram_ratio"] > .30) or
+            metrics["ngram_repeat"] >= 3)
+
+
+def _alignment_key(token: str):
+    parts = _tokens(token)
+    return "".join(parts)
+
+
+def _align_coverage_words(response, whisper_words: list[dict], chunk_duration: float):
+    """Make coverage text canonical while retaining native timestamps as anchors."""
+    canonical = _coverage_tokens(response)
+    if not canonical or _pathological_repetition(canonical):
+        return None
+
+    canonical_keys = [_alignment_key(token) for token in canonical]
+    whisper_keys = [_alignment_key(str(word.get("original") or word.get("text") or ""))
+                    for word in whisper_words]
+    matcher = SequenceMatcher(None, canonical_keys, whisper_keys, autojunk=False)
+    anchors = {}
+    for block in matcher.get_matching_blocks():
+        for delta in range(block.size):
+            if canonical_keys[block.a + delta]:
+                anchors[block.a + delta] = block.b + delta
+
+    result = [None] * len(canonical)
+    for canonical_index, whisper_index in anchors.items():
+        source = whisper_words[whisper_index]
+        result[canonical_index] = {
+            "index": canonical_index,
+            "original": canonical[canonical_index],
+            "text": canonical[canonical_index],
+            "start": float(source["start"]),
+            "end": float(source["end"]),
+            "important": bool(source.get("important", False)),
+            "uncertain": bool(source.get("uncertain", False)),
+        }
+
+    anchor_indices = sorted(anchors)
+    boundaries = [-1] + anchor_indices + [len(canonical)]
+    for boundary_index in range(len(boundaries) - 1):
+        left_index, right_index = boundaries[boundary_index:boundary_index + 2]
+        missing = list(range(left_index + 1, right_index))
+        if not missing:
+            continue
+        left_time = (float(result[left_index]["end"]) if left_index >= 0 else 0.0)
+        right_time = (float(result[right_index]["start"])
+                      if right_index < len(canonical) else float(chunk_duration))
+        right_time = max(left_time, right_time)
+        step = (right_time - left_time) / len(missing) if missing else 0.0
+        for position, canonical_index in enumerate(missing):
+            start = left_time + position * step
+            end = left_time + (position + 1) * step
+            result[canonical_index] = {
+                "index": canonical_index,
+                "original": canonical[canonical_index],
+                "text": canonical[canonical_index],
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "important": False,
+                "uncertain": True,
+            }
+    return result
+
+
+# Retained for callers that used this private helper directly.
+def _coverage_words(response, chunk_duration: float):
+    return _align_coverage_words(response, [], chunk_duration) or []
 
 
 def _wav_duration(path: str):
@@ -213,19 +285,20 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                     pass
             trustworthy = [candidate for candidate in candidates if candidate["trustworthy"]]
             selected = max(trustworthy, key=lambda candidate: candidate["score"]) if trustworthy else None
-            # A stronger text-only model acts as a bounded coverage safety net.
-            # Whisper remains the source of native timestamps; coverage output is
-            # used only when it finds substantially more dialogue in this chunk.
+            # Coverage text is canonical for every valid, non-empty chunk. Whisper
+            # words remain timestamp anchors; words absent from Whisper are fitted
+            # conservatively into the gaps and explicitly marked uncertain.
             try:
                 coverage_response = await _coverage_pass(chunk_path, primary_language)
-                coverage_words = _coverage_words(coverage_response, _wav_duration(chunk_path))
-                if coverage_words and (selected is None or
-                        len(coverage_words) >= max(len(selected["words"]) + 3,
-                                                   int(len(selected["words"]) * 1.35))):
-                    selected = {"mode": "coverage", "words": coverage_words,
+                aligned_words = _align_coverage_words(
+                    coverage_response, selected["words"] if selected else [],
+                    _wav_duration(chunk_path))
+                if aligned_words:
+                    selected = {"mode": "coverage-aligned", "words": aligned_words,
                                 "score": selected["score"] if selected else 0.0,
                                 "trustworthy": True}
             except Exception:
+                # A failed coverage call must not discard a valid Whisper result.
                 pass
             if selected is None:
                 continue
