@@ -14,7 +14,10 @@ export const TranscriptPanel = ({ words, originalTranscript, transcriptionMode, 
       {words.map((word, index) => <div key={`${word.start}-${index}`} className={`transcript-word ${activeIndex === index ? "playing" : ""} ${selectedIndex === index ? "selected" : ""} ${word.uncertain ? "uncertain" : ""}`} onClick={() => onSelect(index)} data-testid={`transcript-word-row-${index}`}>
         <span data-testid={`transcript-word-time-${index}`}>{word.start.toFixed(2)}</span>
         <input value={word.text} onChange={(e) => onText(index, e.target.value)} aria-label={`Caption word ${index + 1}`} data-testid={`transcript-word-input-${index}`} />
-        {word.uncertain ? <b title="Please verify this word" data-testid={`uncertain-word-indicator-${index}`}>?</b> : word.important && <i title="Impact word" data-testid={`important-word-indicator-${index}`} />}
+        <span className="word-flags">
+          {word.uncertain && <b title="Please verify this word" data-testid={`uncertain-word-indicator-${index}`}>?</b>}
+          {word.important && <i title="Impact word" data-testid={`important-word-indicator-${index}`} />}
+        </span>
       </div>)}
     </div>
   </aside>

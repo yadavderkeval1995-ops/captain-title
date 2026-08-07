@@ -47,6 +47,11 @@
 - Added explicit Hindi/Hinglish recognition mode (`language=hi`) plus Auto Detect, removed a Whisper prompt-leak failure, and added unclear-speech rejection.
 - Added a visible “WHISPER HEARD” raw transcript so creators can verify listening accuracy before Roman-Hinglish conversion and styling.
 - Verified the focused Hindi flow with 7/7 checks: repeated processing, real Devanagari transcription, 15 Roman-Hinglish words, editable UI, and no prompt leakage.
+- Reproduced the user's real 37.78-second `Toe Protector Ad Video.MP4` failure: full-file forced-Hindi `whisper-1` hallucinated and repeated “YouTube protector” during music-heavy sections.
+- Replaced full-file recognition with adaptive 10-second WAV chunks, auto language by default, per-segment no-speech filtering, fallback recognition, and unique/bigram/4-gram repetition rejection.
+- Added context-aware Roman-Hinglish correction, explicit `uncertain` word markers, and a one-click **Re-listen** action. Repaired the two saved broken Toe Protector projects.
+- Exact-video audit passed 11/11: no catastrophic repeated phrase, 4 chunks, coverage through 38 seconds, cricket/product vocabulary present, editable Roman Hinglish, render/save preserved.
+- Honest limitation: `whisper-1` is the only timestamp-capable speech model currently available through the selected universal-key integration. Two music-obscured phrases in the real ad remain imperfect and are flagged for manual verification; the product no longer presents those words as certain or allows repetitive hallucinations through.
 
 ## Prioritized backlog
 ### P0
@@ -55,6 +60,7 @@
 
 ### P1
 - Move long 60-second caption generation into a background job with progress polling to remove ingress timeout risk.
+- Evaluate a higher-accuracy Hindi/Hinglish speech provider when a timestamp-capable integration/key is approved; retain the current repetition and uncertainty safeguards regardless of provider.
 - Complete a human Google OAuth sign-in acceptance check with a real Google account.
 - Add creator project history so prior caption sessions can be reopened.
 

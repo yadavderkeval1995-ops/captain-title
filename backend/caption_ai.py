@@ -69,7 +69,9 @@ def _split_wav(audio_path: str, output_dir: str, seconds: int = 10):
                 target.setparams(params)
                 target.writeframes(frames)
             chunks.append((str(path), offset))
-            offset += len(frames) / max(1, params.sampwidth * params.nchannels * params.framerate)
+            bytes_per_frame = params.sampwidth * params.nchannels
+            frames_read = len(frames) // bytes_per_frame
+            offset += frames_read / params.framerate
             index += 1
     return chunks
 
@@ -200,8 +202,8 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
     if not match:
         raise ValueError("Hinglish conversion did not return valid JSON")
     converted = {int(item["index"]): item for item in json.loads(match.group(0))}
-    if len(converted) < max(1, int(len(words) * .8)):
-        raise ValueError("Hinglish conversion did not preserve enough words")
+    if set(converted) != set(range(len(words))):
+        raise ValueError("Hinglish conversion did not preserve every timed word")
     for word in words:
         item = converted.get(word["index"], {})
         word["text"] = str(item.get("text") or word["original"]).strip()

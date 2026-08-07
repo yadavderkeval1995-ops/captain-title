@@ -152,7 +152,11 @@ async def process_video(request: Request, file: UploadFile = File(...),
             raise
         except Exception as exc:
             logger.exception("Caption generation failed")
-            raise HTTPException(424, f"Caption generation failed: {str(exc)[:180]}") from exc
+            message = str(exc)
+            if "trustworthy transcript" in message.lower():
+                raise HTTPException(424, {"message": message, "reason": "low_confidence_audio"}) from exc
+            raise HTTPException(424, {"message": "Caption generation could not finish. Please try Re-listen or a clearer audio track.",
+                                      "reason": "transcription_failed"}) from exc
 
 
 @projects_router.put("/projects/{project_id}")
@@ -185,13 +189,16 @@ async def retranscribe_project(project_id: str, payload: RetranscribeRequest, re
         audio = os.path.join(temp, "speech.wav")
         Path(source).write_bytes(data)
         try:
+            if await asyncio.to_thread(_duration, source) > 120:
+                raise ValueError("Stored video exceeds the 120-second limit")
             await asyncio.to_thread(_extract_audio, source, audio)
             words, transcription = await transcribe_words(audio, payload.speech_language)
             source_transcript = " ".join(word["original"] for word in words)
             words = await convert_to_hinglish(words, project.get("name", ""))
         except Exception as exc:
             logger.exception("Re-transcription failed")
-            raise HTTPException(424, f"Could not produce a trustworthy transcript: {str(exc)[:140]}") from exc
+            raise HTTPException(424, {"message": "Re-listen could not produce a trustworthy transcript from this audio.",
+                                      "reason": "low_confidence_audio"}) from exc
     palette = THEMES[project["theme"]]
     for word in words:
         word["color"] = palette["accent"] if word["important"] else palette["base"]
