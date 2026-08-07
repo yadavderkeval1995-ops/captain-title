@@ -86,7 +86,8 @@ async def font_file(font_id: str, request: Request, user=Depends(current_user)):
     if not record:
         raise HTTPException(404, "Font not found")
     data, _ = await asyncio.to_thread(get_object, record["storage_path"])
-    return Response(data, media_type=record["content_type"], headers={"Cache-Control": "private, max-age=86400"})
+    return Response(data, media_type=record["content_type"], headers={
+        "Cache-Control": "private, max-age=86400", "Content-Length": str(len(data))})
 
 
 @editor_assets_router.delete("/editor/fonts/{font_id}")

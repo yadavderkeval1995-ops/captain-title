@@ -6,6 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from motor.motor_asyncio import AsyncIOMotorClient
+from starlette.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
@@ -56,6 +57,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def reject_oversized_font_uploads(request, call_next):
+    if request.method == "POST" and request.url.path == "/api/editor/fonts":
+        content_length = int(request.headers.get("content-length") or 0)
+        if content_length > 8 * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"detail": "Font file must be smaller than 8 MB"})
+    return await call_next(request)
 
 
 @app.get("/api/health")

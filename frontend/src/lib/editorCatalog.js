@@ -50,6 +50,14 @@ export const buildCaptionGroups = (words, maxWords = 4) => {
     bucket.push({ ...word, sourceIndex: index });
   });
   if (bucket.length) groups.push(bucket);
+  for (let index = 0; index < groups.length; index += 1) {
+    if (groups[index].length !== 1) continue;
+    if (index > 0 && groups[index - 1].length < 5) {
+      groups[index - 1].push(...groups[index]); groups.splice(index, 1); index -= 1;
+    } else if (index < groups.length - 1 && groups[index + 1].length < 5) {
+      groups[index + 1].unshift(...groups[index]); groups.splice(index, 1); index -= 1;
+    }
+  }
   return groups.map((group, index) => ({
     id: `caption-${index}-${Math.round(group[0].start * 100)}`,
     word_indices: group.map((word) => word.sourceIndex),

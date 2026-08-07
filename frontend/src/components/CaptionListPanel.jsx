@@ -8,7 +8,7 @@ export const CaptionListPanel = ({ groups, words, selectedId, onSelect, onText, 
         const uncertain = group.word_indices.some((wordIndex) => words[wordIndex]?.uncertain);
         return <article key={group.id} className={`caption-list-row ${selectedId === group.id ? "selected" : ""}`} onClick={() => onSelect(group.id)} data-testid={`caption-group-row-${index}`}>
           <span className="caption-row-number" data-testid={`caption-group-number-${index}`}>{index + 1}</span>
-          <div><textarea value={group.text} rows={2} onChange={(event) => onText(group.id, event.target.value)} data-testid={`caption-group-text-${index}`} />
+          <div><textarea value={group.text} rows={2} maxLength={120} onChange={(event) => onText(group.id, event.target.value)} data-testid={`caption-group-text-${index}`} />
             <small data-testid={`caption-group-time-${index}`}>{group.start.toFixed(2)}s — {group.end.toFixed(2)}s</small>
           </div>
           <div className="caption-row-actions">

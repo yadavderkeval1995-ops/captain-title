@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import imageio_ffmpeg
 
 from auth import current_user
@@ -43,10 +43,30 @@ class WordEdit(BaseModel):
     font_size: int = Field(default=52, ge=24, le=92)
 
 
+class CaptionGroupEdit(BaseModel):
+    id: str
+    word_indices: list[int] = Field(default_factory=list)
+    text: str = Field(min_length=1, max_length=120)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    style: dict[str, Any] = Field(default_factory=dict)
+    template_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_timing_and_indices(self):
+        if self.end <= self.start:
+            raise ValueError("Caption group end must be after start")
+        if any(index < 0 for index in self.word_indices):
+            raise ValueError("Caption word indices cannot be negative")
+        if self.word_indices != sorted(set(self.word_indices)):
+            raise ValueError("Caption word indices must be unique and sorted")
+        return self
+
+
 class ProjectEdit(BaseModel):
     theme: str
     words: list[WordEdit]
-    caption_groups: list[dict[str, Any]] = Field(default_factory=list)
+    caption_groups: list[CaptionGroupEdit] = Field(default_factory=list)
     editor_style: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -283,7 +303,8 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
     result = await request.app.state.db.projects.update_one(
         {"project_id": project_id, "user_id": user["user_id"]},
         {"$set": {"theme": payload.theme, "words": [word.model_dump() for word in payload.words],
-                  "caption_groups": payload.caption_groups, "editor_style": payload.editor_style,
+                  "caption_groups": [group.model_dump() for group in payload.caption_groups],
+                  "editor_style": payload.editor_style,
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")

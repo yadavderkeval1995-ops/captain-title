@@ -57,6 +57,14 @@
 - Exact 64.66-second / 85.5 MB Flying Beast upload returned in 12 seconds instead of timing out and completed with 202 timed words through 64.64 seconds.
 - Added authenticated HTTP Range support and parallel 720-wide VP9/Opus WebM previews. Browser audit confirmed readyState 4, seeking, playback, and no unsupported-source overlay.
 - Post-fix audits: iteration 4 passed 12/12 timing/background checks; iteration 5 passed 12/12 Range/media checks.
+- Completed the reference-led **Pro Editor** redesign after the user saved a GitHub restore point.
+- New workspace: compact tool rail, editable phrase list, contained 9:16 preview, full text inspector, and fixed caption/video/audio timeline with time ruler and waveform.
+- Timeline editing: Space play/pause, click-to-seek, draggable playhead, zoom, complete block movement, left/right timing handles, split/merge, and keyboard undo/redo.
+- Caption design system: 20 built-in templates, 25 curated web-font families, solid/gradient styling, weight/size/alignment/position, outline/shadow, safe-zone guide, and five entrance effects.
+- Added licensed custom-font upload (TTF/OTF/WOFF/WOFF2), authenticated font serving, FFmpeg custom-font rendering, and reusable My Presets with per-user ownership.
+- Added default 2–5 word phrase grouping, 120-character phrase safety, group timing/index validation, autosave batching, explicit save state, and reopenable Recent Sessions.
+- Real MP4 render/download using phrase groups and custom font passed; final frame inspection confirmed readable captions within safe bounds.
+- Pro Editor audit passed 12/12 backend checks and the complete frontend workflow at desktop and responsive widths. Follow-up asset suite passed 12/12 after adding pre-parser oversized-font rejection.
 
 ## Prioritized backlog
 ### P0
@@ -64,17 +72,15 @@
 - Turn `UNLIMITED_TESTING` off only when paid/free production limits should be enforced again.
 
 ### P1
-- Move long 60-second caption generation into a background job with progress polling to remove ingress timeout risk.
 - Evaluate a higher-accuracy Hindi/Hinglish speech provider when a timestamp-capable integration/key is approved; retain the current repetition and uncertainty safeguards regardless of provider.
 - Complete a human Google OAuth sign-in acceptance check with a real Google account.
-- Add creator project history so prior caption sessions can be reopened.
 
 ### P2
 - Add in-editor trimming for 60–120 second source videos.
-- Add custom font upload/licensing controls and more caption motion presets.
 - Add SRT/VTT export and reusable brand kits.
+- Add advanced transition curves, per-word typography inside edited phrases, and batch brand-kit application across projects.
 
 ## Next tasks
 1. Confirm the India payment provider and activate real checkout.
-2. Add background processing progress and project history.
-3. Add trim controls and subtitle-file exports.
+2. Evaluate stronger timestamp-capable Hinglish transcription for music-heavy clips.
+3. Add trim controls, subtitle-file exports, and reusable brand kits.
