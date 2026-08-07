@@ -38,7 +38,10 @@ def _bucket() -> str:
 def init_storage(force: bool = False):
     if force:
         _client.cache_clear()
-    _client().head_bucket(Bucket=_bucket())
+    probe_key = f"{APP_NAME}/health/storage-probe.txt"
+    client = _client()
+    client.put_object(Bucket=_bucket(), Key=probe_key, Body=b"ok", ContentType="text/plain")
+    client.delete_object(Bucket=_bucket(), Key=probe_key)
     return True
 
 
@@ -48,6 +51,7 @@ def put_object(path: str, data: bytes, content_type: str):
         Key=path,
         Body=data,
         ContentType=content_type,
+        ContentLength=len(data),
     )
     return {"path": path, "size": len(data)}
 
