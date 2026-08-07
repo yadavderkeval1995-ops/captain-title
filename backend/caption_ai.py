@@ -7,6 +7,7 @@ Public interfaces intentionally match the existing backend module:
 from __future__ import annotations
 
 import asyncio
+import audioop
 import json
 import os
 import re
@@ -66,6 +67,54 @@ def _wav_duration(path: str) -> float:
         return source.getnframes() / float(source.getframerate())
 
 
+def _speech_intervals(path: str, frame_seconds: float = .25, threshold_ratio: float = .08) -> list[tuple[float, float]]:
+    """Estimate voiced intervals from PCM energy without adding another runtime dependency."""
+    with wave.open(path, "rb") as source:
+        rate = source.getframerate()
+        width = source.getsampwidth()
+        channels = source.getnchannels()
+        frame_count = max(1, round(frame_seconds * rate))
+        values = []
+        index = 0
+        while True:
+            raw = source.readframes(frame_count)
+            if not raw:
+                break
+            if channels > 1:
+                raw = audioop.tomono(raw, width, .5, .5)
+            values.append((index * frame_seconds, audioop.rms(raw, width)))
+            index += 1
+    if not values:
+        return []
+    peak = max(value for _, value in values) or 1
+    threshold = max(120, peak * threshold_ratio)
+    voiced = [time for time, value in values if value >= threshold]
+    if not voiced:
+        return []
+    intervals = []
+    start = previous = voiced[0]
+    for current in voiced[1:]:
+        if current - previous > frame_seconds * 2.1:
+            intervals.append((max(0.0, start - .25), previous + frame_seconds + .25))
+            start = current
+        previous = current
+    intervals.append((max(0.0, start - .25), previous + frame_seconds + .25))
+    return intervals
+
+
+def _uncovered_speech(words: list[dict], intervals: list[tuple[float, float]],
+                      min_seconds: float = 1.0) -> list[tuple[float, float]]:
+    missing = []
+    for start, end in intervals:
+        if end - start < min_seconds:
+            continue
+        covered = sum(max(0.0, min(end, float(word["end"])) - max(start, float(word["start"])))
+                      for word in words)
+        if covered < min(.55, (end - start) * .12):
+            missing.append((start, end))
+    return missing
+
+
 def _split_overlapping_wav(path: str, output_dir: str, window: float = WINDOW_SECONDS,
                            overlap: float = WINDOW_OVERLAP_SECONDS) -> list[tuple[str, float]]:
     """Create speech-friendly windows with context on both sides of boundaries."""
@@ -108,9 +157,9 @@ async def _transcription_pass(audio_path: str, language: str | None):
 def _build_candidate(response, mode: str, preferred_mode: str) -> dict:
     data = _as_dict(response)
     raw_segments = getattr(response, "segments", None) or data.get("segments") or []
+    all_segments = [_as_dict(raw) for raw in raw_segments]
     segments = []
-    for raw in raw_segments:
-        item = _as_dict(raw)
+    for item in all_segments:
         if str(item.get("text", "")).strip() and float(item.get("no_speech_prob", 0) or 0) < .65:
             segments.append(item)
     ranges = [(float(s.get("start", 0)), float(s.get("end", 0))) for s in segments]
@@ -135,13 +184,19 @@ def _build_candidate(response, mode: str, preferred_mode: str) -> dict:
     score = (avg_logprob + min(.8, coverage * 1.2) + min(.5, len(words) * .008)
              - repetition["penalty"] - leading_gap_penalty)
     score += .04 if mode == preferred_mode else 0
-    trustworthy = bool(words) and avg_logprob > -1.45 and first_start <= 3.0
+    trustworthy = bool(words) and avg_logprob > -1.45
     if len(tokens) >= 12 and (repetition["unique_ratio"] < .24 or repetition["bigram_ratio"] > .30):
         trustworthy = False
     if repetition["ngram_repeat"] >= 3:
         trustworthy = False
+    segment_metadata = [{"start": float(s.get("start", 0) or 0),
+                         "end": float(s.get("end", 0) or 0),
+                         "text": str(s.get("text", "")).strip(),
+                         "no_speech_prob": float(s.get("no_speech_prob", 0) or 0)}
+                        for s in all_segments]
     return {"mode": mode, "words": words, "score": score, "trustworthy": trustworthy,
-            "average_logprob": avg_logprob, "coverage": coverage, "first_start": first_start}
+            "average_logprob": avg_logprob, "coverage": coverage, "first_start": first_start,
+            "duration": duration, "segments": segment_metadata}
 
 
 async def _best_candidate(path: str, speech_language: str) -> tuple[dict | None, bool]:
@@ -229,11 +284,11 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                 continue
             selected_count += 1
             words = _merge_window_words(words, selected["words"], offset)
-        # A full-file response that begins several seconds into a video is not
-        # acceptable: Whisper can classify quiet openings or mixed music/speech as
-        # silence. Recover with shorter overlapping windows, which reset decoder
-        # context and expose speech the full pass skipped.
-        if duration <= FULL_AUDIO_LIMIT_SECONDS and (not words or float(words[0]["start"]) > 3.0):
+        # Compare transcript timestamps with actual PCM speech energy. This catches
+        # omitted opening, middle, and trailing dialogue while allowing real silence.
+        speech_intervals = _speech_intervals(audio_path)
+        missing_speech = _uncovered_speech(words, speech_intervals)
+        if duration <= FULL_AUDIO_LIMIT_SECONDS and (not words or missing_speech):
             recovery = tempfile.TemporaryDirectory()
             try:
                 recovered: list[dict] = []
@@ -245,10 +300,13 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                         continue
                     selected_count += 1
                     recovered = _merge_window_words(recovered, selected["words"], offset)
-                if recovered and (not words or recovered[0]["start"] < words[0]["start"] - .5 or
-                                  len(recovered) > len(words) * 1.12):
+                recovered_missing = _uncovered_speech(recovered, speech_intervals)
+                if recovered and (not words or len(recovered_missing) < len(missing_speech) or
+                                  (len(recovered_missing) == len(missing_speech) and
+                                   len(recovered) > len(words) * 1.08)):
                     words = recovered
-                    strategy = "full-with-gap-recovery"
+                    missing_speech = recovered_missing
+                    strategy = "speech-gap-recovery"
             finally:
                 recovery.cleanup()
     finally:

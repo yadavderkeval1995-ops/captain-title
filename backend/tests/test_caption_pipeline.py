@@ -55,14 +55,38 @@ def test_leading_gap_triggers_short_window_recovery(tmp_path, monkeypatch):
                 "score": 1, "first_start": .2}, False
 
     monkeypatch.setattr(caption_ai, "_best_candidate", fake_best)
+    monkeypatch.setattr(caption_ai, "_speech_intervals", lambda _: [(0, 1.2), (15, 16.2), (30, 31.2)])
     words, metadata = asyncio.run(caption_ai.transcribe_words(str(path), "auto"))
     assert words[0]["original"] == "opening"
     assert words[0]["start"] < 1.0
-    assert metadata["mode"] == "full-with-gap-recovery"
+    assert metadata["mode"] == "speech-gap-recovery"
     assert len(calls) >= 4
 
 
-def test_candidate_with_18_second_leading_gap_is_not_trustworthy():
+def test_uncovered_speech_detects_internal_omission_but_ignores_real_silence():
+    words = [_word("start", .2, .7), _word("end", 18.2, 18.7)]
+    assert caption_ai._uncovered_speech(words, [(0, 1), (8, 12), (18, 19)]) == [(8, 12)]
+    assert caption_ai._uncovered_speech(words, [(0, 1), (18, 19)]) == []
+
+
+def test_normal_full_transcript_does_not_trigger_recovery(tmp_path, monkeypatch):
+    path = tmp_path / "normal.wav"
+    _wav(path, 8)
+    calls = []
+
+    async def fake_best(candidate_path, language):
+        calls.append(candidate_path)
+        return {"words": [_word("hello", .2, .8), _word("world", 1.0, 1.5)],
+                "trustworthy": True, "score": 1}, False
+
+    monkeypatch.setattr(caption_ai, "_best_candidate", fake_best)
+    monkeypatch.setattr(caption_ai, "_speech_intervals", lambda _: [(0, 1.6)])
+    _, metadata = asyncio.run(caption_ai.transcribe_words(str(path), "auto"))
+    assert calls == [str(path)]
+    assert metadata["mode"] == "full-bounded"
+
+
+def test_candidate_exposes_leading_gap_for_energy_validation():
     response = SimpleNamespace(
         duration=37.0,
         segments=[{"text": " late words", "start": 18, "end": 22,
@@ -72,7 +96,7 @@ def test_candidate_with_18_second_leading_gap_is_not_trustworthy():
     )
     candidate = caption_ai._build_candidate(response, "auto", "auto")
     assert candidate["first_start"] == 18.0
-    assert not candidate["trustworthy"]
+    assert candidate["trustworthy"]
 
 
 def test_overlap_merge_removes_duplicate_boundary_words():
