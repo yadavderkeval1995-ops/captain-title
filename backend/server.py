@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from editor_assets import editor_assets_router
 from payments import payments_router
 from srt_routes import srt_router
 from storage_service import init_storage
+from transcription_audit import run_transcription_audit
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("captain-title")
@@ -47,6 +49,8 @@ async def lifespan(application: FastAPI):
         init_storage(); logger.info("Object storage initialized")
     except Exception as exc: logger.warning("Object storage will retry on first request: %s", exc)
     await resume_pending_projects(db)
+    if os.environ.get("TRANSCRIPTION_AUDIT_OBJECT", "").strip():
+        asyncio.create_task(run_transcription_audit())
     yield
     client.close()
 
