@@ -43,10 +43,15 @@
 - Built free-credit and paid-credit entitlement model plus pricing/paywall UI.
 - Built Stripe Checkout/webhook/status code; claimable Stripe sandbox provisioning is externally unavailable for business country `IN`, so live checkout is intentionally disabled rather than mocked.
 - Verified 16/16 full-stack checks, including real AI, storage, render, download, ownership isolation, and second-video paywall.
+- Enabled temporary unlimited testing for videos up to 120 seconds without deducting free credits.
+- Added explicit Hindi/Hinglish recognition mode (`language=hi`) plus Auto Detect, removed a Whisper prompt-leak failure, and added unclear-speech rejection.
+- Added a visible “WHISPER HEARD” raw transcript so creators can verify listening accuracy before Roman-Hinglish conversion and styling.
+- Verified the focused Hindi flow with 7/7 checks: repeated processing, real Devanagari transcription, 15 Roman-Hinglish words, editable UI, and no prompt leakage.
 
 ## Prioritized backlog
 ### P0
 - Select a supported payment route for India: Razorpay, or Stripe with a supported business-country setup; then activate catalog checkout.
+- Turn `UNLIMITED_TESTING` off only when paid/free production limits should be enforced again.
 
 ### P1
 - Move long 60-second caption generation into a background job with progress polling to remove ingress timeout risk.
