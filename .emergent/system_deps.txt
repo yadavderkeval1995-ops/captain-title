@@ -1,1 +1,2 @@
 cron=3.0pl1-162
+espeak-ng=1.51+dfsg-10+deb12u2

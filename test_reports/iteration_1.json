@@ -1,0 +1,61 @@
+{
+  "summary": "Captain Title full-stack testing complete. Backend 16/16 pytest passing (including a REAL end-to-end run through the primary AI pipeline: /projects/process with real Whisper + GPT-5.6-terra + Emergent Object Storage, then /render with FFmpeg subtitle burn, then MP4 download, credit gating, second-run 402, ownership isolation). Frontend end-to-end verified through the preview URL (register -> upload sample -> real captions -> theme switching -> transcript/word style edits -> save -> render -> download button -> second-run paywall -> logout). Stripe checkout correctly returns 503 with a user-visible toast (STRIPE_MODE=unavailable_country; not mocked, reported as an externally-blocked payments provider). Google OAuth validation path returns 401 for an invalid session_id (real integration; the browser redirect flow itself is unverified without a real Google account and cannot be automated).",
+  "ai_features": [
+    "Whisper-1 word-level Hinglish transcription - pass - evidence: /api/projects/process 200; 7 real words for /app/captain-sample.mp4 with correct Roman Hinglish (Namaste, Dosto, Arjum, Creative, Captions, Banner, Arhane) and word-level timings (0.00-4.32s). skill: ai-testing-audio (STT). Command: pytest tests/test_ai_pipeline_real.py",
+    "GPT-5.6-terra Hinglish conversion + important-word flagging - pass - evidence: important=true only on 'Namaste' (~14% flagged, under 20% cap); words match Whisper indices; color applied per theme palette. skill: ai-testing-llm",
+    "Emergent Object Storage source upload/download - pass - evidence: put_object returns storage path in project record; GET /api/projects/{id}/media 200 returns real video bytes >1KB; non-owner receives 404. skill: ai-testing-core",
+    "FFmpeg subtitle burn-in render - pass - evidence: POST /api/projects/{id}/render 200 -> GET /api/projects/{id}/download 200 with Content-Type video/mp4 and MP4 ftyp signature, size >4KB.",
+    "Stripe Checkout (INR) - blocked: needs-key-or-topup - evidence: /api/payments/catalog returns available=false; /api/payments/checkout returns 503 'Stripe checkout is unavailable for the configured business country'; matches STRIPE_MODE=unavailable_country. Not mocked. Toast surfaces the same message in the UI.",
+    "Emergent Google OAuth - unverified: cannot-obtain-real-session_id - evidence: /api/auth/google/session rejects a fake session_id with 401 (real integration wired); redirect URL is `window.location.origin + /editor` per code review; the actual Google sign-in cannot be driven headless without a real Google account."
+  ],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/projects/{id}/media", "issue": "Ingress returned a transient 502 on a single call during the pipeline test; a retry after 3s succeeded. Object storage cold path may be intermittently slow. Test now retries once on 5xx."},
+      {"endpoint": "POST /api/projects/process", "issue": "Long synchronous endpoint (Whisper + GPT + storage + FFmpeg audio extract) in one request. Larger videos can approach the ~100s ingress cap and 502 for real users. Consider background job + polling."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "UploadStage", "issue": "For very small files (<100KB) the metadata shows '0.0 MB'. Consider a KB fallback for sub-MB files.", "selector": "[data-testid=\"selected-video-metadata\"]", "priority": "LOW"},
+      {"component": "UploadStage", "issue": "video.onloadedmetadata does not always fire in headless Chromium, so duration falls back to 'Duration checked on upload'. Works, but real user perception could be affected if browser fails to decode the MP4 for preview.", "selector": "[data-testid=\"selected-video-metadata\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PaywallDialog / PaymentResult / Pricing", "issues": ["Radix DialogContent missing a Description / aria-describedby - a11y warning in console."]}
+    ]
+  },
+  "critical_code_review_comments": [
+    "server.py uses deprecated @app.on_event('startup'/'shutdown'); FastAPI recommends lifespan handlers (non-blocking, but will emit warnings on FastAPI upgrade).",
+    "captions.py._render swallows ffmpeg stderr and raises a generic 'Video rendering failed' 500 - hard to diagnose in production. Log the ffmpeg stderr on non-zero exit.",
+    "captions.py.process_video runs the entire pipeline synchronously inside the request. For 60-120 sec sources this can approach ingress timeouts. Consider a background job + status polling.",
+    "captions.py._ass_time truncates to two decimals; last-word tail-end trimming should be safe but consider capping end at duration.",
+    "Missing MongoDB unique index on payment_transactions.session_id and index on usage.user_id.",
+    "auth._create_session stores expires_at as ISO string; current_user parses it back - use datetime + createIndex TTL for automatic session cleanup.",
+    "PaywallDialog opens on any /projects/process failure with 402, but the toast still shows 'Something went wrong' when the paywall itself opens (double signal). Consider suppressing toast when paywall opens.",
+    "errorMessage util: when API returns pydantic list of error dicts without 'msg', label 'Invalid value' is not very user friendly - consider joining specific field names.",
+    "UploadStage does not prevent submit while duration is still being probed - user could hit Generate before the 120s check runs; backend still enforces it, so functional risk is low."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_captain_backend.py",
+    "/app/backend/tests/test_ai_pipeline_real.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "None blocking. Consider fixing the minor UX issues (KB label for small files, ffmpeg stderr logging, paywall toast double signal) and adding a Description prop to Radix Dialogs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/__init__.py (new)",
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_captain_backend.py (new)",
+    "/app/backend/tests/test_ai_pipeline_real.py (new)"
+  ],
+  "success_rate": {"backend": "100% (16/16 pytest)", "frontend": "100% of the flows exercised (register/login/logout, upload, real caption gen, theme switching, transcript edit, font/color/important controls, save, render, download button, paywall on 402, Stripe 503 toast)"},
+  "test_credentials": "Ad-hoc registered users per run (e.g. ui.flow2.<ts>@example.com / captain12345). /app/memory/test_credentials.md is a placeholder with no credentials.",
+  "seed_data_creation": "None. Each backend test class registers its own fresh user; the real-AI test also registers a second user to prove ownership isolation.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite at /app/backend/tests/. Run with: cd /app/backend && REACT_APP_BACKEND_URL=<preview_url> python -m pytest tests/ -v. The AI-pipeline test spends real Emergent credits (Whisper + GPT + storage + FFmpeg render) - keep re-runs minimal. Stripe is intentionally disabled via STRIPE_MODE=unavailable_country; expect 503 on checkout and available=false on catalog. Google OAuth browser redirect cannot be automated; only the callback validation endpoint is testable.",
+  "rca of the issue": "N/A - no critical bugs found. The one transient 502 on /projects/{id}/media was ingress-layer (backend never received the request per uvicorn log). Root cause is likely a cold-path object-storage init combined with ingress request-buffering; retry succeeds and the endpoint returns real bytes."
+}

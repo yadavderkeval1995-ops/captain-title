@@ -1,56 +1,68 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Toaster } from "@/components/ui/sonner";
+import { api } from "@/lib/api";
+import { AuthScreen } from "@/components/AuthScreen";
+import { EditorPage } from "@/components/EditorPage";
+import { PaymentResult } from "@/components/PaymentResult";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
+function AuthCallback({ onAuth }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const processed = useRef(false);
 
   useEffect(() => {
-    helloWorldApi();
+    if (processed.current) return;
+    processed.current = true;
+    const sessionId = new URLSearchParams(location.hash.replace("#", "")).get("session_id");
+    if (!sessionId) return navigate("/", { replace: true });
+    api.post("/auth/google/session", { session_id: sessionId }).then(({ data }) => {
+      window.history.replaceState({}, "", "/editor");
+      onAuth(data);
+      navigate("/editor", { replace: true });
+    }).catch(() => navigate("/", { replace: true }));
+  }, [location.hash, navigate, onAuth]);
+  return <div className="auth-loading" data-testid="google-auth-processing-status">Connecting your creator account…</div>;
+}
+
+function AppRouter() {
+  const location = useLocation();
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  const setAuthenticatedUser = useCallback((profile) => {
+    setUser(profile);
+    setChecking(false);
   }, []);
 
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
+  useEffect(() => {
+    if (window.location.hash.includes("session_id=")) {
+      setChecking(false);
+      return;
+    }
+    api.get("/auth/me").then(({ data }) => setUser(data)).catch(() => setUser(null)).finally(() => setChecking(false));
+  }, []);
 
-function App() {
+  if (location.hash?.includes("session_id=")) return <AuthCallback onAuth={setAuthenticatedUser} />;
+  if (checking) return <div className="auth-loading" data-testid="auth-checking-status">Loading Captain Title…</div>;
+
   return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <Routes>
+      <Route path="/" element={user ? <Navigate to="/editor" replace /> : <AuthScreen onAuth={setAuthenticatedUser} />} />
+      <Route path="/editor" element={user ? <EditorPage user={user} onLogout={() => setUser(null)} /> : <Navigate to="/" replace />} />
+      <Route path="/payment/success" element={user ? <PaymentResult success /> : <Navigate to="/" replace />} />
+      <Route path="/payment/cancel" element={user ? <PaymentResult /> : <Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to={user ? "/editor" : "/"} replace />} />
+    </Routes>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AppRouter />
+      <Toaster theme="dark" position="top-center" />
+    </BrowserRouter>
+  );
+}
