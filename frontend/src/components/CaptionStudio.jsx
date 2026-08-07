@@ -20,6 +20,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rendering, setRendering] = useState(false);
+  const [relistening, setRelistening] = useState(false);
   const [mediaRetry, setMediaRetry] = useState(0);
   const videoRef = useRef(null);
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
@@ -47,6 +48,17 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       toast.success("Your captioned video is ready");
     } catch (error) { toast.error(errorMessage(error)); }
     finally { setRendering(false); }
+  };
+  const relisten = async () => {
+    setRelistening(true);
+    try {
+      const { data } = await api.post(`/projects/${project.project_id}/retranscribe`, { speech_language: "auto" });
+      setWords(data.words);
+      setProject((current) => ({ ...current, ...data }));
+      setSelectedIndex(0);
+      toast.success("A fresh trusted transcript is ready");
+    } catch (error) { toast.error(errorMessage(error)); }
+    finally { setRelistening(false); }
   };
   const download = async () => {
     const response = await api.get(`/projects/${project.project_id}/download`, { responseType: "blob" });
@@ -78,7 +90,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           </div>
           <div className="preview-meta"><span data-testid="preview-format-label">9:16 PREVIEW</span><span data-testid="caption-engine-label">WORD SYNC · {theme.toUpperCase()}</span></div>
         </section>
-        <TranscriptPanel words={words} originalTranscript={project.source_transcript} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} />
+        <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />
       </div>
       <Timeline words={words} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} />
     </main>

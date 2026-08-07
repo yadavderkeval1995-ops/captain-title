@@ -10,7 +10,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
   const [duration, setDuration] = useState(null);
   const [probing, setProbing] = useState(false);
   const [processing, setProcessing] = useState(false);
-  const [speechLanguage, setSpeechLanguage] = useState("hi");
+  const [speechLanguage, setSpeechLanguage] = useState("auto");
 
   const inspect = (selected) => {
     if (!selected) return;
@@ -57,8 +57,8 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
         <p data-testid="upload-page-description">Whisper-1 listens to the video first. You’ll see exactly what it heard before GPT 5.6 Terra converts Hindi into Roman Hinglish and styles the key moments.</p>
         <div className="language-selector" data-testid="speech-language-selector">
           <span data-testid="speech-language-label">SPEECH MODE</span>
-          <button className={speechLanguage === "hi" ? "active" : ""} onClick={() => setSpeechLanguage("hi")} data-testid="speech-language-hinglish-button">Hindi / Hinglish</button>
-          <button className={speechLanguage === "auto" ? "active" : ""} onClick={() => setSpeechLanguage("auto")} data-testid="speech-language-auto-button">Auto detect</button>
+          <button className={speechLanguage === "auto" ? "active" : ""} onClick={() => setSpeechLanguage("auto")} data-testid="speech-language-auto-button">Adaptive Hinglish · Recommended</button>
+          <button className={speechLanguage === "hi" ? "active" : ""} onClick={() => setSpeechLanguage("hi")} data-testid="speech-language-hinglish-button">Hindi only</button>
         </div>
         <div className="format-strip" data-testid="supported-video-formats"><span>MP4 / MOV</span><span>UNLIMITED TESTING · 120 SEC</span><span>RAW TRANSCRIPT VISIBLE</span></div>
       </section>

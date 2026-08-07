@@ -34,6 +34,7 @@ class WordEdit(BaseModel):
     start: float
     end: float
     important: bool = False
+    uncertain: bool = False
     color: str = "#FFFFFF"
     font_size: int = Field(default=52, ge=24, le=92)
 
@@ -41,6 +42,10 @@ class WordEdit(BaseModel):
 class ProjectEdit(BaseModel):
     theme: str
     words: list[WordEdit]
+
+
+class RetranscribeRequest(BaseModel):
+    speech_language: str = "auto"
 
 
 async def _usage(db, user_id):
@@ -73,7 +78,7 @@ def _duration(path):
 
 def _extract_audio(source, audio):
     subprocess.run([FFMPEG, "-y", "-i", source, "-vn", "-ac", "1", "-ar", "16000",
-                    "-b:a", "64k", audio], capture_output=True, check=True)
+                    "-c:a", "pcm_s16le", audio], capture_output=True, check=True)
 
 
 @projects_router.get("/usage")
@@ -87,7 +92,7 @@ async def usage(request: Request, user=Depends(current_user)):
 
 @projects_router.post("/projects/process")
 async def process_video(request: Request, file: UploadFile = File(...),
-                        theme: str = Form("viral"), speech_language: str = Form("hi"),
+                        theme: str = Form("viral"), speech_language: str = Form("auto"),
                         user=Depends(current_user)):
     if theme not in THEMES:
         raise HTTPException(400, "Unknown caption theme")
@@ -101,7 +106,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
         raise HTTPException(413, "Video must be smaller than 120 MB")
     with tempfile.TemporaryDirectory() as temp:
         source = os.path.join(temp, f"source{suffix}")
-        audio = os.path.join(temp, "speech.mp3")
+        audio = os.path.join(temp, "speech.wav")
         Path(source).write_bytes(data)
         try:
             duration = await asyncio.to_thread(_duration, source)
@@ -117,9 +122,9 @@ async def process_video(request: Request, file: UploadFile = File(...),
             raise HTTPException(402, detail)
         try:
             await asyncio.to_thread(_extract_audio, source, audio)
-            words = await transcribe_words(audio, speech_language)
+            words, transcription = await transcribe_words(audio, speech_language)
             source_transcript = " ".join(word["original"] for word in words)
-            words = await convert_to_hinglish(words)
+            words = await convert_to_hinglish(words, file.filename or "")
             palette = THEMES[theme]
             for word in words:
                 word["color"] = palette["accent"] if word["important"] else palette["base"]
@@ -130,6 +135,8 @@ async def process_video(request: Request, file: UploadFile = File(...),
             project = {"project_id": project_id, "user_id": user["user_id"], "name": file.filename,
                        "duration": duration, "theme": theme, "words": words,
                        "source_transcript": source_transcript, "speech_language": speech_language,
+                       "transcription_mode": transcription["mode"],
+                       "transcription_quality": transcription,
                        "source_path": stored["path"], "render_path": None, "status": "ready",
                        "created_at": datetime.now(timezone.utc).isoformat()}
             await db.projects.insert_one(project.copy())
@@ -160,6 +167,44 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
     return {"status": "saved"}
+
+
+@projects_router.post("/projects/{project_id}/retranscribe")
+async def retranscribe_project(project_id: str, payload: RetranscribeRequest, request: Request,
+                               user=Depends(current_user)):
+    if payload.speech_language not in {"hi", "auto"}:
+        raise HTTPException(400, "Speech language must be Hindi only or Adaptive Hinglish")
+    db = request.app.state.db
+    project = await db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    data, _ = await asyncio.to_thread(get_object, project["source_path"])
+    with tempfile.TemporaryDirectory() as temp:
+        source = os.path.join(temp, "source.mp4")
+        audio = os.path.join(temp, "speech.wav")
+        Path(source).write_bytes(data)
+        try:
+            await asyncio.to_thread(_extract_audio, source, audio)
+            words, transcription = await transcribe_words(audio, payload.speech_language)
+            source_transcript = " ".join(word["original"] for word in words)
+            words = await convert_to_hinglish(words, project.get("name", ""))
+        except Exception as exc:
+            logger.exception("Re-transcription failed")
+            raise HTTPException(424, f"Could not produce a trustworthy transcript: {str(exc)[:140]}") from exc
+    palette = THEMES[project["theme"]]
+    for word in words:
+        word["color"] = palette["accent"] if word["important"] else palette["base"]
+        word["font_size"] = 62 if word["important"] else 52
+    await db.projects.update_one({"project_id": project_id}, {"$set": {
+        "words": words, "source_transcript": source_transcript,
+        "speech_language": payload.speech_language,
+        "transcription_mode": transcription["mode"],
+        "transcription_quality": transcription,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    return {"project_id": project_id, "words": words, "source_transcript": source_transcript,
+            "transcription_mode": transcription["mode"], "transcription_quality": transcription}
 
 
 def _ass_time(seconds):

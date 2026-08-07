@@ -1,0 +1,55 @@
+{
+  "summary": "Iteration 3 focused regression on the toe-protector catastrophic-repetition fix. Ran real end-to-end on the exact recovered source /app/toe-protector-source.mp4 (37.78s). ALL 11 pytest cases in tests/test_toe_protector_iter3.py PASS (4 unit + 7 real E2E). The repetition guard (_repetition_metrics / _build_candidate) directly rejects both a 40-token 'YouTube protector' loop and a Devanagari 'यूट्यूब प्रोटेक्टर' loop and marks candidates as trustworthy=False when ngram_repeat>=3, while a normal ad-speech sentence is still accepted. Real /api/projects/process with speech_language=auto returned 200 with transcription_mode='adaptive-chunked', chunks_used>=2, transcription_quality.ngram_repeat<3, no 'यूट्यूब प्रोटेक्टर' / 'YouTube protector' in source_transcript, transcript covers >=35s of the 37.78s clip, converted words are Roman Hinglish only (no Devanagari) and contain at least 6 of the expected cricket-ad terms (protector, carbon, fiber/carbon, kevlar, yorker, protection, player, injured, toe, safe, season, career, website, order). Re-listen (/api/projects/{id}/retranscribe) also returned adaptive-chunked with the same guards satisfied, and a subsequent PUT edit still saves. Frontend preview URL confirms Upload UI defaults to 'Adaptive Hinglish · Recommended' (active blue button) with 'Hindi only' inactive; header shows 'Unlimited tests'; UNLIMITED TESTING · 120 SEC / RAW TRANSCRIPT VISIBLE strip visible; TranscriptPanel.jsx exposes retranscribe-project-button, whisper-raw-transcript-text, whisper-raw-transcript-label ('WHISPER HEARD · ADAPTIVE PASS' or 'HINDI PASS'), and uncertain-word-indicator-{i} testids. Real-AI spend was strictly one process + one retranscribe as instructed. Skills loaded: ai-testing-core, ai-testing-llm, ai-testing-audio.",
+  "ai_features": [
+    "Repetition guard (_repetition_metrics + _build_candidate) - pass - evidence: 4 unit tests pass. YouTube-protector 40-token loop: unique_ratio<0.24, bigram_ratio>0.30, ngram_repeat>=3, penalty>=2.5, trustworthy=False. Devanagari loop trips the same guards. A normal Hindi ad sentence remains trustworthy=True with ngram_repeat<3. Command: REACT_APP_BACKEND_URL=<url> python -m pytest tests/test_toe_protector_iter3.py::TestRepetitionGuard -v. skill: ai-testing-core",
+    "Whisper-1 adaptive-chunked transcription on real toe-protector source - pass - evidence: /api/projects/process 200 for /app/toe-protector-source.mp4 (37.78s, 8.6MB) with speech_language=auto; transcription_mode='adaptive-chunked'; transcription_quality.chunks_used>=2 and ngram_repeat<3; source_transcript contains NO 'यूट्यूब प्रोटेक्टर'/'YouTube protector'/'यूट्यूब प्रटेक्टर' catastrophic pattern; last word end >= 35s; ad-vocab overlap >=6 terms. skill: ai-testing-audio (STT)",
+    "GPT-5.6-terra context-aware Hinglish correction + uncertain markers - pass - evidence: words[].text is fully ASCII (no Devanagari); at least one of protector/carbon/kevlar/yorker present; uncertain flag surfaced via schema (uncertain=True|False on every word) with count logged during test run; important cap respected. skill: ai-testing-llm",
+    "Re-listen (/api/projects/{id}/retranscribe) - pass - evidence: real POST returns 200 with same adaptive-chunked guarantees (ngram_repeat<3, no catastrophic pattern in refreshed source_transcript, >=20 words) and replaces project words. Subsequent PUT edit returns {status:'saved'}. skill: ai-testing-audio",
+    "Frontend upload UI defaults - pass - evidence: browser register->editor on preview URL. speech-language-auto-button carries class 'active' and text 'Adaptive Hinglish · Recommended'; speech-language-hinglish-button inactive. Header 'Unlimited tests' visible. supported-video-formats strip reads 'MP4 / MOV · UNLIMITED TESTING · 120 SEC · RAW TRANSCRIPT VISIBLE'. Screenshot: /app/.screenshots/iter3_upload.png. skill: ai-testing-llm (UI wiring)"
+  ],
+  "success_rate": {"backend": "100% (11/11 in test_toe_protector_iter3.py; iteration_1 and iteration_2 suites remain valid)", "frontend": "100% of the iter3 defaults check (Adaptive Hinglish default active, Unlimited tests header, format strip)"},
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/projects/process", "issue": "Still fully synchronous (audio extract + N Whisper chunks + fallback pass + GPT-5.6-terra + storage). For 37.78s toe-source it took ~35-40s wall time on preview - safely under the ~100s ingress cap here but a longer 90-120s upload could still trip 502. Consider background job + polling (repeat of iteration_1 finding)."},
+      {"endpoint": "POST /api/projects/{id}/retranscribe", "issue": "Same synchronous shape and same latency profile as /process; same 100s ingress risk on long uploads."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "critical_code_review_comments": [
+    "caption_ai._split_wav: offset is recomputed from len(frames)/framerate but with `max(1, sampwidth*nchannels*framerate)` in the denominator that is byte-based, not frame-based. In practice wave.readframes returns FRAMES worth of bytes = frames*sampwidth*nchannels, so len(frames)/(sampwidth*nchannels*framerate) does equal seconds — but the max(1, ...) guard hides a bug if params are ever zero. Prefer offset += frames_read / framerate computed via source.tell() to avoid subtle drift on multichannel input.",
+    "caption_ai._build_candidate: 'trustworthy = words and average_logprob > -1.45' - Whisper on short 10-sec chunks with clean speech regularly returns avg_logprob around -0.30 to -0.60, so this threshold is generous. If a run does hit -1.45 (music/silence), the ngram/bigram guards also fire, so the belt-and-suspenders is fine. Just document why -1.45 was chosen.",
+    "caption_ai.transcribe_words: raises ValueError('No trustworthy transcript was found...') which /projects/process wraps to HTTP 424. Good user-facing message. Consider also including transcription diagnostics in the 424 body so the UI can show 'try re-uploading in a quieter section' etc.",
+    "captions.process_video: still exposes provider error text via HTTPException(424, f'Caption generation failed: {str(exc)[:180]}') - fine for testing, sanitize before production shipping.",
+    "captions.retranscribe_project: does NOT re-check duration<=120 on the re-listen path. Since the source came from a project that was originally accepted, this is safe, but a defensive re-assert would future-proof against direct DB mutation.",
+    "caption_ai.convert_to_hinglish: 'len(converted) < max(1, int(len(words) * .8))' safeguards structure, but if GPT returns exactly 80% of indices it silently keeps the missing indices as the raw Devanagari original in words[].text. This is the correct fallback but it means text may still contain some Devanagari on partial failure - the test at the moment finds none, so the model complied.",
+    "captions.py exceeds the 700-line advisory: still under 300 here (283 lines), fine.",
+    "UploadStage: 'video/quicktime' MOV files - inspect() only checks filename regex (.mp4|.mov), not MIME. Fine, backend also validates by suffix.",
+    "TranscriptPanel: renders `word.uncertain ? <b>?</b> : word.important && <i />` - if a word is BOTH important and uncertain, only the '?' shows. Product may want both (color + '?'). Minor UX."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_toe_protector_iter3.py",
+    "/app/test_reports/pytest/pytest_iter3.xml",
+    "/app/backend/tests/test_hindi_unlimited.py",
+    "/app/backend/tests/test_ai_pipeline_real.py",
+    "/app/backend/tests/test_captain_backend.py"
+  ],
+  "action_items": [
+    "None blocking. The catastrophic YouTube-protector repetition bug is FIXED end-to-end.",
+    "Optional: move /projects/process and /projects/{id}/retranscribe to a background job + polling to protect longer 90-120s uploads from the ~100s ingress timeout.",
+    "Optional: include transcription_quality/diagnostics in the 424 error body so the UI can surface 'audio was too music-heavy - try a quieter section' when transcribe_words gives up."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_toe_protector_iter3.py (new)"
+  ],
+  "test_credentials": "Fresh users per run (toe.iter3.<ts>@example.com / captain12345 for pytest, ui.toe.iter3.<ts>@example.com / captain12345 for browser). /app/memory/test_credentials.md documents this pattern.",
+  "seed_data_creation": "None - every test class registers its own user.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The catastrophic repetition fix is verified. Backend regression: cd /app/backend && REACT_APP_BACKEND_URL=<preview_url> python -m pytest tests/test_toe_protector_iter3.py -v. Costs ONE real /projects/process (~35s) + ONE real /projects/{id}/retranscribe (~35s) on toe-protector-source.mp4 (37.78s / 8.6MB). Unit tests in TestRepetitionGuard are free. UNLIMITED_TESTING=true and STRIPE_MODE=unavailable_country still in backend/.env. Iteration_1 (16 tests) and iteration_2 (7 tests) suites remain valid. The 'usable/coherent with uncertainty visible' bar mentioned in the RCA is respected in the assertions - we require adaptive-chunked mode, ngram_repeat<3, coverage>=35s of 37.78s, >=6 of the ad-vocab terms, Roman Hinglish shape, and the absence of the catastrophic loop, but we DO NOT demand perfect verbatim.",
+  "rca of the issue": "Root cause (as documented by main agent E1 and confirmed here): the original pipeline sent the full 37.78s audio to Whisper with forced language='hi' and no chunking, causing a repeated-phrase hallucination during music-only segments where Whisper looped 'यूट्यूब प्रोटेक्टर'. Fix stack in caption_ai.py + captions.py: (1) _split_wav slices the WAV into 10-second chunks; (2) _transcription_pass runs primary language then optional fallback per chunk; (3) _build_candidate discards segments with no_speech_prob>=0.65, computes 2-gram / 4-gram / unique_ratio penalties, and rejects trustworthy on ngram_repeat>=3, unique_ratio<0.24, bigram_ratio>0.30; (4) transcribe_words picks the max-score trustworthy candidate per chunk and applies the same guards to the overall stitched transcript, raising a graceful ValueError if the whole clip is untrustworthy; (5) convert_to_hinglish emits per-word 'uncertain' markers for genuinely garbled tokens. Reproduction: pytest TestRepetitionGuard::test_repetition_metrics_reject_youtube_protector_loop and ::test_candidate_marked_not_trustworthy_on_loop cover the guard directly with the exact catastrophic input; TestToeProtectorRealPipeline::test_no_catastrophic_repetition_in_raw covers the end-to-end path with the actual 37.78s source. Mitigation status: FIXED. Two phrases around 20-30s remain imperfect but surface via uncertain=True on the affected words (schema-level; count logged, not asserted, because the exact indices vary run-to-run)."
+}
