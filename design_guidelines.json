@@ -1,0 +1,130 @@
+{
+  "project_name": "Captain Title",
+  "app_type": "Hybrid Fullstack SaaS Video Caption Editor",
+  "theme": "Dark Theme (Enforced for Editor)",
+  "emotional_archetype": "The Performance Pro (Elite Tactical Precision)",
+  "general_ui_ux_design_guidelines": "The application must feel like a professional tactical command center for video editing. Prioritize density, data correlation, and scanability. The interface should heavily rely on a dark structural grayscale to keep the video content as the hero. Break standard SaaS conventions by using high-contrast borders and deep obsidian surfaces rather than soft generic shadows.",
+  "typography": {
+    "headings": {
+      "family": "Outfit",
+      "styles": "font-bold tracking-tight",
+      "description": "Used for app headers, modal titles, and major section titles. Never use Inter for headings."
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "styles": "tracking-normal leading-relaxed",
+      "description": "Used for transcription text, subtitles, timeline labels, and general UI."
+    },
+    "mono": {
+      "family": "JetBrains Mono",
+      "styles": "tracking-widest uppercase",
+      "description": "Used for timecodes, usage limits (e.g., '00:00:45'), and technical readouts."
+    },
+    "rules": [
+      "No Inter, Roboto, Open Sans, or Lato for headings.",
+      "Space Grotesk is forbidden.",
+      "Hierarchy gap must not exceed 2 Tailwind steps.",
+      "Timecodes must be monospaced for visual alignment.",
+      "Use 'tracking-[0.2em]' for small labels and overlines."
+    ]
+  },
+  "colors": {
+    "background": {
+      "base": "#0A0A0A",
+      "surface": "#121212",
+      "panel": "#18181B",
+      "description": "Deep obsidian anchor for high-contrast tactical feel."
+    },
+    "primary": {
+      "main": "#007AFF",
+      "hover": "#3395FF",
+      "active": "#005BB5",
+      "description": "Volt Blue for the primary CTA, playhead, and selected word state."
+    },
+    "accents": {
+      "viral": "#FF3B30",
+      "cinematic": "#FFB800",
+      "minimal": "#F8FAFC",
+      "podcast": "#A855F7",
+      "description": "Colors used for highlighting 'important' words and preset themes."
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "borders": {
+      "default": "#27272A",
+      "focus": "#007AFF",
+      "tactical": "1px solid strokes for surfaces."
+    },
+    "forbidden_colors": [
+      "#7351B7",
+      "#1B93A4"
+    ]
+  },
+  "grids_and_layouts": {
+    "editor_layout": {
+      "type": "Three-zone layout",
+      "structure": "Grid cols-12. Left sidebar for tools/themes (col-span-3), Center Preview (col-span-6), Right Transcript (col-span-3). Bottom full-width timeline.",
+      "spacing": "Tight padding (p-4 or p-6) within panels, gap-4 between panels. Container MUST not have centered text alignment."
+    },
+    "timeline": {
+      "type": "High Density Grid",
+      "structure": "Horizontal scrollable container with absolute positioned playhead. Timeline tracks must use 'h-full' to ensure they stretch. Include a visible audio waveform track.",
+      "spacing": "Compact, 1px gaps between adjacent word blocks to maintain timing."
+    }
+  },
+  "component_instructions": {
+    "timeline_word_block": "Custom component. Represents spoken words. Active/playing state needs Volt Blue highlight. Must include 'data-testid' like 'word-block-[index]'.",
+    "video_player": "Custom HTML5 video wrapper. Overlay a relative/absolute positioned div for the live caption preview.",
+    "theme_selector": "Shadcn Tabs or Toggle Group for Viral, Cinematic, Minimal, Podcast themes. Each should have visual cues (small dot of accent color).",
+    "paywall_modal": "Shadcn Dialog. Glassmorphism overlay. Display pricing tiers: Free (1x 45s), ₹69 One-off (45s), ₹399 Basic Plan (10x 60s). Include usage tracking progress bar.",
+    "upload_zone": "Large dashed border area, custom HTML/Tailwind. Highlight Volt Blue on drag-over.",
+    "shadcn_overrides": "Do not build complex components (Dialogs, Selects) from scratch. Heavily customize Shadcn components to match the tactical dark theme."
+  },
+  "visual_enhancers": {
+    "surfaces": "Use 'Tactical Minimalism'. Replace soft shadows with 1px solid borders (#27272A). Flat backgrounds for panels.",
+    "glassmorphism": "For Sticky Header / Modals: backdrop-blur-xl bg-[#0A0A0A]/80 with 1px bottom/inner border. Do not use fully transparent backgrounds.",
+    "gradients": "Avoid generic full-screen gradients. Use text-gradients only for 'Viral' and 'Cinematic' caption rendering on the video."
+  },
+  "motion": {
+    "hover_states": "Buttons lift (-translate-y-px). Always explicitly set hover text color (e.g., hover:bg-zinc-800 hover:text-white).",
+    "playback_playhead": "Smooth horizontal translation using 'transform: translateX()'. Do NOT use 'transition: all'.",
+    "word_highlight": "Scale up slightly (scale-105) when word is spoken during playback preview."
+  },
+  "media_and_assets": {
+    "images": {
+      "profile_avatar": {
+        "url": "https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODh8MHwxfHNlYXJjaHwxfHxwcm9maWxlJTIwcG9ydHJhaXR8ZW58MHx8fHwxNzg2MDg5ODMyfDA&ixlib=rb-4.1.0&q=85",
+        "description": "User profile thumbnail in the top right nav."
+      },
+      "workspace_bg": {
+        "url": "https://images.pexels.com/photos/8100060/pexels-photo-8100060.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Used as a very low opacity (10-20%) background in the initial 'Empty State / Upload' screen to avoid a dead black screen."
+      }
+    },
+    "icons": {
+      "library": "@phosphor-icons/react",
+      "instruction": "Run 'yarn add @phosphor-icons/react'. Use Phosphor icons for a dense, professional tech-heavy look."
+    }
+  },
+  "accessibility": {
+    "contrast": "Text must meet 4.5:1 ratio. Captions over video MUST have a text-shadow or dark scrim behind them to ensure readability.",
+    "focus": "All interactive elements must have visible focus rings with HIGHER contrast (e.g., focus:ring-2 focus:ring-blue-500).",
+    "testing": "All interactive and key informational elements MUST include a 'data-testid' attribute (e.g., data-testid='upload-video-btn', data-testid='timeline-track')."
+  },
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "No generic centered layouts, simplistic gradients, or uniform styling.",
+    "Do NOT apply universal transition (transition: all). This breaks transforms. Use specific transition properties.",
+    "Do NOT center align the app container (.App { text-align: center; }).",
+    "Create depth through layered design elements with z-index hierarchy (Timeline above panels).",
+    "Use Phosphor icons. NEVER use AI emoji characters.",
+    "Ensure the application strictly follows a dark theme.",
+    "Toast notifications MUST use 'sonner' (/app/frontend/src/components/ui/sonner.tsx).",
+    "Use predefined image URLs, do not use placeholder text.",
+    "Avoid Shadcn 'Card' components for the main editor grid; use custom HTML divs for precise dense spacing and overlapping.",
+    "All interactive elements must have hover, active, and focus states.",
+    "Always set explicit padding on containers with borders to prevent text collision."
+  ]
+}
