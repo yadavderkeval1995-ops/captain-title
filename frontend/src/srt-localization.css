@@ -1,0 +1,40 @@
+
+.srt-localizer { min-height: calc(100vh - 72px); padding: 54px clamp(22px,5vw,78px) 90px; background: #090b0e; color: #f8fafc; }
+.srt-hero { max-width: 920px; }
+.srt-hero > button { margin-bottom: 36px; border: 0; color: #8d97a6; background: transparent; font: 700 10px/1 monospace; }
+.srt-hero h1 { margin: 16px 0; font-size: clamp(48px,6vw,86px); line-height: .96; letter-spacing: -.055em; }
+.srt-hero h1 span { color: #6b7280; }
+.srt-hero > p:last-child { max-width: 750px; color: #9ca3af; font-size: 17px; line-height: 1.65; }
+.srt-upload-card { margin-top: 42px; padding: 24px; display: grid; grid-template-columns: 1fr 1fr auto; gap: 14px; align-items: stretch; border: 1px solid #28303a; background: #101318; border-radius: 10px; }
+.srt-upload-card > button:not(.inline-flex) { min-height: 120px; padding: 20px; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; border: 1px dashed #3b4553; color: #e5e7eb; background: #0b0e12; border-radius: 8px; }
+.srt-upload-card > button.selected { border-style: solid; border-color: #35e2c0; }
+.srt-upload-card strong { font-size: 14px; }
+.srt-upload-card small { color: #768192; }
+.srt-progress, .srt-failed, .srt-complete { margin-top: 44px; padding: 36px; border: 1px solid #29313b; background: #101318; border-radius: 10px; }
+.srt-progress { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
+.srt-progress b { color: #35e2c0; }
+.srt-progress i { grid-column: 1/-1; height: 5px; overflow: hidden; background: #252c34; border-radius: 8px; }
+.srt-progress em { display: block; height: 100%; background: #35e2c0; }
+.srt-progress p { grid-column: 1/-1; color: #788393; font-size: 12px; }
+.srt-warning { margin-top: 12px; padding: 12px; color: #fde68a; border: 1px solid #713f12; background: #2b1d09; }
+.srt-audition { margin-top: 48px; }
+.srt-audition header { max-width: 760px; }
+.srt-audition h2, .srt-complete h2 { margin: 10px 0; font-size: clamp(34px,4vw,52px); letter-spacing: -.035em; }
+.srt-audition header > p:last-child, .srt-complete > p { color: #8d97a6; line-height: 1.6; }
+.srt-source-lines { margin: 26px 0 16px; padding: 14px; display: flex; gap: 16px; overflow-x: auto; border: 1px solid #252c34; background: #0d1014; }
+.srt-source-lines span { min-width: 170px; color: #9aa4b2; font-size: 11px; line-height: 1.45; }
+.srt-source-lines small, .srt-style-grid strong small { margin-right: 7px; color: #35e2c0; font: 700 8px monospace; }
+.srt-style-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+.srt-style-grid > button { padding: 22px; text-align: left; color: #f3f4f6; border: 1px solid #303945; background: #0d1014; border-radius: 9px; }
+.srt-style-grid > button.active { border-color: #35e2c0; box-shadow: 0 0 0 1px #35e2c044; }
+.srt-style-grid > button > span { color: #35e2c0; font: 700 9px monospace; }
+.srt-style-grid h3 { margin: 10px 0 6px; font-size: 20px; }
+.srt-style-grid > button > p { min-height: 46px; color: #7c8796; font-size: 11px; line-height: 1.5; }
+.srt-style-grid > button > div { display: grid; gap: 9px; }
+.srt-style-grid strong { font-size: 13px; font-weight: 500; line-height: 1.45; }
+.srt-audition > label { margin: 22px 0 16px; display: grid; gap: 8px; }
+.srt-audition textarea { min-height: 90px; padding: 14px; resize: vertical; color: white; border: 1px solid #303945; background: #0d1014; border-radius: 7px; }
+.srt-complete { text-align: center; }
+.srt-complete > svg { color: #35e2c0; }
+.srt-complete > button:last-child { margin: 18px auto 0; display: block; border: 0; color: #8390a0; background: transparent; }
+@media(max-width:900px){.srt-upload-card,.srt-style-grid{grid-template-columns:1fr}.srt-upload-card{align-items:stretch}}

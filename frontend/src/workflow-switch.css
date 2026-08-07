@@ -1,0 +1,4 @@
+
+.workflow-switch { position: sticky; top: 0; z-index: 30; padding: 10px clamp(22px,5vw,78px); display: flex; justify-content: center; gap: 4px; border-bottom: 1px solid #222932; background: rgba(9,11,14,.94); backdrop-filter: blur(16px); }
+.workflow-switch button { padding: 9px 15px; border: 0; color: #7d8795; background: transparent; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.workflow-switch button.active { color: #07100e; background: #35e2c0; }
