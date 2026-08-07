@@ -49,12 +49,14 @@ def parse_srt(content):
     return cues
 
 
-def build_srt(cues, translation_key="translated_text"):
+def build_srt(cues, translation_key="translated_text", bilingual=True):
     blocks = []
     for cue in cues:
-        text = str(cue.get(translation_key, "")).strip()
-        if not text:
+        hindi = str(cue.get(translation_key, "")).strip()
+        english = str(cue.get("text", "")).strip()
+        if not hindi:
             raise ValueError(f"Subtitle {cue['index']} has no Hindi translation")
+        text = f"{english}\n{hindi}" if bilingual else hindi
         blocks.append(f"{cue['index']}\n{cue['start']} --> {cue['end']}\n{text}")
     return "\n\n".join(blocks) + "\n"
 
@@ -66,6 +68,29 @@ def _seconds(timecode):
 
 def _duration(cue):
     return max(.5, _seconds(cue["end"]) - _seconds(cue["start"]))
+
+
+TERMINAL_PUNCTUATION = re.compile(r"[.!?…।][\"'”’)]*$")
+SPEAKER_PREFIX = re.compile(r"^\s*(?:[-—–]\s+|<v\b)", re.IGNORECASE)
+
+
+def detect_dialogue_groups(cues, max_group_size=5, max_gap_seconds=1.4):
+    """Group consecutive cues that appear to continue one sentence or thought."""
+    if not cues:
+        return []
+    groups = []; current = [cues[0]]
+    for following in cues[1:]:
+        previous = current[-1]
+        gap = _seconds(following["start"]) - _seconds(previous["end"])
+        previous_text = previous["text"].strip()
+        unfinished = previous_text.endswith(("...", "…", ",", ";", ":", "—", "-")) or not TERMINAL_PUNCTUATION.search(previous_text)
+        continues = unfinished and -.25 <= gap <= max_gap_seconds and not SPEAKER_PREFIX.match(following["text"]) and len(current) < max_group_size
+        if continues:
+            current.append(following)
+        else:
+            groups.append(current); current = [following]
+    groups.append(current)
+    return groups
 
 
 def representative_cues(cues, limit=8):
@@ -123,18 +148,20 @@ async def analyze_scene(video_path, cues):
 
 def _cue_payload(cues, scene):
     moments = [item for item in scene.get("moments", []) if item.get("context")]
-    output = []
-    for cue in cues:
-        midpoint = (_seconds(cue["start"]) + _seconds(cue["end"])) / 2
-        nearest = min(moments, key=lambda item: abs(float(item.get("time", 0)) - midpoint)) if moments else None
-        output.append({"index": cue["index"], "english": cue["text"], "duration_seconds": round(_duration(cue), 2), "max_devanagari_chars": max(12, min(84, round(_duration(cue) * 16))), "visual_context": str(nearest.get("context", ""))[:400] if nearest and abs(float(nearest.get("time", 0)) - midpoint) <= 12 else ""})
+    groups = detect_dialogue_groups(cues); output = []
+    for group_number, group in enumerate(groups, 1):
+        group_indexes = [cue["index"] for cue in group]
+        for cue in group:
+            midpoint = (_seconds(cue["start"]) + _seconds(cue["end"])) / 2
+            nearest = min(moments, key=lambda item: abs(float(item.get("time", 0)) - midpoint)) if moments else None
+            output.append({"index": cue["index"], "english": cue["text"], "duration_seconds": round(_duration(cue), 2), "max_devanagari_chars": max(12, min(84, round(_duration(cue) * 16))), "dialogue_group": group_number, "group_indexes": group_indexes, "group_english": " ".join(item["text"] for item in group), "visual_context": str(nearest.get("context", ""))[:400] if nearest and abs(float(nearest.get("time", 0)) - midpoint) <= 12 else ""})
     return output
 
 
 def _styles_sync(cues, scene):
     sample = representative_cues(cues); payload = _cue_payload(sample, scene)
-    instructions = "You are an expert Indian subtitle localization editor. English SRT text carries source meaning; video observations are supporting evidence only. Write natural Devanagari Hindi, preserve intent, relationships, pronouns, humor, subtext, and emotional progression, and fit each cue duration. Never invent facts. Return strict JSON."
-    prompt = "Create exactly three treatments of the representative scene in this order: gen-z, cinematic, urdu-touch. Each treatment: {style,label,rationale,translations:[{index,translated_text}]}. Preserve every index exactly once.\n" + "\n".join(f"{key}: {value}" for key, value in STYLE_GUIDANCE.items()) + f"\nOverall visible tone: {scene.get('summary','')}\nCUES:\n{json.dumps(payload, ensure_ascii=False)}"
+    instructions = "You are an expert Indian subtitle localization editor. English SRT text carries source meaning; video observations are supporting evidence only. Write natural, human Devanagari Hindi. Cues sharing dialogue_group are one semantic utterance: understand the complete group before writing any member and redistribute the adapted meaning naturally across its original cue timings. Preserve who acts, who receives the action, active or passive relationship, tense, negation, pronouns, intent, humor, subtext, and emotional progression. Never translate connected fragments independently, omit meaning, or leave robotic fragments. Never invent facts. Return strict JSON."
+    prompt = "Create exactly three treatments of the representative scene in this order: gen-z, cinematic, urdu-touch. Each treatment: {style,label,rationale,translations:[{index,translated_text}]}. Preserve every index exactly once. For every multi-cue dialogue_group, translate the complete thought first and then split it at natural Hindi phrase boundaries so each cue remains readable.\n" + "\n".join(f"{key}: {value}" for key, value in STYLE_GUIDANCE.items()) + f"\nOverall visible tone: {scene.get('summary','')}\nCUES:\n{json.dumps(payload, ensure_ascii=False)}"
     response = _client().chat.completions.create(model=os.environ.get("OPENAI_TEXT_MODEL", "gpt-4.1"), messages=[{"role":"system","content":instructions},{"role":"user","content":prompt}], max_tokens=2600, temperature=.35)
     samples = _extract_json(response.choices[0].message.content or "")
     if isinstance(samples, dict): samples = samples.get("samples", [])
@@ -152,8 +179,8 @@ async def create_style_samples(cues, scene):
 
 def _translate_sync(cues, scene, style, style_brief, project_guide):
     payload = _cue_payload(cues, scene)
-    system = "You are an expert Indian subtitle localization editor. Adapt English bridge subtitles into human Devanagari Hindi. Preserve meaning, actions, tense, negation, relationships, names, pronouns, humor, subtext, emotional progression, and recurring character voice. Treat visual context as soft evidence only and never override clear English meaning. Fit exact cue durations by tightening redundancy before meaning. Return strict JSON {translations:[{index,translated_text}]}."
-    prompt = f"APPROVED STYLE: {STYLE_GUIDANCE[style]}\nBLEND NOTE: {style_brief or 'none'}\nPROJECT GUIDE: {project_guide or 'Keep terminology, pronouns, and register consistent.'}\nVISIBLE TONE: {scene.get('summary','')}\nTranslate every cue exactly once in order. Do not merge or omit cues.\n{json.dumps(payload, ensure_ascii=False)}"
+    system = "You are an expert Indian subtitle localization editor. Adapt English bridge subtitles into natural, human Devanagari Hindi. Cues sharing dialogue_group are one continuous semantic utterance: understand the full group before translating, then redistribute the complete adapted meaning across the same original cues at natural Hindi phrase boundaries. Preserve exactly who performs each action and who receives it, active or passive relationship, tense, negation, names, pronouns, relationships, humor, subtext, emotional progression, and recurring character voice. Never translate connected fragments independently, reverse an action, lose the subject or object, repeat meaning, omit meaning, or leave robotic fragments. Treat visual context as soft evidence only and never override clear English meaning. Fit cue durations by removing redundancy before meaning. Return strict JSON {translations:[{index,translated_text}]}."
+    prompt = f"APPROVED STYLE: {STYLE_GUIDANCE[style]}\nBLEND NOTE: {style_brief or 'none'}\nPROJECT GUIDE: {project_guide or 'Keep terminology, pronouns, and register consistent.'}\nVISIBLE TONE: {scene.get('summary','')}\nTranslate every cue exactly once in order. Preserve every index and timestamp. For each dialogue_group of two to five cues, first resolve the full English sentence, its agent, receiver, active/passive structure, tense, negation, and emotional beat; then split the natural Hindi adaptation across those cues. Every cue needs readable Hindi, but phrase boundaries may differ from English.\n{json.dumps(payload, ensure_ascii=False)}"
     response = _client().chat.completions.create(model=os.environ.get("OPENAI_TEXT_MODEL", "gpt-4.1"), messages=[{"role":"system","content":system},{"role":"user","content":prompt}], max_tokens=max(3000, len(cues) * 55), temperature=.25)
     result = _extract_json(response.choices[0].message.content or ""); translations = result.get("translations", result if isinstance(result,list) else [])
     if [item.get("index") for item in translations] != [cue["index"] for cue in cues]: raise ValueError("Full translation changed subtitle indexes")
