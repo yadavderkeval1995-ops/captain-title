@@ -52,6 +52,11 @@
 - Added context-aware Roman-Hinglish correction, explicit `uncertain` word markers, and a one-click **Re-listen** action. Repaired the two saved broken Toe Protector projects.
 - Exact-video audit passed 11/11: no catastrophic repeated phrase, 4 chunks, coverage through 38 seconds, cricket/product vocabulary present, editable Roman Hinglish, render/save preserved.
 - Honest limitation: `whisper-1` is the only timestamp-capable speech model currently available through the selected universal-key integration. Two music-obscured phrases in the real ad remain imperfect and are flagged for manual verification; the product no longer presents those words as certain or allows repetitive hallucinations through.
+- Fixed subtitle offset root cause: the non-versioned speech proxy discarded word timestamps, causing equal-spacing estimates. Captain Title now uses the versioned `/llm/v1` speech endpoint with native `word` timestamps, preserves silence gaps, normalizes only zero-length edge words, shows only the currently spoken word, and renders one ASS event per word.
+- Fixed 60–120 second Cloudflare failures: upload/storage now returns a queued project quickly, while Whisper, Hinglish conversion, and preview generation continue in a resumable background job. UI polls live progress labels until ready; Re-listen uses the same safe flow.
+- Exact 64.66-second / 85.5 MB Flying Beast upload returned in 12 seconds instead of timing out and completed with 202 timed words through 64.64 seconds.
+- Added authenticated HTTP Range support and parallel 720-wide VP9/Opus WebM previews. Browser audit confirmed readyState 4, seeking, playback, and no unsupported-source overlay.
+- Post-fix audits: iteration 4 passed 12/12 timing/background checks; iteration 5 passed 12/12 Range/media checks.
 
 ## Prioritized backlog
 ### P0
