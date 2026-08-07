@@ -1,43 +1,58 @@
 import os
-import time
-import requests
+from functools import lru_cache
 
-STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
-STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+import boto3
+from botocore.config import Config
+
 APP_NAME = "captain-title"
-storage_key = None
+
+
+def _required(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+@lru_cache(maxsize=1)
+def _client():
+    return boto3.client(
+        "s3",
+        endpoint_url=_required("S3_ENDPOINT_URL"),
+        aws_access_key_id=_required("S3_ACCESS_KEY_ID"),
+        aws_secret_access_key=_required("S3_SECRET_ACCESS_KEY"),
+        region_name=os.environ.get("S3_REGION", "auto"),
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 4, "mode": "standard"},
+            connect_timeout=10,
+            read_timeout=120,
+        ),
+    )
+
+
+def _bucket() -> str:
+    return _required("S3_BUCKET")
 
 
 def init_storage(force: bool = False):
-    global storage_key
-    if storage_key and not force:
-        return storage_key
-    response = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
-    response.raise_for_status()
-    storage_key = response.json()["storage_key"]
-    return storage_key
-
-
-def _request(method: str, path: str, **kwargs):
-    key = init_storage()
-    headers = kwargs.pop("headers", {})
-    headers["X-Storage-Key"] = key
-    response = requests.request(method, f"{STORAGE_URL}/objects/{path}", headers=headers, **kwargs)
-    if response.status_code == 404:
-        headers["X-Storage-Key"] = init_storage(force=True)
-        response = requests.request(method, f"{STORAGE_URL}/objects/{path}", headers=headers, **kwargs)
-    elif response.status_code in {500, 503}:
-        time.sleep(1)
-        response = requests.request(method, f"{STORAGE_URL}/objects/{path}", headers=headers, **kwargs)
-    response.raise_for_status()
-    return response
+    if force:
+        _client.cache_clear()
+    _client().head_bucket(Bucket=_bucket())
+    return True
 
 
 def put_object(path: str, data: bytes, content_type: str):
-    return _request("PUT", path, headers={"Content-Type": content_type}, data=data, timeout=180).json()
+    _client().put_object(
+        Bucket=_bucket(),
+        Key=path,
+        Body=data,
+        ContentType=content_type,
+        ServerSideEncryption="AES256",
+    )
+    return {"path": path, "size": len(data)}
 
 
 def get_object(path: str):
-    response = _request("GET", path, timeout=120)
-    return response.content, response.headers.get("Content-Type", "application/octet-stream")
+    response = _client().get_object(Bucket=_bucket(), Key=path)
+    return response["Body"].read(), response.get("ContentType", "application/octet-stream")

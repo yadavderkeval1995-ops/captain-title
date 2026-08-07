@@ -39,7 +39,7 @@ def _cors_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     await db.users.create_index("email", unique=True)
-    await db.user_sessions.create_index("session_token", unique=True)
+    await db.user_sessions.create_index("token_digest", unique=True)
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.projects.create_index([("user_id", 1), ("created_at", -1)])
     await db.usage.create_index("user_id", unique=True)

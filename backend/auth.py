@@ -1,4 +1,4 @@
-import asyncio
+import hashlib
 import os
 import secrets
 import uuid
@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-import requests
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 
@@ -15,12 +14,8 @@ auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 class Credentials(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=72)
+    password: str = Field(min_length=10, max_length=72)
     name: Optional[str] = Field(default=None, min_length=2, max_length=80)
-
-
-class GoogleSession(BaseModel):
-    session_id: str
 
 
 class UserOut(BaseModel):
@@ -29,6 +24,17 @@ class UserOut(BaseModel):
     name: str
     picture: Optional[str] = None
     plan: str = "free"
+
+
+def _session_pepper() -> str:
+    value = os.environ.get("SESSION_PEPPER", "")
+    if len(value) < 32:
+        raise RuntimeError("SESSION_PEPPER must be a fresh secret of at least 32 characters")
+    return value
+
+
+def _token_digest(token: str) -> str:
+    return hashlib.sha256(f"{_session_pepper()}:{token}".encode()).hexdigest()
 
 
 def _token_from_request(request: Request) -> Optional[str]:
@@ -42,7 +48,7 @@ async def current_user(request: Request) -> dict:
     if not token:
         raise HTTPException(401, "Please sign in")
     db = request.app.state.db
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    session = await db.user_sessions.find_one({"token_digest": _token_digest(token)}, {"_id": 0})
     if not session:
         raise HTTPException(401, "Session not found")
     expiry = session["expires_at"]
@@ -59,24 +65,22 @@ async def current_user(request: Request) -> dict:
 
 
 async def _create_session(db, user_id: str) -> str:
-    token = secrets.token_urlsafe(40)
+    token = secrets.token_urlsafe(48)
+    now = datetime.now(timezone.utc)
     await db.user_sessions.insert_one({
-        "session_token": token,
+        "token_digest": _token_digest(token),
         "user_id": user_id,
-        "created_at": datetime.now(timezone.utc),
-        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+        "created_at": now,
+        "expires_at": now + timedelta(days=7),
     })
     return token
 
 
 def _set_cookie(response: Response, token: str):
+    secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
+    same_site = os.environ.get("COOKIE_SAMESITE", "lax").lower()
     response.set_cookie("session_token", token, max_age=604800, httponly=True,
-                        secure=True, samesite="none", path="/")
-
-
-def _include_session_header(response: Response, token: str):
-    if os.environ.get("EXPOSE_SESSION_TOKEN_HEADER", "").lower() == "true":
-        response.headers["X-Session-Token"] = token
+                        secure=secure, samesite=same_site, path="/")
 
 
 async def _ensure_usage(db, user_id: str):
@@ -95,13 +99,11 @@ async def register(payload: Credentials, response: Response, request: Request):
         raise HTTPException(409, "An account already exists for this email")
     user = {"user_id": f"user_{uuid.uuid4().hex[:12]}", "email": email,
             "name": payload.name or email.split("@")[0], "picture": None, "plan": "free",
-            "password_hash": bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt()).decode(),
+            "password_hash": bcrypt.hashpw(payload.password.encode(), bcrypt.gensalt(rounds=12)).decode(),
             "created_at": datetime.now(timezone.utc).isoformat()}
     await db.users.insert_one(user.copy())
     await _ensure_usage(db, user["user_id"])
-    token = await _create_session(db, user["user_id"])
-    _set_cookie(response, token)
-    _include_session_header(response, token)
+    _set_cookie(response, await _create_session(db, user["user_id"]))
     return UserOut(**user)
 
 
@@ -111,41 +113,7 @@ async def login(payload: Credentials, response: Response, request: Request):
     user = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0})
     if not user or not user.get("password_hash") or not bcrypt.checkpw(payload.password.encode(), user["password_hash"].encode()):
         raise HTTPException(401, "Email or password is incorrect")
-    token = await _create_session(db, user["user_id"])
-    _set_cookie(response, token)
-    _include_session_header(response, token)
-    return UserOut(**user)
-
-
-@auth_router.post("/google/session", response_model=UserOut)
-async def google_session(payload: GoogleSession, response: Response, request: Request):
-    def exchange():
-        result = requests.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": payload.session_id}, timeout=20)
-        result.raise_for_status()
-        return result.json()
-    try:
-        profile = await asyncio.to_thread(exchange)
-    except Exception as exc:
-        raise HTTPException(401, "Google sign-in could not be verified") from exc
-    db = request.app.state.db
-    email = profile["email"].lower()
-    user = await db.users.find_one({"email": email}, {"_id": 0})
-    if not user:
-        user = {"user_id": f"user_{uuid.uuid4().hex[:12]}", "email": email,
-                "name": profile.get("name") or email.split("@")[0],
-                "picture": profile.get("picture"), "plan": "free",
-                "created_at": datetime.now(timezone.utc).isoformat()}
-        await db.users.insert_one(user.copy())
-    else:
-        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {
-            "name": profile.get("name") or user["name"],
-            "picture": profile.get("picture") or user.get("picture")}})
-    await _ensure_usage(db, user["user_id"])
-    token = await _create_session(db, user["user_id"])
-    _set_cookie(response, token)
-    _include_session_header(response, token)
+    _set_cookie(response, await _create_session(db, user["user_id"]))
     return UserOut(**user)
 
 
@@ -158,6 +126,6 @@ async def me(user: dict = Depends(current_user)):
 async def logout(response: Response, request: Request):
     token = _token_from_request(request)
     if token:
-        await request.app.state.db.user_sessions.delete_one({"session_token": token})
-    response.delete_cookie("session_token", path="/", secure=True, samesite="none")
+        await request.app.state.db.user_sessions.delete_one({"token_digest": _token_digest(token)})
+    response.delete_cookie("session_token", path="/")
     return {"status": "signed_out"}

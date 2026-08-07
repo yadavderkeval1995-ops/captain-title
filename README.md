@@ -73,14 +73,15 @@ The frontend defaults to http://localhost:3000. Set REACT_APP_BACKEND_URL to the
 ## Required production configuration
 
 - MONGO_URL and DB_NAME
-- EMERGENT_LLM_KEY or replacement AI-provider configuration
-- INTEGRATION_PROXY_URL when not using the default integration service
+- OPENAI_API_KEY for direct transcription and Hinglish conversion
+- S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET, and S3_REGION for private media storage
+- SESSION_PEPPER generated fresh for each environment; only its hash-derived session digests are stored
 - FRONTEND_URL as the canonical HTTPS frontend origin
 - CORS_ORIGINS as a comma-separated allowlist when more than one frontend origin is required
 - STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET to enable payments
 - Stripe prices with lookup keys captain_single_45_inr and captain_basic_monthly_inr
 
-EXPOSE_SESSION_TOKEN_HEADER is intended only for legacy integration-test environments. Do not enable it in production; browser authentication uses the secure HttpOnly session cookie.
+Browser authentication uses a secure HttpOnly cookie. Raw session tokens are never stored in MongoDB and are never returned in response headers. The new environment intentionally starts with no migrated users or sessions.
 
 UNLIMITED_TESTING bypasses normal credit limits for videos up to 120 seconds. Do not enable it in production.
 
@@ -100,7 +101,7 @@ cd frontend
 yarn build
 ```
 
-GitHub Actions performs static Python compilation and a frontend production build. Full media-pipeline tests should run in a protected staging environment with the required credentials and fixtures.
+A baseline GitHub Actions workflow is planned but cannot be installed until the GitHub integration has workflow permission. Full media-pipeline tests should run in a protected staging environment with the required credentials and fixtures.
 
 ## Release checklist
 
