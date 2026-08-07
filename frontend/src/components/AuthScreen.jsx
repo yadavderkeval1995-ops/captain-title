@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, ClosedCaptioning, GoogleLogo, Sparkle } from "@phosphor-icons/react";
+import { ArrowRight, ClosedCaptioning, Sparkle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,12 +24,6 @@ export const AuthScreen = ({ onAuth }) => {
     }
   };
 
-  const googleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + "/editor";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
-
   return (
     <main className="auth-page" data-testid="authentication-page">
       <section className="auth-brand" data-testid="captain-title-brand-panel">
@@ -47,14 +41,11 @@ export const AuthScreen = ({ onAuth }) => {
           <h2 data-testid="auth-form-title">{mode === "login" ? "Welcome back" : "Create your studio"}</h2>
           <p data-testid="free-trial-summary">Your first 45-second captioned video is free.</p>
         </div>
-        <Button className="google-button" variant="outline" onClick={googleLogin} data-testid="google-login-button">
-          <GoogleLogo size={20} weight="bold" /> Continue with Google
-        </Button>
-        <div className="auth-divider" data-testid="authentication-divider"><span>OR USE EMAIL</span></div>
+        <div className="auth-divider" data-testid="authentication-divider"><span>USE EMAIL</span></div>
         <form onSubmit={submit} className="auth-form" data-testid="email-authentication-form">
           {mode === "register" && <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Creator name" required data-testid="registration-name-input" />}
           <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Email address" required data-testid="authentication-email-input" />
-          <Input type="password" minLength={8} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Password · 8+ characters" required data-testid="authentication-password-input" />
+          <Input type="password" minLength={10} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Password · 10+ characters" required data-testid="authentication-password-input" />
           <Button type="submit" disabled={loading} data-testid="email-authentication-submit-button">
             {loading ? "Please wait…" : mode === "login" ? "Enter studio" : "Start creating"} <ArrowRight size={18} />
           </Button>
