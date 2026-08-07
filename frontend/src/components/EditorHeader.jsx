@@ -13,8 +13,8 @@ export const EditorHeader = ({ user, usage, onPricing, onLogout }) => {
       <div className="brand-lockup" data-testid="editor-brand"><span className="brand-mark"><ClosedCaptioning size={22} weight="fill" /></span> CAPTAIN TITLE</div>
       <div className="header-actions">
         <button className="usage-meter" onClick={onPricing} data-testid="usage-meter-button">
-          <span data-testid="usage-credit-count">{credits} credits</span>
-          <i style={{ width: `${Math.min(100, credits * 10)}%` }} />
+          <span data-testid="usage-credit-count">{!usage ? "Checking access…" : usage.unlimited_testing ? "Unlimited tests" : `${credits} credits`}</span>
+          <i style={{ width: !usage ? "18%" : usage.unlimited_testing ? "100%" : `${Math.min(100, credits * 10)}%` }} />
         </button>
         <Button variant="outline" onClick={onPricing} data-testid="view-plans-button"><Crown size={17} /> Plans</Button>
         <div className="user-chip" data-testid="signed-in-user">

@@ -50,6 +50,8 @@ async def _usage(db, user_id):
 
 
 def _entitlement(usage, duration):
+    if os.environ.get("UNLIMITED_TESTING", "").lower() == "true" and duration <= 120:
+        return "testing"
     if duration <= 45 and usage.get("free_remaining", 0) > 0:
         return "free"
     if duration <= 45 and usage.get("oneoff_credits", 0) > 0:
@@ -77,7 +79,7 @@ def _extract_audio(source, audio):
 @projects_router.get("/usage")
 async def usage(request: Request, user=Depends(current_user)):
     record = await _usage(request.app.state.db, user["user_id"])
-    return {**record, "plans": [
+    return {**record, "unlimited_testing": os.environ.get("UNLIMITED_TESTING", "").lower() == "true", "plans": [
         {"id": "single_45", "name": "Single video", "price": 69, "videos": 1, "max_seconds": 45},
         {"id": "basic_monthly", "name": "Basic", "price": 399, "videos": 10, "max_seconds": 60},
     ]}
@@ -85,9 +87,12 @@ async def usage(request: Request, user=Depends(current_user)):
 
 @projects_router.post("/projects/process")
 async def process_video(request: Request, file: UploadFile = File(...),
-                        theme: str = Form("viral"), user=Depends(current_user)):
+                        theme: str = Form("viral"), speech_language: str = Form("hi"),
+                        user=Depends(current_user)):
     if theme not in THEMES:
         raise HTTPException(400, "Unknown caption theme")
+    if speech_language not in {"hi", "auto"}:
+        raise HTTPException(400, "Speech language must be Hindi/Hinglish or Auto")
     suffix = Path(file.filename or "video.mp4").suffix.lower()
     if suffix not in {".mp4", ".mov"}:
         raise HTTPException(415, "Upload an MP4 or MOV video")
@@ -112,7 +117,8 @@ async def process_video(request: Request, file: UploadFile = File(...),
             raise HTTPException(402, detail)
         try:
             await asyncio.to_thread(_extract_audio, source, audio)
-            words = await transcribe_words(audio)
+            words = await transcribe_words(audio, speech_language)
+            source_transcript = " ".join(word["original"] for word in words)
             words = await convert_to_hinglish(words)
             palette = THEMES[theme]
             for word in words:
@@ -123,11 +129,15 @@ async def process_video(request: Request, file: UploadFile = File(...),
             stored = await asyncio.to_thread(put_object, storage_path, data, file.content_type or "video/mp4")
             project = {"project_id": project_id, "user_id": user["user_id"], "name": file.filename,
                        "duration": duration, "theme": theme, "words": words,
+                       "source_transcript": source_transcript, "speech_language": speech_language,
                        "source_path": stored["path"], "render_path": None, "status": "ready",
                        "created_at": datetime.now(timezone.utc).isoformat()}
             await db.projects.insert_one(project.copy())
-            field = {"free": "free_remaining", "oneoff": "oneoff_credits", "basic": "basic_credits"}[credit]
-            await db.usage.update_one({"user_id": user["user_id"]}, {"$inc": {field: -1, "videos_created": 1}})
+            if credit == "testing":
+                await db.usage.update_one({"user_id": user["user_id"]}, {"$inc": {"videos_created": 1}})
+            else:
+                field = {"free": "free_remaining", "oneoff": "oneoff_credits", "basic": "basic_credits"}[credit]
+                await db.usage.update_one({"user_id": user["user_id"]}, {"$inc": {field: -1, "videos_created": 1}})
             project.pop("user_id")
             project.pop("source_path")
             return project

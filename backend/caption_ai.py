@@ -15,13 +15,20 @@ def _as_dict(value):
     return value.__dict__ if hasattr(value, "__dict__") else {}
 
 
-async def transcribe_words(audio_path: str):
+async def transcribe_words(audio_path: str, speech_language: str = "hi"):
     stt = OpenAISpeechToText(api_key=os.environ["EMERGENT_LLM_KEY"])
     with open(audio_path, "rb") as audio:
         response = await stt.transcribe(
             file=audio, model="whisper-1", response_format="verbose_json",
+            language=None if speech_language == "auto" else speech_language,
             temperature=0.0, timestamp_granularities=["word", "segment"])
     data = _as_dict(response)
+    response_segments = getattr(response, "segments", None) or data.get("segments") or []
+    if response_segments:
+        no_speech = [float(_as_dict(segment).get("no_speech_prob", 0)) for segment in response_segments]
+        avg_logs = [float(_as_dict(segment).get("avg_logprob", 0)) for segment in response_segments]
+        if all(score > 0.72 for score in no_speech) or (avg_logs and sum(avg_logs) / len(avg_logs) < -1.45):
+            raise ValueError("No clear speech was detected. Check the video volume and background noise.")
     source_words = getattr(response, "words", None) or data.get("words") or []
     words = []
     for index, item in enumerate(source_words):
@@ -32,7 +39,7 @@ async def transcribe_words(audio_path: str):
                           "start": float(item.get("start", 0)),
                           "end": float(item.get("end", item.get("start", 0) + .35))})
     if not words:
-        segments = getattr(response, "segments", None) or data.get("segments") or []
+        segments = response_segments
         index = 0
         for raw_segment in segments:
             segment = _as_dict(raw_segment)

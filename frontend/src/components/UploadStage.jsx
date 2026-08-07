@@ -10,6 +10,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
   const [duration, setDuration] = useState(null);
   const [probing, setProbing] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [speechLanguage, setSpeechLanguage] = useState("hi");
 
   const inspect = (selected) => {
     if (!selected) return;
@@ -34,7 +35,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
 
   const generate = async () => {
     const form = new FormData();
-    form.append("file", file); form.append("theme", "viral");
+    form.append("file", file); form.append("theme", "viral"); form.append("speech_language", speechLanguage);
     setProcessing(true);
     try {
       const { data } = await api.post("/projects/process", form, { headers: { "Content-Type": "multipart/form-data" } });
@@ -53,8 +54,13 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
       <section className="upload-copy">
         <p className="eyebrow" data-testid="workspace-status-label"><Waveform size={17} /> NEW CAPTION SESSION</p>
         <h1 data-testid="upload-page-heading">Drop a video.<br /><span>Captain the words.</span></h1>
-        <p data-testid="upload-page-description">Whisper-1 catches every spoken word. GPT 5.6 Terra turns Hindi into exact Roman Hinglish and picks the moments that deserve impact.</p>
-        <div className="format-strip" data-testid="supported-video-formats"><span>MP4 / MOV</span><span>UP TO 120 SEC</span><span>WORD-LEVEL TIMING</span></div>
+        <p data-testid="upload-page-description">Whisper-1 listens to the video first. You’ll see exactly what it heard before GPT 5.6 Terra converts Hindi into Roman Hinglish and styles the key moments.</p>
+        <div className="language-selector" data-testid="speech-language-selector">
+          <span data-testid="speech-language-label">SPEECH MODE</span>
+          <button className={speechLanguage === "hi" ? "active" : ""} onClick={() => setSpeechLanguage("hi")} data-testid="speech-language-hinglish-button">Hindi / Hinglish</button>
+          <button className={speechLanguage === "auto" ? "active" : ""} onClick={() => setSpeechLanguage("auto")} data-testid="speech-language-auto-button">Auto detect</button>
+        </div>
+        <div className="format-strip" data-testid="supported-video-formats"><span>MP4 / MOV</span><span>UNLIMITED TESTING · 120 SEC</span><span>RAW TRANSCRIPT VISIBLE</span></div>
       </section>
       <section className={`upload-zone ${file ? "has-file" : ""}`} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); inspect(e.dataTransfer.files[0]); }} data-testid="video-upload-dropzone">
         <input ref={input} type="file" accept="video/mp4,video/quicktime" onChange={(e) => inspect(e.target.files[0])} hidden data-testid="video-file-input" />
