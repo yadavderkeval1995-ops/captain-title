@@ -17,6 +17,7 @@ import imageio_ffmpeg
 
 from auth import current_user
 from caption_ai import convert_to_hinglish, transcribe_words
+from caption_groups import create_caption_groups
 from storage_service import APP_NAME, get_object, put_object
 
 projects_router = APIRouter(prefix="/api", tags=["captions"])
@@ -168,6 +169,21 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
             await db.projects.update_one({"project_id": project_id}, {"$set": {
                 "progress": 78, "processing_label": "Creating Roman Hinglish"}})
             words = await convert_to_hinglish(words, project.get("name", ""))
+            phrase_groups = create_caption_groups(words)
+            word_by_index = {word["index"]: word for word in words}
+            caption_groups = []
+            for phrase in phrase_groups:
+                phrase_words = phrase["words"]
+                for phrase_word in phrase_words:
+                    source_word = word_by_index.get(phrase_word["index"])
+                    if source_word:
+                        source_word["important"] = bool(phrase_word.get("important"))
+                caption_groups.append({
+                    "id": f"caption-{phrase['index']}-{round(phrase['start'] * 100)}",
+                    "word_indices": [word["index"] for word in phrase_words],
+                    "text": phrase["text"], "start": phrase["start"], "end": phrase["end"],
+                    "style": {}, "template_id": None,
+                })
             preview_bytes = await preview_task
             preview_result = None
             if preview_bytes:
@@ -180,7 +196,7 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
             word["font_size"] = 62 if word["important"] else 52
         ready_fields = {
             "words": words, "source_transcript": source_transcript,
-            "waveform": waveform,
+            "caption_groups": caption_groups, "waveform": waveform,
             "transcription_mode": transcription["mode"], "transcription_quality": transcription,
             "status": "ready", "progress": 100, "processing_label": "Captions ready",
             "updated_at": datetime.now(timezone.utc).isoformat()}
