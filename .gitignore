@@ -19,6 +19,29 @@ node_modules/
 # Testing
 /coverage
 
+# Generated test output and authentication captures
+.test_cookie*.txt
+*-headers
+*-user
+*-result
+*-result.json
+*-usage.json
+*-start.json
+*-start.txt
+*-status.json
+range-chunk
+project-update.json
+
+# Local media fixtures and generated renders
+captain-*.mp4
+captain-*.wav
+hindi-*.mp4
+hindi-*.wav
+toe-*.mp4
+toe-*.webm
+toe-*.wav
+flying-beast-source.mp4
+
 # Next.js
 /.next/
 /out/
