@@ -57,6 +57,43 @@ async def _transcription_pass(audio_path: str, language: str | None):
     return await asyncio.to_thread(_transcription_pass_sync, audio_path, language)
 
 
+def _coverage_pass_sync(audio_path: str, language: str | None):
+    with open(audio_path, "rb") as audio:
+        return _client().audio.transcriptions.create(
+            file=audio,
+            model=os.environ.get("OPENAI_COVERAGE_MODEL", "gpt-4o-transcribe"),
+            response_format="json",
+            language=language,
+            prompt=("Transcribe every spoken Hindi, Hinglish, and English word exactly. "
+                    "Do not summarize or translate. Preserve product names and informal speech."),
+        )
+
+
+async def _coverage_pass(audio_path: str, language: str | None):
+    return await asyncio.to_thread(_coverage_pass_sync, audio_path, language)
+
+
+def _coverage_words(response, chunk_duration: float):
+    data = _as_dict(response)
+    text = str(getattr(response, "text", "") or data.get("text", "")).strip()
+    tokens = re.findall(r"[^\s]+", text)
+    if not tokens:
+        return []
+    padding = min(.18, chunk_duration * .03)
+    usable = max(.2, chunk_duration - padding * 2)
+    step = usable / len(tokens)
+    return [{"index": index, "original": token, "text": token,
+             "start": round(padding + index * step, 3),
+             "end": round(min(chunk_duration, padding + (index + 1) * step), 3),
+             "important": False, "uncertain": True}
+            for index, token in enumerate(tokens)]
+
+
+def _wav_duration(path: str):
+    with wave.open(path, "rb") as source:
+        return source.getnframes() / float(source.getframerate())
+
+
 def _as_dict(value):
     if isinstance(value, dict):
         return value
@@ -175,9 +212,23 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                 except Exception:
                     pass
             trustworthy = [candidate for candidate in candidates if candidate["trustworthy"]]
-            if not trustworthy:
+            selected = max(trustworthy, key=lambda candidate: candidate["score"]) if trustworthy else None
+            # A stronger text-only model acts as a bounded coverage safety net.
+            # Whisper remains the source of native timestamps; coverage output is
+            # used only when it finds substantially more dialogue in this chunk.
+            try:
+                coverage_response = await _coverage_pass(chunk_path, primary_language)
+                coverage_words = _coverage_words(coverage_response, _wav_duration(chunk_path))
+                if coverage_words and (selected is None or
+                        len(coverage_words) >= max(len(selected["words"]) + 3,
+                                                   int(len(selected["words"]) * 1.35))):
+                    selected = {"mode": "coverage", "words": coverage_words,
+                                "score": selected["score"] if selected else 0.0,
+                                "trustworthy": True}
+            except Exception:
+                pass
+            if selected is None:
                 continue
-            selected = max(trustworthy, key=lambda candidate: candidate["score"])
             for word in selected["words"]:
                 word["start"] = round(word["start"] + offset, 3)
                 word["end"] = round(word["end"] + offset, 3)

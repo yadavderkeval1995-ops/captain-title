@@ -10,6 +10,7 @@ const style = (overrides = {}) => ({
   fontFamily: "Outfit", fontWeight: 800, fontSize: 56, color: "#FFFFFF",
   accentColor: "#FF3B30", colorMode: "solid", backgroundColor: "#00000000",
   outlineColor: "#050505", outlineWidth: 4, shadow: 2, x: 50, y: 78,
+  width: 82, scaleX: 100, scaleY: 100,
   align: "center", uppercase: false, italic: false, underline: false,
   letterSpacing: 0, animation: "pop", ...overrides,
 });
@@ -39,7 +40,7 @@ export const CAPTION_TEMPLATES = [
   { id: "soft-gradient", name: "Soft Gradient", category: "Creator", sample: "Create your moment", style: style({ fontFamily: "Urbanist", fontSize: 50, colorMode: "gradient", color: "#FFFFFF", accentColor: "#58C7FF", outlineWidth: 2, animation: "rise" }) },
 ];
 
-export const buildCaptionGroups = (words, maxWords = 4) => {
+export const buildCaptionGroups = (words, maxWords = 3) => {
   const groups = [];
   let bucket = [];
   words.forEach((word, index) => {

@@ -39,8 +39,8 @@ def _phrase_emphasis(words: list[dict], max_ratio: float = 0.20) -> None:
 
 
 def create_caption_groups(
-    words: list[dict], *, max_words: int = 8, max_duration: float = 3.6,
-    max_chars: int = 42, hard_pause: float = 0.72, soft_pause: float = 0.38,
+    words: list[dict], *, max_words: int = 4, max_duration: float = 2.8,
+    max_chars: int = 30, hard_pause: float = 0.72, soft_pause: float = 0.38,
 ) -> list[dict]:
     """Group timed words into natural, readable phrases.
 
