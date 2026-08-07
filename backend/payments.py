@@ -47,6 +47,11 @@ async def checkout(payload: CheckoutRequest, request: Request, user=Depends(curr
     package = CATALOG.get(payload.package_id)
     if not package:
         raise HTTPException(400, "Unknown package")
+    if payload.package_id == "single_45":
+        usage = await request.app.state.db.usage.find_one(
+            {"user_id": user["user_id"]}, {"_id": 0, "oneoff_purchase_count": 1})
+        if (usage or {}).get("oneoff_purchase_count", 0) >= 3:
+            raise HTTPException(409, "Single-video passes are limited to 3 purchases; choose Basic instead")
     secret = os.environ.get("STRIPE_SECRET_KEY")
     if not secret:
         raise HTTPException(503, "Stripe checkout is unavailable for the configured business country")
@@ -69,18 +74,30 @@ async def checkout(payload: CheckoutRequest, request: Request, user=Depends(curr
 
 
 async def _grant(db, session_id, user_id, package_id):
+    if not user_id or package_id not in CATALOG:
+        return
+    record = await db.payment_transactions.find_one(
+        {"session_id": session_id, "user_id": user_id, "package_id": package_id}, {"_id": 0})
+    if not record or record.get("payment_status") == "paid":
+        return
+    if package_id == "single_45":
+        usage = await db.usage.find_one({"user_id": user_id}, {"_id": 0}) or {}
+        if usage.get("oneoff_purchase_count", 0) >= 3:
+            await db.payment_transactions.update_one({"session_id": session_id}, {"$set": {
+                "status": "manual_review", "payment_status": "paid_uncredited",
+                "updated_at": datetime.now(timezone.utc).isoformat()}})
+            return
     result = await db.payment_transactions.update_one(
         {"session_id": session_id, "payment_status": {"$ne": "paid"}},
         {"$set": {"status": "completed", "payment_status": "paid", "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.modified_count:
         return
     if package_id == "single_45":
-        usage = await db.usage.find_one({"user_id": user_id}, {"_id": 0})
-        if usage.get("oneoff_purchase_count", 0) >= 3:
-            return
-        await db.usage.update_one({"user_id": user_id}, {"$inc": {"oneoff_credits": 1, "oneoff_purchase_count": 1}})
+        await db.usage.update_one({"user_id": user_id}, {"$inc": {
+            "oneoff_credits": 1, "oneoff_purchase_count": 1}})
     else:
-        await db.usage.update_one({"user_id": user_id}, {"$set": {"basic_credits": 10, "subscription_active": True}})
+        await db.usage.update_one({"user_id": user_id}, {"$set": {
+            "basic_credits": 10, "subscription_active": True}})
 
 
 @payments_router.get("/status/{session_id}")
