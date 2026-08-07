@@ -48,7 +48,6 @@ def put_object(path: str, data: bytes, content_type: str):
         Key=path,
         Body=data,
         ContentType=content_type,
-        ServerSideEncryption="AES256",
     )
     return {"path": path, "size": len(data)}
 
