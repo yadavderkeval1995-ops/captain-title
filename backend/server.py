@@ -25,6 +25,17 @@ client = AsyncIOMotorClient(os.environ["MONGO_URL"])
 db = client[os.environ["DB_NAME"]]
 
 
+def _cors_origins() -> list[str]:
+    configured = os.environ.get("CORS_ORIGINS", "")
+    origins = [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    frontend_url = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
+    if frontend_url:
+        origins.append(frontend_url)
+    if not origins:
+        origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    return list(dict.fromkeys(origins))
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     await db.users.create_index("email", unique=True)
@@ -53,9 +64,10 @@ app.include_router(payments_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origin_regex=r"https?://.*",
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins(),
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Range", "Stripe-Signature"],
+    expose_headers=["Content-Length", "Content-Range", "Accept-Ranges"],
 )
 
 

@@ -74,6 +74,11 @@ def _set_cookie(response: Response, token: str):
                         secure=True, samesite="none", path="/")
 
 
+def _include_session_header(response: Response, token: str):
+    if os.environ.get("EXPOSE_SESSION_TOKEN_HEADER", "").lower() == "true":
+        response.headers["X-Session-Token"] = token
+
+
 async def _ensure_usage(db, user_id: str):
     await db.usage.update_one({"user_id": user_id}, {"$setOnInsert": {
         "user_id": user_id, "free_remaining": 1, "oneoff_credits": 0,
@@ -96,7 +101,7 @@ async def register(payload: Credentials, response: Response, request: Request):
     await _ensure_usage(db, user["user_id"])
     token = await _create_session(db, user["user_id"])
     _set_cookie(response, token)
-    response.headers["X-Session-Token"] = token
+    _include_session_header(response, token)
     return UserOut(**user)
 
 
@@ -108,7 +113,7 @@ async def login(payload: Credentials, response: Response, request: Request):
         raise HTTPException(401, "Email or password is incorrect")
     token = await _create_session(db, user["user_id"])
     _set_cookie(response, token)
-    response.headers["X-Session-Token"] = token
+    _include_session_header(response, token)
     return UserOut(**user)
 
 
@@ -140,7 +145,7 @@ async def google_session(payload: GoogleSession, response: Response, request: Re
     await _ensure_usage(db, user["user_id"])
     token = await _create_session(db, user["user_id"])
     _set_cookie(response, token)
-    response.headers["X-Session-Token"] = token
+    _include_session_header(response, token)
     return UserOut(**user)
 
 
