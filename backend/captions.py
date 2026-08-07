@@ -1,12 +1,15 @@
 import asyncio
+import audioop
 import logging
 import os
 import re
 import subprocess
 import tempfile
 import uuid
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
@@ -43,6 +46,8 @@ class WordEdit(BaseModel):
 class ProjectEdit(BaseModel):
     theme: str
     words: list[WordEdit]
+    caption_groups: list[dict[str, Any]] = Field(default_factory=list)
+    editor_style: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetranscribeRequest(BaseModel):
@@ -99,6 +104,25 @@ def _create_browser_preview(source: str, output: str):
     return Path(output).read_bytes()
 
 
+def _waveform_peaks(audio_path: str, bars: int = 240):
+    with wave.open(audio_path, "rb") as source:
+        sample_width = source.getsampwidth()
+        frames = source.readframes(source.getnframes())
+    if not frames:
+        return [0.05] * bars
+    frame_bytes = sample_width
+    samples = max(1, len(frames) // frame_bytes)
+    window = max(1, samples // bars)
+    values = []
+    for index in range(bars):
+        start = index * window * frame_bytes
+        end = min(len(frames), (index + 1) * window * frame_bytes)
+        chunk = frames[start:end]
+        values.append(audioop.rms(chunk, sample_width) if chunk else 0)
+    maximum = max(values) or 1
+    return [round(max(0.04, value / maximum), 3) for value in values]
+
+
 async def _run_caption_job(db, project_id: str, consume_credit: bool):
     try:
         project = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
@@ -115,6 +139,7 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
             preview = os.path.join(temp, "preview.webm")
             Path(source).write_bytes(data)
             await asyncio.to_thread(_extract_audio, source, audio)
+            waveform = await asyncio.to_thread(_waveform_peaks, audio)
             preview_task = asyncio.create_task(asyncio.to_thread(_create_browser_preview, source, preview))
             await db.projects.update_one({"project_id": project_id}, {"$set": {
                 "progress": 28, "processing_label": "Listening word by word"}})
@@ -135,6 +160,7 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
             word["font_size"] = 62 if word["important"] else 52
         ready_fields = {
             "words": words, "source_transcript": source_transcript,
+            "waveform": waveform,
             "transcription_mode": transcription["mode"], "transcription_quality": transcription,
             "status": "ready", "progress": 100, "processing_label": "Captions ready",
             "updated_at": datetime.now(timezone.utc).isoformat()}
@@ -180,6 +206,15 @@ async def usage(request: Request, user=Depends(current_user)):
         {"id": "single_45", "name": "Single video", "price": 69, "videos": 1, "max_seconds": 45},
         {"id": "basic_monthly", "name": "Basic", "price": 399, "videos": 10, "max_seconds": 60},
     ]}
+
+
+@projects_router.get("/projects")
+async def list_projects(request: Request, user=Depends(current_user)):
+    projects = await request.app.state.db.projects.find(
+        {"user_id": user["user_id"], "status": {"$in": ["ready", "rendered"]}},
+        {"_id": 0, "user_id": 0, "source_path": 0, "preview_path": 0,
+         "words": 0, "source_transcript": 0, "caption_groups": 0}).sort("created_at", -1).to_list(12)
+    return projects
 
 
 @projects_router.post("/projects/process")
@@ -248,6 +283,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
     result = await request.app.state.db.projects.update_one(
         {"project_id": project_id, "user_id": user["user_id"]},
         {"$set": {"theme": payload.theme, "words": [word.model_dump() for word in payload.words],
+                  "caption_groups": payload.caption_groups, "editor_style": payload.editor_style,
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
@@ -284,18 +320,40 @@ def _ass_color(hex_color):
     return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}&"
 
 
-def _write_ass(path, words, theme):
+def _safe_ass_text(text):
+    return str(text).replace("{", "").replace("}", "").replace("\n", "\\N")
+
+
+def _write_ass(path, words, theme, caption_groups=None, editor_style=None):
     header = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,DejaVu Sans,52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
-    for word in words:
-        safe = word["text"].replace("{", "").replace("}", "")
-        styled = f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}"
-        lines.append(f"Dialogue: 0,{_ass_time(word['start'])},{_ass_time(word['end'])},Default,,0,0,0,,{styled}\n")
+    base_style = editor_style or {}
+    groups = caption_groups or []
+    if groups:
+        for group in groups:
+            style = {**base_style, **(group.get("style") or {})}
+            color = style.get("color", "#FFFFFF")
+            size = int(style.get("fontSize", 52))
+            font = _safe_ass_text(style.get("fontFamily", "DejaVu Sans"))
+            outline = max(0, int(style.get("outlineWidth", 3)))
+            shadow = max(0, int(style.get("shadow", 1)))
+            x = max(0, min(100, float(style.get("x", 50)))) * 10.8
+            y = max(0, min(100, float(style.get("y", 78)))) * 19.2
+            text = _safe_ass_text(group.get("text", ""))
+            tags = (f"{{\\an5\\pos({x:.0f},{y:.0f})\\fn{font}\\fs{size}"
+                    f"\\c{_ass_color(color)}\\bord{outline}\\shad{shadow}}}")
+            lines.append(f"Dialogue: 0,{_ass_time(group['start'])},{_ass_time(group['end'])},Default,,0,0,0,,{tags}{text}\n")
+    else:
+        for word in words:
+            safe = _safe_ass_text(word["text"])
+            styled = f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}"
+            lines.append(f"Dialogue: 0,{_ass_time(word['start'])},{_ass_time(word['end'])},Default,,0,0,0,,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")
 
 
-def _render(source, ass_path, output):
-    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", f"subtitles={ass_path}",
+def _render(source, ass_path, output, fonts_dir=None):
+    subtitle_filter = f"subtitles={ass_path}" + (f":fontsdir={fonts_dir}" if fonts_dir else "")
+    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", subtitle_filter,
                              "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-c:a", "aac",
                              "-movflags", "+faststart", output], capture_output=True, text=True)
     if result.returncode:
@@ -315,9 +373,20 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         ass = os.path.join(temp, "captions.ass")
         output = os.path.join(temp, "captain-title.mp4")
         Path(source).write_bytes(data)
-        _write_ass(ass, project["words"], project["theme"])
+        fonts_dir = None
+        font_ids = {(project.get("editor_style") or {}).get("fontId")}
+        font_ids.update((group.get("style") or {}).get("fontId") for group in project.get("caption_groups", []))
+        for font_id in filter(None, font_ids):
+            font_record = await db.custom_fonts.find_one(
+                {"font_id": font_id, "user_id": user["user_id"], "is_deleted": False}, {"_id": 0})
+            if font_record:
+                font_data, _ = await asyncio.to_thread(get_object, font_record["storage_path"])
+                Path(temp, font_record["filename"]).write_bytes(font_data)
+                fonts_dir = temp
+        _write_ass(ass, project["words"], project["theme"],
+                   project.get("caption_groups"), project.get("editor_style"))
         try:
-            await asyncio.to_thread(_render, source, ass, output)
+            await asyncio.to_thread(_render, source, ass, output, fonts_dir)
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()

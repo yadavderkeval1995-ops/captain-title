@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage } from "@/lib/api";
 
-export const UploadStage = ({ onCreated, onPaywall }) => {
+export const UploadStage = ({ onCreated, onPaywall, recentProjects = [], onOpenProject }) => {
   const input = useRef(null);
   const [file, setFile] = useState(null);
   const [duration, setDuration] = useState(null);
@@ -97,6 +97,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
           <Button onClick={() => input.current.click()} data-testid="choose-video-button"><UploadSimple size={19} /> Choose video</Button>
         </>}
       </section>
+      {recentProjects.length > 0 && <section className="recent-projects" data-testid="recent-projects-section"><div><span>RECENT SESSIONS</span><b>{recentProjects.length}</b></div><div>{recentProjects.slice(0, 6).map((project, index) => <button key={project.project_id} onClick={() => onOpenProject(project.project_id)} data-testid={`open-recent-project-${index}`}><strong>{project.name}</strong><small>{project.duration?.toFixed(1)} sec · {project.status}</small></button>)}</div></section>}
     </main>
   );
 };

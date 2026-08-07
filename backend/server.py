@@ -13,6 +13,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 from auth import auth_router
 from captions import projects_router, resume_pending_projects
+from editor_assets import editor_assets_router
 from payments import payments_router
 from storage_service import init_storage
 
@@ -45,6 +46,7 @@ app = FastAPI(title="Captain Title API", version="1.0.0", lifespan=lifespan)
 app.state.db = db
 app.include_router(auth_router)
 app.include_router(projects_router)
+app.include_router(editor_assets_router)
 app.include_router(payments_router)
 
 app.add_middleware(
