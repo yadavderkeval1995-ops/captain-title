@@ -10,6 +10,8 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
   const [duration, setDuration] = useState(null);
   const [probing, setProbing] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [processingLabel, setProcessingLabel] = useState("");
   const [speechLanguage, setSpeechLanguage] = useState("auto");
 
   const inspect = (selected) => {
@@ -37,15 +39,27 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
     const form = new FormData();
     form.append("file", file); form.append("theme", "viral"); form.append("speech_language", speechLanguage);
     setProcessing(true);
+    setProgress(2);
+    setProcessingLabel("Uploading video");
     try {
       const { data } = await api.post("/projects/process", form, { headers: { "Content-Type": "multipart/form-data" } });
-      onCreated(data);
+      let project = data;
+      while (["queued", "processing"].includes(project.status)) {
+        setProgress(project.progress || 5);
+        setProcessingLabel(project.processing_label || "Generating captions");
+        await new Promise((resolve) => window.setTimeout(resolve, 2500));
+        project = (await api.get(`/projects/${project.project_id}`)).data;
+      }
+      if (project.status === "failed") throw new Error(project.error_message || "Caption processing failed");
+      onCreated(project);
       toast.success("Hinglish captions are ready");
     } catch (error) {
       if (error.response?.status === 402) onPaywall();
       else toast.error(errorMessage(error));
     } finally {
       setProcessing(false);
+      setProgress(0);
+      setProcessingLabel("");
     }
   };
 
@@ -69,9 +83,14 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
           <h2 data-testid="selected-video-name">{file.name}</h2>
           <p data-testid="selected-video-metadata">{duration ? `${duration.toFixed(1)} sec · ` : probing ? "Checking duration · " : "Duration checked on upload · "}{file.size < 1048576 ? `${Math.max(1, Math.round(file.size / 1024))} KB` : `${(file.size / 1048576).toFixed(1)} MB`}</p>
           <div className="upload-buttons">
-            <Button variant="outline" onClick={() => input.current.click()} data-testid="replace-video-button">Replace</Button>
+            <Button variant="outline" disabled={processing} onClick={() => input.current.click()} data-testid="replace-video-button">Replace</Button>
             <Button onClick={generate} disabled={processing || probing} data-testid="generate-captions-button">{processing ? "Transcribing & styling…" : probing ? "Checking video…" : "Generate Hinglish captions"}</Button>
           </div>
+          {processing && <div className="processing-progress" data-testid="caption-processing-progress">
+            <div><span data-testid="caption-processing-label">{processingLabel}</span><b data-testid="caption-processing-percent">{progress}%</b></div>
+            <i><em style={{ width: `${progress}%` }} /></i>
+            <p data-testid="caption-processing-note">You can keep this tab open—long videos continue safely in the background.</p>
+          </div>}
         </> : <>
           <h2 data-testid="upload-dropzone-heading">Drag your video here</h2>
           <p data-testid="upload-dropzone-description">or choose a file from your device</p>

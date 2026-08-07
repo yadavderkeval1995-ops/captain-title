@@ -19,6 +19,7 @@ from storage_service import APP_NAME, get_object, put_object
 projects_router = APIRouter(prefix="/api", tags=["captions"])
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 logger = logging.getLogger("captain-title.captions")
+active_jobs: set[str] = set()
 THEMES = {
     "viral": {"base": "#FFFFFF", "accent": "#FF3B30", "font": "Arial Black"},
     "cinematic": {"base": "#FFF7DB", "accent": "#FFB800", "font": "DejaVu Sans"},
@@ -46,6 +47,11 @@ class ProjectEdit(BaseModel):
 
 class RetranscribeRequest(BaseModel):
     speech_language: str = "auto"
+
+
+def _public_project(project: dict):
+    hidden = {"_id", "user_id", "source_path", "credit_type", "content_type"}
+    return {key: value for key, value in project.items() if key not in hidden}
 
 
 async def _usage(db, user_id):
@@ -79,6 +85,69 @@ def _duration(path):
 def _extract_audio(source, audio):
     subprocess.run([FFMPEG, "-y", "-i", source, "-vn", "-ac", "1", "-ar", "16000",
                     "-c:a", "pcm_s16le", audio], capture_output=True, check=True)
+
+
+async def _run_caption_job(db, project_id: str, consume_credit: bool):
+    try:
+        project = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
+        if not project:
+            return
+        await db.projects.update_one({"project_id": project_id}, {"$set": {
+            "status": "processing", "progress": 12, "processing_label": "Preparing audio",
+            "error_message": None, "updated_at": datetime.now(timezone.utc).isoformat()}})
+        data, _ = await asyncio.to_thread(get_object, project["source_path"])
+        suffix = Path(project.get("name") or "video.mp4").suffix.lower() or ".mp4"
+        with tempfile.TemporaryDirectory() as temp:
+            source = os.path.join(temp, f"source{suffix}")
+            audio = os.path.join(temp, "speech.wav")
+            Path(source).write_bytes(data)
+            await asyncio.to_thread(_extract_audio, source, audio)
+            await db.projects.update_one({"project_id": project_id}, {"$set": {
+                "progress": 28, "processing_label": "Listening word by word"}})
+            words, transcription = await transcribe_words(audio, project.get("speech_language", "auto"))
+            source_transcript = " ".join(word["original"] for word in words)
+            await db.projects.update_one({"project_id": project_id}, {"$set": {
+                "progress": 78, "processing_label": "Creating Roman Hinglish"}})
+            words = await convert_to_hinglish(words, project.get("name", ""))
+        palette = THEMES[project["theme"]]
+        for word in words:
+            word["color"] = palette["accent"] if word["important"] else palette["base"]
+            word["font_size"] = 62 if word["important"] else 52
+        await db.projects.update_one({"project_id": project_id}, {"$set": {
+            "words": words, "source_transcript": source_transcript,
+            "transcription_mode": transcription["mode"], "transcription_quality": transcription,
+            "status": "ready", "progress": 100, "processing_label": "Captions ready",
+            "updated_at": datetime.now(timezone.utc).isoformat()}})
+        if consume_credit:
+            credit = project.get("credit_type")
+            if credit == "testing":
+                await db.usage.update_one({"user_id": project["user_id"]}, {"$inc": {"videos_created": 1}})
+            elif credit in {"free", "oneoff", "basic"}:
+                field = {"free": "free_remaining", "oneoff": "oneoff_credits", "basic": "basic_credits"}[credit]
+                await db.usage.update_one({"user_id": project["user_id"]}, {"$inc": {field: -1, "videos_created": 1}})
+    except Exception as exc:
+        logger.exception("Background caption job failed for %s", project_id)
+        message = ("No trustworthy transcript was found. Try clearer speech or less background music."
+                   if "trustworthy transcript" in str(exc).lower()
+                   else "Caption processing could not finish. Please try Re-listen.")
+        await db.projects.update_one({"project_id": project_id}, {"$set": {
+            "status": "failed", "progress": 100, "processing_label": "Processing failed",
+            "error_message": message, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    finally:
+        active_jobs.discard(project_id)
+
+
+def schedule_caption_job(db, project_id: str, consume_credit: bool = True):
+    if project_id in active_jobs:
+        return
+    active_jobs.add(project_id)
+    asyncio.create_task(_run_caption_job(db, project_id, consume_credit))
+
+
+async def resume_pending_projects(db):
+    pending = await db.projects.find({"status": {"$in": ["queued", "processing"]}}, {"_id": 0, "project_id": 1}).to_list(100)
+    for project in pending:
+        schedule_caption_job(db, project["project_id"], consume_credit=True)
 
 
 @projects_router.get("/usage")
@@ -120,43 +189,32 @@ async def process_video(request: Request, file: UploadFile = File(...),
         if not credit:
             detail = "Current plans process up to 60 seconds" if duration > 60 else "Choose a video pass or Basic plan to continue"
             raise HTTPException(402, detail)
+        project_id = f"project_{uuid.uuid4().hex[:12]}"
+        storage_path = f"{APP_NAME}/uploads/{user['user_id']}/{uuid.uuid4().hex}{suffix}"
         try:
-            await asyncio.to_thread(_extract_audio, source, audio)
-            words, transcription = await transcribe_words(audio, speech_language)
-            source_transcript = " ".join(word["original"] for word in words)
-            words = await convert_to_hinglish(words, file.filename or "")
-            palette = THEMES[theme]
-            for word in words:
-                word["color"] = palette["accent"] if word["important"] else palette["base"]
-                word["font_size"] = 62 if word["important"] else 52
-            project_id = f"project_{uuid.uuid4().hex[:12]}"
-            storage_path = f"{APP_NAME}/uploads/{user['user_id']}/{uuid.uuid4().hex}{suffix}"
             stored = await asyncio.to_thread(put_object, storage_path, data, file.content_type or "video/mp4")
-            project = {"project_id": project_id, "user_id": user["user_id"], "name": file.filename,
-                       "duration": duration, "theme": theme, "words": words,
-                       "source_transcript": source_transcript, "speech_language": speech_language,
-                       "transcription_mode": transcription["mode"],
-                       "transcription_quality": transcription,
-                       "source_path": stored["path"], "render_path": None, "status": "ready",
-                       "created_at": datetime.now(timezone.utc).isoformat()}
-            await db.projects.insert_one(project.copy())
-            if credit == "testing":
-                await db.usage.update_one({"user_id": user["user_id"]}, {"$inc": {"videos_created": 1}})
-            else:
-                field = {"free": "free_remaining", "oneoff": "oneoff_credits", "basic": "basic_credits"}[credit]
-                await db.usage.update_one({"user_id": user["user_id"]}, {"$inc": {field: -1, "videos_created": 1}})
-            project.pop("user_id")
-            project.pop("source_path")
-            return project
-        except HTTPException:
-            raise
         except Exception as exc:
-            logger.exception("Caption generation failed")
-            message = str(exc)
-            if "trustworthy transcript" in message.lower():
-                raise HTTPException(424, {"message": message, "reason": "low_confidence_audio"}) from exc
-            raise HTTPException(424, {"message": "Caption generation could not finish. Please try Re-listen or a clearer audio track.",
-                                      "reason": "transcription_failed"}) from exc
+            raise HTTPException(503, "Video upload could not be stored. Please try again.") from exc
+        project = {"project_id": project_id, "user_id": user["user_id"], "name": file.filename,
+                   "duration": duration, "theme": theme, "words": [], "source_transcript": "",
+                   "speech_language": speech_language, "transcription_mode": None,
+                   "transcription_quality": None, "source_path": stored["path"],
+                   "content_type": file.content_type or "video/mp4", "credit_type": credit,
+                   "render_path": None, "status": "queued", "progress": 5,
+                   "processing_label": "Upload complete", "error_message": None,
+                   "created_at": datetime.now(timezone.utc).isoformat()}
+        await db.projects.insert_one(project.copy())
+        schedule_caption_job(db, project_id, consume_credit=True)
+        return _public_project(project)
+
+
+@projects_router.get("/projects/{project_id}")
+async def get_project(project_id: str, request: Request, user=Depends(current_user)):
+    project = await request.app.state.db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return _public_project(project)
 
 
 @projects_router.put("/projects/{project_id}")
@@ -183,35 +241,13 @@ async def retranscribe_project(project_id: str, payload: RetranscribeRequest, re
         {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0})
     if not project:
         raise HTTPException(404, "Project not found")
-    data, _ = await asyncio.to_thread(get_object, project["source_path"])
-    with tempfile.TemporaryDirectory() as temp:
-        source = os.path.join(temp, "source.mp4")
-        audio = os.path.join(temp, "speech.wav")
-        Path(source).write_bytes(data)
-        try:
-            if await asyncio.to_thread(_duration, source) > 120:
-                raise ValueError("Stored video exceeds the 120-second limit")
-            await asyncio.to_thread(_extract_audio, source, audio)
-            words, transcription = await transcribe_words(audio, payload.speech_language)
-            source_transcript = " ".join(word["original"] for word in words)
-            words = await convert_to_hinglish(words, project.get("name", ""))
-        except Exception as exc:
-            logger.exception("Re-transcription failed")
-            raise HTTPException(424, {"message": "Re-listen could not produce a trustworthy transcript from this audio.",
-                                      "reason": "low_confidence_audio"}) from exc
-    palette = THEMES[project["theme"]]
-    for word in words:
-        word["color"] = palette["accent"] if word["important"] else palette["base"]
-        word["font_size"] = 62 if word["important"] else 52
     await db.projects.update_one({"project_id": project_id}, {"$set": {
-        "words": words, "source_transcript": source_transcript,
-        "speech_language": payload.speech_language,
-        "transcription_mode": transcription["mode"],
-        "transcription_quality": transcription,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }})
-    return {"project_id": project_id, "words": words, "source_transcript": source_transcript,
-            "transcription_mode": transcription["mode"], "transcription_quality": transcription}
+        "speech_language": payload.speech_language, "status": "queued", "progress": 5,
+        "processing_label": "Re-listen queued", "error_message": None,
+        "updated_at": datetime.now(timezone.utc).isoformat()}})
+    schedule_caption_job(db, project_id, consume_credit=False)
+    refreshed = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
+    return _public_project(refreshed)
 
 
 def _ass_time(seconds):
@@ -227,13 +263,10 @@ def _ass_color(hex_color):
 def _write_ass(path, words, theme):
     header = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,DejaVu Sans,52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
-    for start in range(0, len(words), 4):
-        group = words[start:start + 4]
-        styled = []
-        for word in group:
-            safe = word["text"].replace("{", "").replace("}", "")
-            styled.append(f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}")
-        lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},Default,,0,0,0,,{' '.join(styled)}\n")
+    for word in words:
+        safe = word["text"].replace("{", "").replace("}", "")
+        styled = f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}"
+        lines.append(f"Dialogue: 0,{_ass_time(word['start'])},{_ass_time(word['end'])},Default,,0,0,0,,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")
 
 

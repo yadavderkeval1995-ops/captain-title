@@ -12,7 +12,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 from auth import auth_router
-from captions import projects_router
+from captions import projects_router, resume_pending_projects
 from payments import payments_router
 from storage_service import init_storage
 
@@ -36,6 +36,7 @@ async def lifespan(application: FastAPI):
         logger.info("Object storage initialized")
     except Exception as exc:
         logger.warning("Object storage will retry on first request: %s", exc)
+    await resume_pending_projects(db)
     yield
     client.close()
 

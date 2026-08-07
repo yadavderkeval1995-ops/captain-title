@@ -24,11 +24,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [mediaRetry, setMediaRetry] = useState(0);
   const videoRef = useRef(null);
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
-  const visibleWords = useMemo(() => {
-    const anchor = activeIndex < 0 ? 0 : activeIndex;
-    const start = Math.max(0, anchor - (anchor % 4));
-    return words.slice(start, start + 4);
-  }, [activeIndex, words]);
+  const visibleWords = useMemo(() => activeIndex >= 0 ? [words[activeIndex]] : [], [activeIndex, words]);
 
   const updateWord = (index, changes) => setWords((current) => current.map((word, i) => i === index ? { ...word, ...changes } : word));
   const chooseTheme = (next) => {
@@ -52,7 +48,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const relisten = async () => {
     setRelistening(true);
     try {
-      const { data } = await api.post(`/projects/${project.project_id}/retranscribe`, { speech_language: "auto" });
+      let data = (await api.post(`/projects/${project.project_id}/retranscribe`, { speech_language: "auto" })).data;
+      while (["queued", "processing"].includes(data.status)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2500));
+        data = (await api.get(`/projects/${project.project_id}`)).data;
+      }
+      if (data.status === "failed") throw new Error(data.error_message || "Re-listen failed");
       setWords(data.words);
       setProject((current) => ({ ...current, ...data }));
       setSelectedIndex(0);

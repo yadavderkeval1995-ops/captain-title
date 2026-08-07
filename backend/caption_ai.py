@@ -46,11 +46,13 @@ def _repetition_metrics(tokens: list[str]):
 
 async def _transcription_pass(audio_path: str, language: str | None):
     stt = OpenAISpeechToText(api_key=os.environ["EMERGENT_LLM_KEY"])
+    # The versioned proxy preserves Whisper's native word timestamps.
+    stt.emergent_proxy_url = stt.emergent_proxy_url.rstrip("/") + "/v1"
     with open(audio_path, "rb") as audio:
         return await stt.transcribe(
             file=audio, model="whisper-1", response_format="verbose_json",
             language=language,
-            temperature=0.0, timestamp_granularities=["word", "segment"])
+            temperature=0.0, timestamp_granularities=["word"])
 
 
 def _split_wav(audio_path: str, output_dir: str, seconds: int = 10):
@@ -74,6 +76,18 @@ def _split_wav(audio_path: str, output_dir: str, seconds: int = 10):
             offset += frames_read / params.framerate
             index += 1
     return chunks
+
+
+def _normalize_word_timings(words: list[dict]):
+    """Keep native alignment while making zero-length API timestamps visible."""
+    previous_end = 0.0
+    for word in words:
+        start = max(float(word["start"]), previous_end)
+        end = max(float(word["end"]), start + 0.06)
+        word["start"] = round(start, 3)
+        word["end"] = round(end, 3)
+        previous_end = end
+    return words
 
 
 def _build_candidate(response, mode: str, preferred_mode: str):
@@ -111,10 +125,13 @@ def _build_candidate(response, mode: str, preferred_mode: str):
     token_list = _tokens(" ".join(word["original"] for word in words))
     repetition = _repetition_metrics(token_list)
     avg_logs = [float(item.get("avg_logprob", -2)) for item in accepted_segments]
-    average_logprob = sum(avg_logs) / len(avg_logs) if avg_logs else -2.0
-    total_end = max([float(_as_dict(item).get("end", 0)) for item in response_segments] or [0.0])
-    speech_duration = sum(max(0, right - left) for left, right in accepted_ranges)
-    coverage = min(1.0, speech_duration / max(1.0, total_end))
+    average_logprob = sum(avg_logs) / len(avg_logs) if avg_logs else (-0.55 if words else -2.0)
+    response_duration = float(getattr(response, "duration", 0) or data.get("duration", 0) or 0)
+    total_end = max([float(_as_dict(item).get("end", 0)) for item in response_segments] +
+                    [float(word["end"]) for word in words] + [response_duration, 0.0])
+    speech_duration = (sum(max(0, right - left) for left, right in accepted_ranges)
+                       if accepted_ranges else sum(max(0, word["end"] - word["start"]) for word in words))
+    coverage = min(1.0, (max([word["end"] for word in words] or [0.0])) / max(1.0, total_end))
     preference_bonus = .04 if mode == preferred_mode else 0.0
     score = average_logprob + min(.8, coverage * 1.2) + min(.5, len(words) * .008) - repetition["penalty"] + preference_bonus
     trustworthy = bool(words) and average_logprob > -1.45
@@ -164,6 +181,7 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
         for word in selected["words"]:
             word["index"] = len(words)
             words.append(word)
+    words = _normalize_word_timings(words)
     overall = _repetition_metrics(_tokens(" ".join(word["original"] for word in words)))
     if not words or (len(words) >= 12 and (overall["unique_ratio"] < .24 or overall["bigram_ratio"] > .30 or overall["ngram_repeat"] >= 3)):
         raise ValueError("No trustworthy transcript was found. The audio may be unclear, music-heavy, or repetitive.")
