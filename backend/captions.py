@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 import imageio_ffmpeg
 
@@ -87,6 +87,18 @@ def _extract_audio(source, audio):
                     "-c:a", "pcm_s16le", audio], capture_output=True, check=True)
 
 
+def _create_browser_preview(source: str, output: str):
+    result = subprocess.run([
+        FFMPEG, "-y", "-i", source, "-vf", "scale=720:-2",
+        "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8",
+        "-b:v", "1100k", "-c:a", "libopus", "-b:a", "96k", output,
+    ], capture_output=True, text=True)
+    if result.returncode:
+        logger.warning("Browser preview conversion failed: %s", result.stderr[-1200:])
+        return None
+    return Path(output).read_bytes()
+
+
 async def _run_caption_job(db, project_id: str, consume_credit: bool):
     try:
         project = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
@@ -100,8 +112,10 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
         with tempfile.TemporaryDirectory() as temp:
             source = os.path.join(temp, f"source{suffix}")
             audio = os.path.join(temp, "speech.wav")
+            preview = os.path.join(temp, "preview.webm")
             Path(source).write_bytes(data)
             await asyncio.to_thread(_extract_audio, source, audio)
+            preview_task = asyncio.create_task(asyncio.to_thread(_create_browser_preview, source, preview))
             await db.projects.update_one({"project_id": project_id}, {"$set": {
                 "progress": 28, "processing_label": "Listening word by word"}})
             words, transcription = await transcribe_words(audio, project.get("speech_language", "auto"))
@@ -109,15 +123,24 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
             await db.projects.update_one({"project_id": project_id}, {"$set": {
                 "progress": 78, "processing_label": "Creating Roman Hinglish"}})
             words = await convert_to_hinglish(words, project.get("name", ""))
+            preview_bytes = await preview_task
+            preview_result = None
+            if preview_bytes:
+                preview_storage_path = f"{APP_NAME}/previews/{project['user_id']}/{uuid.uuid4().hex}.webm"
+                preview_result = await asyncio.to_thread(
+                    put_object, preview_storage_path, preview_bytes, "video/webm")
         palette = THEMES[project["theme"]]
         for word in words:
             word["color"] = palette["accent"] if word["important"] else palette["base"]
             word["font_size"] = 62 if word["important"] else 52
-        await db.projects.update_one({"project_id": project_id}, {"$set": {
+        ready_fields = {
             "words": words, "source_transcript": source_transcript,
             "transcription_mode": transcription["mode"], "transcription_quality": transcription,
             "status": "ready", "progress": 100, "processing_label": "Captions ready",
-            "updated_at": datetime.now(timezone.utc).isoformat()}})
+            "updated_at": datetime.now(timezone.utc).isoformat()}
+        if preview_result:
+            ready_fields.update({"preview_path": preview_result["path"], "preview_content_type": "video/webm"})
+        await db.projects.update_one({"project_id": project_id}, {"$set": ready_fields})
         if consume_credit:
             credit = project.get("credit_type")
             if credit == "testing":
@@ -243,7 +266,8 @@ async def retranscribe_project(project_id: str, payload: RetranscribeRequest, re
         raise HTTPException(404, "Project not found")
     await db.projects.update_one({"project_id": project_id}, {"$set": {
         "speech_language": payload.speech_language, "status": "queued", "progress": 5,
-        "processing_label": "Re-listen queued", "error_message": None,
+        "processing_label": "Re-listen queued", "error_message": None, "words": [],
+        "source_transcript": "",
         "updated_at": datetime.now(timezone.utc).isoformat()}})
     schedule_caption_job(db, project_id, consume_credit=False)
     refreshed = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
@@ -304,13 +328,39 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
 
 
 @projects_router.get("/projects/{project_id}/media")
-async def project_media(project_id: str, request: Request, user=Depends(current_user)):
+async def project_media(project_id: str, request: Request,
+                        range_header: str | None = Header(default=None, alias="Range"),
+                        user=Depends(current_user)):
     project = await request.app.state.db.projects.find_one(
-        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0, "source_path": 1})
+        {"project_id": project_id, "user_id": user["user_id"]},
+        {"_id": 0, "source_path": 1, "preview_path": 1, "preview_content_type": 1})
     if not project:
         raise HTTPException(404, "Project not found")
-    data, content_type = await asyncio.to_thread(get_object, project["source_path"])
-    return Response(data, media_type=content_type)
+    media_path = project.get("preview_path") or project["source_path"]
+    data, content_type = await asyncio.to_thread(get_object, media_path)
+    content_type = project.get("preview_content_type") or content_type
+    total = len(data)
+    common_headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
+    if not range_header:
+        return Response(data, media_type=content_type,
+                        headers={**common_headers, "Content-Length": str(total)})
+    match = re.match(r"bytes=(\d*)-(\d*)$", range_header.strip())
+    if not match:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{total}", **common_headers})
+    start_raw, end_raw = match.groups()
+    if start_raw:
+        start = int(start_raw)
+        end = min(int(end_raw) if end_raw else total - 1, total - 1)
+    else:
+        suffix_length = min(int(end_raw or 0), total)
+        start, end = total - suffix_length, total - 1
+    if start < 0 or start >= total or end < start:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{total}", **common_headers})
+    chunk = data[start:end + 1]
+    return Response(chunk, status_code=206, media_type=content_type, headers={
+        **common_headers, "Content-Range": f"bytes {start}-{end}/{total}",
+        "Content-Length": str(len(chunk)),
+    })
 
 
 @projects_router.get("/projects/{project_id}/download")

@@ -47,7 +47,8 @@ def _repetition_metrics(tokens: list[str]):
 async def _transcription_pass(audio_path: str, language: str | None):
     stt = OpenAISpeechToText(api_key=os.environ["EMERGENT_LLM_KEY"])
     # The versioned proxy preserves Whisper's native word timestamps.
-    stt.emergent_proxy_url = stt.emergent_proxy_url.rstrip("/") + "/v1"
+    base_url = stt.emergent_proxy_url.rstrip("/")
+    stt.emergent_proxy_url = base_url if base_url.endswith("/v1") else base_url + "/v1"
     with open(audio_path, "rb") as audio:
         return await stt.transcribe(
             file=audio, model="whisper-1", response_format="verbose_json",
@@ -80,13 +81,17 @@ def _split_wav(audio_path: str, output_dir: str, seconds: int = 10):
 
 def _normalize_word_timings(words: list[dict]):
     """Keep native alignment while making zero-length API timestamps visible."""
-    previous_end = 0.0
-    for word in words:
-        start = max(float(word["start"]), previous_end)
+    previous_start = 0.0
+    for index, word in enumerate(words):
+        start = max(float(word["start"]), previous_start)
         end = max(float(word["end"]), start + 0.06)
+        if index + 1 < len(words):
+            next_start = float(words[index + 1]["start"])
+            if next_start >= start + 0.06:
+                end = min(end, next_start)
         word["start"] = round(start, 3)
         word["end"] = round(end, 3)
-        previous_end = end
+        previous_start = start
     return words
 
 
