@@ -39,6 +39,42 @@ def test_short_audio_uses_one_full_bounded_request(tmp_path, monkeypatch):
     assert metadata["mode"] == "full-bounded"
 
 
+def test_leading_gap_triggers_short_window_recovery(tmp_path, monkeypatch):
+    path = tmp_path / "clip.wav"
+    _wav(path, 37)
+    calls = []
+
+    async def fake_best(candidate_path, language):
+        calls.append(candidate_path)
+        if candidate_path == str(path):
+            return {"words": [_word("late", 18.0, 18.4)], "trustworthy": False,
+                    "score": -2, "first_start": 18.0}, True
+        chunk_index = int(Path(candidate_path).stem.split("-")[-1])
+        text = ["opening", "middle", "ending"][min(chunk_index, 2)]
+        return {"words": [_word(text, .2, .6)], "trustworthy": True,
+                "score": 1, "first_start": .2}, False
+
+    monkeypatch.setattr(caption_ai, "_best_candidate", fake_best)
+    words, metadata = asyncio.run(caption_ai.transcribe_words(str(path), "auto"))
+    assert words[0]["original"] == "opening"
+    assert words[0]["start"] < 1.0
+    assert metadata["mode"] == "full-with-gap-recovery"
+    assert len(calls) >= 4
+
+
+def test_candidate_with_18_second_leading_gap_is_not_trustworthy():
+    response = SimpleNamespace(
+        duration=37.0,
+        segments=[{"text": " late words", "start": 18, "end": 22,
+                   "avg_logprob": -.2, "no_speech_prob": .01}],
+        words=[{"word": "late", "start": 18.0, "end": 18.4},
+               {"word": "words", "start": 18.5, "end": 19.0}],
+    )
+    candidate = caption_ai._build_candidate(response, "auto", "auto")
+    assert candidate["first_start"] == 18.0
+    assert not candidate["trustworthy"]
+
+
 def test_overlap_merge_removes_duplicate_boundary_words():
     left = [_word("hum", 51.5, 52), _word("kal", 52.1, 52.5), _word("jayenge", 52.6, 53)]
     incoming = [_word("kal", 0.1, .5), _word("jayenge", .6, 1), _word("saath", 1.1, 1.5)]

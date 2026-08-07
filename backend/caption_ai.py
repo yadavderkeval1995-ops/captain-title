@@ -130,15 +130,18 @@ def _build_candidate(response, mode: str, preferred_mode: str) -> dict:
     duration = float(getattr(response, "duration", 0) or data.get("duration", 0) or 0)
     last_end = max([float(w["end"]) for w in words] + [0.0])
     coverage = min(1.0, last_end / max(1.0, duration or last_end))
-    score = avg_logprob + min(.8, coverage * 1.2) + min(.5, len(words) * .008) - repetition["penalty"]
+    first_start = min([float(w["start"]) for w in words] + [duration or 0.0])
+    leading_gap_penalty = min(2.5, max(0.0, first_start - 1.5) * .16)
+    score = (avg_logprob + min(.8, coverage * 1.2) + min(.5, len(words) * .008)
+             - repetition["penalty"] - leading_gap_penalty)
     score += .04 if mode == preferred_mode else 0
-    trustworthy = bool(words) and avg_logprob > -1.45
+    trustworthy = bool(words) and avg_logprob > -1.45 and first_start <= 3.0
     if len(tokens) >= 12 and (repetition["unique_ratio"] < .24 or repetition["bigram_ratio"] > .30):
         trustworthy = False
     if repetition["ngram_repeat"] >= 3:
         trustworthy = False
     return {"mode": mode, "words": words, "score": score, "trustworthy": trustworthy,
-            "average_logprob": avg_logprob, "coverage": coverage}
+            "average_logprob": avg_logprob, "coverage": coverage, "first_start": first_start}
 
 
 async def _best_candidate(path: str, speech_language: str) -> tuple[dict | None, bool]:
@@ -226,6 +229,28 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                 continue
             selected_count += 1
             words = _merge_window_words(words, selected["words"], offset)
+        # A full-file response that begins several seconds into a video is not
+        # acceptable: Whisper can classify quiet openings or mixed music/speech as
+        # silence. Recover with shorter overlapping windows, which reset decoder
+        # context and expose speech the full pass skipped.
+        if duration <= FULL_AUDIO_LIMIT_SECONDS and (not words or float(words[0]["start"]) > 3.0):
+            recovery = tempfile.TemporaryDirectory()
+            try:
+                recovered: list[dict] = []
+                for path, offset in _split_overlapping_wav(
+                        audio_path, recovery.name, window=18.0, overlap=3.0):
+                    selected, used_fallback = await _best_candidate(path, speech_language)
+                    fallbacks += int(used_fallback)
+                    if selected is None:
+                        continue
+                    selected_count += 1
+                    recovered = _merge_window_words(recovered, selected["words"], offset)
+                if recovered and (not words or recovered[0]["start"] < words[0]["start"] - .5 or
+                                  len(recovered) > len(words) * 1.12):
+                    words = recovered
+                    strategy = "full-with-gap-recovery"
+            finally:
+                recovery.cleanup()
     finally:
         if temp:
             temp.cleanup()
