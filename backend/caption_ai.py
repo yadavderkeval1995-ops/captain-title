@@ -60,6 +60,61 @@ async def _transcription_pass(audio_path: str, language: str | None):
     return await asyncio.to_thread(_transcription_pass_sync, audio_path, language)
 
 
+def _accurate_pass_sync(audio_path: str, language: str | None):
+    with open(audio_path, "rb") as audio:
+        return _client().audio.transcriptions.create(
+            file=audio,
+            model=os.environ.get("CAPTAIN_ASR_MODEL", "gpt-4o-transcribe-diarize"),
+            response_format="diarized_json",
+            language=language,
+            extra_body={"chunking_strategy": "auto"},
+        )
+
+
+async def _accurate_pass(audio_path: str, language: str | None):
+    return await asyncio.to_thread(_accurate_pass_sync, audio_path, language)
+
+
+def _segment_timed_words(response):
+    data = _as_dict(response)
+    raw_segments = getattr(response, "segments", None) or data.get("segments") or []
+    words = []
+    for raw in raw_segments:
+        segment = _as_dict(raw)
+        text = str(segment.get("text", "")).strip()
+        tokens = re.findall(r"[^\s]+", text)
+        if not tokens:
+            continue
+        start = max(0.0, float(segment.get("start", 0) or 0))
+        end = max(start + .08, float(segment.get("end", start + .5) or start + .5))
+        weights = [max(1, len("".join(_tokens(token)))) for token in tokens]
+        total = sum(weights)
+        cursor = start
+        for token, weight in zip(tokens, weights):
+            token_end = min(end, cursor + (end - start) * weight / total)
+            words.append({"index": len(words), "original": token, "text": token,
+                          "start": round(cursor, 3), "end": round(max(cursor + .06, token_end), 3),
+                          "important": False, "uncertain": False})
+            cursor = token_end
+    return words
+
+
+def _valid_accurate_words(words: list[dict], duration: float):
+    if not words:
+        return False
+    tokens = _tokens(" ".join(word["original"] for word in words))
+    metrics = _repetition_metrics(tokens)
+    if len(tokens) >= 12 and (metrics["unique_ratio"] < .24 or metrics["bigram_ratio"] > .30 or
+                              metrics["ngram_repeat"] >= 3):
+        return False
+    return max(word["end"] for word in words) >= min(duration * .65, duration - 2.0)
+
+
+def _wav_duration(path: str):
+    with wave.open(path, "rb") as source:
+        return source.getnframes() / float(source.getframerate())
+
+
 def _as_dict(value):
     if isinstance(value, dict):
         return value
@@ -158,6 +213,18 @@ def _build_candidate(response, mode: str, preferred_mode: str):
 
 async def transcribe_words(audio_path: str, speech_language: str = "auto"):
     primary_language = "hi" if speech_language == "hi" else None
+    duration = _wav_duration(audio_path)
+    try:
+        accurate_words = _segment_timed_words(await _accurate_pass(audio_path, primary_language))
+        if _valid_accurate_words(accurate_words, duration):
+            accurate_words = _normalize_word_timings(accurate_words)
+            metrics = _repetition_metrics(_tokens(" ".join(word["original"] for word in accurate_words)))
+            return accurate_words, {"mode": "captain-accurate-diarized", "chunks_used": 1,
+                                    "unique_ratio": round(metrics["unique_ratio"], 3),
+                                    "bigram_ratio": round(metrics["bigram_ratio"], 3),
+                                    "ngram_repeat": metrics["ngram_repeat"]}
+    except Exception:
+        pass
     primary_mode = "hi" if speech_language == "hi" else "auto"
     fallback_language = None if primary_language == "hi" else "hi"
     fallback_mode = "auto" if primary_mode == "hi" else "hi"
