@@ -10,6 +10,7 @@ const STYLE_ICONS = { "gen-z": "CHAT", cinematic: "FILM", "urdu-touch": "POETRY"
 export const SrtLocalization = ({ onBack }) => {
   const videoInput = useRef(null); const srtInput = useRef(null);
   const [video, setVideo] = useState(null); const [srt, setSrt] = useState(null); const [job, setJob] = useState(null);
+  const [mode, setMode] = useState("fast");
   const [selectedStyle, setSelectedStyle] = useState(""); const [styleBrief, setStyleBrief] = useState(""); const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -21,9 +22,9 @@ export const SrtLocalization = ({ onBack }) => {
   }, [job]);
 
   const start = async () => {
-    if (!video || !srt) return toast.error("Choose both the original video and English SRT");
-    const form = new FormData(); form.append("video", video); form.append("english_srt", srt); setBusy(true);
-    try { setJob((await api.post("/srt-projects", form, { headers: { "Content-Type": "multipart/form-data" } })).data); }
+    if (!srt || (mode === "video" && !video)) return toast.error(mode === "fast" ? "Choose an English SRT" : "Choose both the original video and English SRT");
+    const form = new FormData(); if (mode === "video") form.append("video", video); form.append("english_srt", srt); setBusy(true);
+    try { setJob((await api.post(mode === "fast" ? "/srt-projects/fast" : "/srt-projects", form, { headers: { "Content-Type": "multipart/form-data" } })).data); }
     catch (error) { toast.error(errorMessage(error)); } finally { setBusy(false); }
   };
   const approve = async () => {
@@ -35,11 +36,11 @@ export const SrtLocalization = ({ onBack }) => {
 
   return <main className="srt-localizer" data-testid="srt-localization-workspace">
     <section className="srt-hero"><button onClick={onBack}>← CAPTION STUDIO</button><p className="eyebrow"><Sparkle size={17} /> VIDEO-AWARE HINDI SRT</p><h1>English timing.<br /><span>Human Hindi emotion.</span></h1><p>Upload the original video and its English SRT. Captain Title reads the scene, auditions three Devanagari Hindi voices, then applies your approved direction to the complete subtitle file.</p></section>
-    {!job && <section className="srt-upload-card">
-      <button className={video ? "selected" : ""} onClick={() => videoInput.current.click()}><FilmStrip size={34} /><strong>{video?.name || "Choose original video"}</strong><small>MP4, MOV, MKV, WebM, or AVI</small><input ref={videoInput} type="file" accept="video/*" hidden onChange={(event) => setVideo(event.target.files[0])} /></button>
+    {!job && <><div className="srt-mode-switch"><button className={mode === "fast" ? "active" : ""} onClick={() => setMode("fast")}>Fast SRT only · Recommended</button><button className={mode === "video" ? "active" : ""} onClick={() => setMode("video")}>Video-aware · Slower</button></div><section className={`srt-upload-card ${mode === "fast" ? "fast" : ""}`}>
+      {mode === "video" && <button className={video ? "selected" : ""} onClick={() => videoInput.current.click()}><FilmStrip size={34} /><strong>{video?.name || "Choose original video"}</strong><small>Optional slower visual-context workflow</small><input ref={videoInput} type="file" accept="video/*" hidden onChange={(event) => setVideo(event.target.files[0])} /></button>}
       <button className={srt ? "selected" : ""} onClick={() => srtInput.current.click()}><UploadSimple size={34} /><strong>{srt?.name || "Choose English SRT"}</strong><small>Valid UTF-8 SubRip file</small><input ref={srtInput} type="file" accept=".srt" hidden onChange={(event) => setSrt(event.target.files[0])} /></button>
-      <Button onClick={start} disabled={busy || !video || !srt}>{busy ? "Uploading…" : "Analyze video & audition Hindi styles"}</Button>
-    </section>}
+      <Button onClick={start} disabled={busy || !srt || (mode === "video" && !video)}>{busy ? "Uploading…" : mode === "fast" ? "Audition Hindi styles" : "Analyze video & audition Hindi styles"}</Button>
+    </section></>}
     {job && !["awaiting_style", "completed", "failed"].includes(job.status) && <section className="srt-progress"><span>{job.processing_label}</span><b>{job.progress}%</b><i><em style={{ width: `${job.progress}%` }} /></i><p>Speech meaning comes from the English SRT; video frames add soft emotional and visual context.</p></section>}
     {job?.warnings?.map((warning) => <div className="srt-warning" key={warning}>{warning}</div>)}
     {job?.status === "failed" && <section className="srt-failed"><h2>Localization paused</h2><p>{job.error_message}</p><Button onClick={() => setJob(null)}>Start again</Button></section>}

@@ -36,14 +36,19 @@ async def _set(db, job_id, **fields):
 async def _analyze_job(db, job_id):
     try:
         job = await db.srt_projects.find_one({"job_id": job_id}, {"_id": 0})
-        video_data, _ = await asyncio.to_thread(get_object, job["video_path"])
         srt_data, _ = await asyncio.to_thread(get_object, job["srt_path"])
         cues = parse_srt(srt_data.decode("utf-8-sig"))
-        await _set(db, job_id, status="analyzing", progress=28, processing_label="Reading video emotion and scene tone")
-        with tempfile.TemporaryDirectory() as temp:
-            suffix = Path(job["video_name"]).suffix.lower() or ".mp4"
-            video = Path(temp) / f"source{suffix}"; video.write_bytes(video_data)
-            scene = await analyze_scene(str(video), cues)
+        scene = {"summary": "", "moments": [], "warnings": []}
+        if job.get("video_path"):
+            video_data, _ = await asyncio.to_thread(get_object, job["video_path"])
+            await _set(db, job_id, status="analyzing", progress=28, processing_label="Reading video emotion and scene tone")
+            with tempfile.TemporaryDirectory() as temp:
+                suffix = Path(job["video_name"]).suffix.lower() or ".mp4"
+                video = Path(temp) / f"source{suffix}"; video.write_bytes(video_data)
+                scene = await analyze_scene(str(video), cues)
+        else:
+            await _set(db, job_id, status="analyzing", progress=38, processing_label="Understanding connected English dialogue")
+            scene["warnings"] = ["Fast SRT-only mode: translation uses subtitle context without visual scene analysis."]
         await _set(db, job_id, status="sampling", progress=62, processing_label="Creating three Hindi voice options")
         sample_cues, style_samples = await create_style_samples(cues, scene)
         await _set(db, job_id, status="awaiting_style", progress=70, processing_label="Choose a Hindi voice", scene_context=scene, source_cues=cues, sample_cues=sample_cues, style_samples=style_samples, warnings=scene.get("warnings", []))
@@ -81,6 +86,33 @@ async def create_srt_project(request: Request, video: UploadFile = File(...), en
     except Exception as exc: raise HTTPException(503, "Files could not be stored") from exc
     job = {"job_id": job_id, "user_id": user["user_id"], "video_name": video.filename, "srt_name": english_srt.filename, "video_path": f"{base}{suffix}", "srt_path": f"{base}.srt", "status": "queued", "progress": 5, "processing_label": "Files uploaded", "style_samples": [], "sample_cues": [], "warnings": [], "error_message": None, "created_at": datetime.now(timezone.utc).isoformat()}
     await request.app.state.db.srt_projects.insert_one(job.copy()); asyncio.create_task(_analyze_job(request.app.state.db, job_id))
+    return _public(job)
+
+
+@srt_router.post("/fast")
+async def create_fast_srt_project(request: Request, english_srt: UploadFile = File(...), user=Depends(current_user)):
+    if not (english_srt.filename or "").lower().endswith(".srt"):
+        raise HTTPException(415, "Upload an English .srt file")
+    srt_data = await english_srt.read()
+    if len(srt_data) > 2 * 1024 * 1024:
+        raise HTTPException(413, "SRT must be smaller than 2 MB")
+    try:
+        parse_srt(srt_data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    job_id = f"srt_{uuid.uuid4().hex[:14]}"
+    path = f"{APP_NAME}/srt-localization/{user['user_id']}/{job_id}.srt"
+    try:
+        await asyncio.to_thread(put_object, path, srt_data, "application/x-subrip")
+    except Exception as exc:
+        raise HTTPException(503, "SRT could not be stored") from exc
+    job = {"job_id": job_id, "user_id": user["user_id"], "mode": "srt-only", "video_name": None,
+           "srt_name": english_srt.filename, "video_path": None, "srt_path": path,
+           "status": "queued", "progress": 12, "processing_label": "English SRT uploaded",
+           "style_samples": [], "sample_cues": [], "warnings": [], "error_message": None,
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await request.app.state.db.srt_projects.insert_one(job.copy())
+    asyncio.create_task(_analyze_job(request.app.state.db, job_id))
     return _public(job)
 
 

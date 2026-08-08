@@ -5,7 +5,11 @@
 .srt-hero h1 { margin: 16px 0; font-size: clamp(48px,6vw,86px); line-height: .96; letter-spacing: -.055em; }
 .srt-hero h1 span { color: #6b7280; }
 .srt-hero > p:last-child { max-width: 750px; color: #9ca3af; font-size: 17px; line-height: 1.65; }
-.srt-upload-card { margin-top: 42px; padding: 24px; display: grid; grid-template-columns: 1fr 1fr auto; gap: 14px; align-items: stretch; border: 1px solid #28303a; background: #101318; border-radius: 10px; }
+.srt-mode-switch { margin-top: 34px; display: inline-flex; gap: 4px; padding: 4px; border: 1px solid #28303a; background: #101318; border-radius: 999px; }
+.srt-mode-switch button { padding: 9px 14px; border: 0; color: #7d8795; background: transparent; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.srt-mode-switch button.active { color: #07100e; background: #35e2c0; }
+.srt-upload-card { margin-top: 16px; padding: 24px; display: grid; grid-template-columns: 1fr 1fr auto; gap: 14px; align-items: stretch; border: 1px solid #28303a; background: #101318; border-radius: 10px; }
+.srt-upload-card.fast { grid-template-columns: minmax(320px,1fr) auto; }
 .srt-upload-card > button:not(.inline-flex) { min-height: 120px; padding: 20px; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; border: 1px dashed #3b4553; color: #e5e7eb; background: #0b0e12; border-radius: 8px; }
 .srt-upload-card > button.selected { border-style: solid; border-color: #35e2c0; }
 .srt-upload-card strong { font-size: 14px; }
