@@ -3,13 +3,11 @@ import json
 import os
 import re
 import tempfile
-import uuid
 import wave
 from collections import Counter
 from pathlib import Path
 
-from emergentintegrations.llm.chat import LlmChat, StreamDone, TextDelta, UserMessage
-from emergentintegrations.llm.openai import OpenAISpeechToText
+from openai import AsyncOpenAI
 
 
 def _as_dict(value):
@@ -45,15 +43,13 @@ def _repetition_metrics(tokens: list[str]):
 
 
 async def _transcription_pass(audio_path: str, language: str | None):
-    stt = OpenAISpeechToText(api_key=os.environ["EMERGENT_LLM_KEY"])
-    # The versioned proxy preserves Whisper's native word timestamps.
-    base_url = stt.emergent_proxy_url.rstrip("/")
-    stt.emergent_proxy_url = base_url if base_url.endswith("/v1") else base_url + "/v1"
+    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    kwargs = {"model": "whisper-1", "response_format": "verbose_json",
+              "temperature": 0.0, "timestamp_granularities": ["word"]}
+    if language:
+        kwargs["language"] = language
     with open(audio_path, "rb") as audio:
-        return await stt.transcribe(
-            file=audio, model="whisper-1", response_format="verbose_json",
-            language=language,
-            temperature=0.0, timestamp_granularities=["word"])
+        return await client.audio.transcriptions.create(file=audio, **kwargs)
 
 
 def _split_wav(audio_path: str, output_dir: str, seconds: int = 10):
@@ -211,16 +207,13 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         "Set uncertain=true when the ASR source word or surrounding phrase is nonsensical and cannot be corrected confidently. "
         "Mark at most 20 percent as important, choosing emotionally strong or key meaning words."
     )
-    chat = LlmChat(api_key=os.environ["EMERGENT_LLM_KEY"], session_id=f"caption-{uuid.uuid4()}",
-                   system_message=system).with_model("openai", "gpt-5.6-terra")
-    chunks = []
+    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
     context_line = f"Video context only for resolving product terms: {context}\n" if context else ""
-    async for event in chat.stream_message(UserMessage(text=f"{context_line}Convert these indexed words:\n{numbered}")):
-        if isinstance(event, TextDelta):
-            chunks.append(event.content)
-        elif isinstance(event, StreamDone):
-            break
-    raw = "".join(chunks).strip()
+    response = await client.chat.completions.create(
+        model=os.environ.get("CAPTION_LLM_MODEL", "gpt-4o-mini"), temperature=0,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": f"{context_line}Convert these indexed words:\n{numbered}"}])
+    raw = (response.choices[0].message.content or "").strip()
     match = re.search(r"\[[\s\S]*\]", raw)
     if not match:
         raise ValueError("Hinglish conversion did not return valid JSON")

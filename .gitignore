@@ -83,6 +83,11 @@ android-sdk/
 .env
 .env.*
 *.env
+!.env.example
+!**/.env.example
 credentials.json
 *.key
 .credentials
+
+# Local video/object storage (personal-use dev mode)
+backend/storage_data/
