@@ -53,10 +53,16 @@ async def _transcription_pass(audio_path: str, language: str | None):
 
 
 def _split_wav(audio_path: str, output_dir: str, seconds: int = 30):
+    # Whisper is prone to fumbling the opening moment of whatever audio
+    # buffer it's handed (a known quirk, not specific to this app). Padding
+    # each chunk with a little silence up front gives it room to "warm up"
+    # before the real content starts, instead of eating the first words.
+    lead_in_seconds = 0.5
     chunks = []
     with wave.open(audio_path, "rb") as source:
         params = source.getparams()
         frames_per_chunk = params.framerate * seconds
+        silence = b"\x00" * (int(params.framerate * lead_in_seconds) * params.sampwidth * params.nchannels)
         offset = 0.0
         index = 0
         while True:
@@ -66,8 +72,9 @@ def _split_wav(audio_path: str, output_dir: str, seconds: int = 30):
             path = Path(output_dir) / f"speech-{index}.wav"
             with wave.open(str(path), "wb") as target:
                 target.setparams(params)
+                target.writeframes(silence)
                 target.writeframes(frames)
-            chunks.append((str(path), offset))
+            chunks.append((str(path), offset - lead_in_seconds))
             bytes_per_frame = params.sampwidth * params.nchannels
             frames_read = len(frames) // bytes_per_frame
             offset += frames_read / params.framerate
