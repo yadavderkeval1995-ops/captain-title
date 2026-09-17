@@ -95,10 +95,15 @@ def _build_candidate(response, mode: str, preferred_mode: str):
     data = _as_dict(response)
     response_segments = getattr(response, "segments", None) or data.get("segments") or []
     accepted_segments = []
-    for raw_segment in response_segments:
+    for index, raw_segment in enumerate(response_segments):
         segment = _as_dict(raw_segment)
         text = str(segment.get("text", "")).strip()
-        if not text or float(segment.get("no_speech_prob", 0)) >= 0.65:
+        if not text:
+            continue
+        # Whisper's very first segment of a request often gets an inflated
+        # no_speech_prob (it has no preceding audio to calibrate against),
+        # so don't let that one false-positive drop real opening speech.
+        if index > 0 and float(segment.get("no_speech_prob", 0)) >= 0.65:
             continue
         accepted_segments.append(segment)
     accepted_ranges = [(float(item.get("start", 0)), float(item.get("end", 0))) for item in accepted_segments]
