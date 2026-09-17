@@ -36,9 +36,14 @@ transcription and the Hinglish conversion step both call OpenAI directly.
 
 ```bash
 cd frontend
-npm install --legacy-peer-deps   # date-fns/react-day-picker peer conflict
-cp .env.example .env             # point REACT_APP_BACKEND_URL at the backend
-npm start
+corepack enable          # one-time, gives you the pinned Yarn version below
+yarn install              # use Yarn, not npm — package.json's "resolutions"
+                           # field (which pins a bunch of transitive deps to
+                           # avoid a broken ajv/ajv-keywords combo in
+                           # react-scripts) is a Yarn-only feature and is
+                           # silently ignored by npm
+cp .env.example .env      # point REACT_APP_BACKEND_URL at the backend
+yarn start
 ```
 
 Email/password sign-in works out of the box. The "Continue with Google" button
