@@ -210,7 +210,7 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
     client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
     context_line = f"Video context only for resolving product terms: {context}\n" if context else ""
     response = await client.chat.completions.create(
-        model=os.environ.get("CAPTION_LLM_MODEL", "gpt-4o-mini"), temperature=0,
+        model=os.environ.get("CAPTION_LLM_MODEL", "gpt-4o"), temperature=0,
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": f"{context_line}Convert these indexed words:\n{numbered}"}])
     raw = (response.choices[0].message.content or "").strip()
