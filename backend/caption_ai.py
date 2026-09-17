@@ -52,7 +52,7 @@ async def _transcription_pass(audio_path: str, language: str | None):
         return await client.audio.transcriptions.create(file=audio, **kwargs)
 
 
-def _split_wav(audio_path: str, output_dir: str, seconds: int = 120):
+def _split_wav(audio_path: str, output_dir: str, seconds: int = 30):
     chunks = []
     with wave.open(audio_path, "rb") as source:
         params = source.getparams()
