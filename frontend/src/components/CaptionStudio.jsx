@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { DownloadSimple, FloppyDisk, Play, SpinnerGap } from "@phosphor-icons/react";
+import { DownloadSimple, FileText, FloppyDisk, Play, SpinnerGap } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { api, API_ROOT, errorMessage } from "@/lib/api";
@@ -66,6 +66,14 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const url = URL.createObjectURL(response.data); const anchor = document.createElement("a");
     anchor.href = url; anchor.download = "captain-title.mp4"; anchor.click(); URL.revokeObjectURL(url);
   };
+  const downloadSrt = async () => {
+    try {
+      await api.put(`/projects/${project.project_id}`, { theme, words });
+      const response = await api.get(`/projects/${project.project_id}/srt`, { responseType: "blob" });
+      const url = URL.createObjectURL(response.data); const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = "captain-title.srt"; anchor.click(); URL.revokeObjectURL(url);
+    } catch (error) { toast.error(errorMessage(error)); }
+  };
   const togglePlayback = () => videoRef.current?.paused ? videoRef.current.play() : videoRef.current.pause();
   const seek = (time) => { if (videoRef.current) { videoRef.current.currentTime = time; setCurrentTime(time); } };
 
@@ -75,6 +83,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         <div><button onClick={onNew} data-testid="new-project-button">← New session</button><h1 data-testid="current-project-name">{project.name}</h1></div>
         <div className="project-actions">
           <Button variant="outline" onClick={save} data-testid="save-project-button"><FloppyDisk size={18} /> Save</Button>
+          <Button variant="outline" onClick={downloadSrt} data-testid="download-srt-button"><FileText size={18} /> SRT</Button>
           {project.status === "rendered" ? <Button onClick={download} data-testid="download-video-button"><DownloadSimple size={19} /> Download MP4</Button> :
             <Button onClick={render} disabled={rendering} data-testid="render-video-button">{rendering ? <SpinnerGap className="spin" size={19} /> : <Play size={18} weight="fill" />} {rendering ? "Rendering…" : "Render video"}</Button>}
         </div>

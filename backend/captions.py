@@ -254,6 +254,19 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
     return {"status": "saved"}
 
 
+@projects_router.get("/projects/{project_id}/srt")
+async def export_srt(project_id: str, request: Request, user=Depends(current_user)):
+    project = await request.app.state.db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0, "words": 1})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not project.get("words"):
+        raise HTTPException(422, "No captions to export yet")
+    srt = _write_srt(project["words"])
+    return Response(srt, media_type="application/x-subrip",
+                    headers={"Content-Disposition": "attachment; filename=captain-title.srt"})
+
+
 @projects_router.post("/projects/{project_id}/retranscribe")
 async def retranscribe_project(project_id: str, payload: RetranscribeRequest, request: Request,
                                user=Depends(current_user)):
@@ -292,6 +305,19 @@ def _write_ass(path, words, theme):
         styled = f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}"
         lines.append(f"Dialogue: 0,{_ass_time(word['start'])},{_ass_time(word['end'])},Default,,0,0,0,,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")
+
+
+def _srt_time(seconds):
+    hours = int(seconds // 3600); minutes = int((seconds % 3600) // 60); secs = seconds % 60
+    millis = int(round((secs - int(secs)) * 1000))
+    return f"{hours:02d}:{minutes:02d}:{int(secs):02d},{millis:03d}"
+
+
+def _write_srt(words):
+    lines = []
+    for index, word in enumerate(words, start=1):
+        lines.append(f"{index}\n{_srt_time(word['start'])} --> {_srt_time(word['end'])}\n{word['text']}\n")
+    return "\n".join(lines)
 
 
 def _render(source, ass_path, output):
