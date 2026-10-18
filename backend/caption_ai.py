@@ -2,12 +2,16 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import tempfile
 import wave
 from collections import Counter
 from pathlib import Path
 
+import imageio_ffmpeg
 from openai import AsyncOpenAI
+
+FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def _as_dict(value):
@@ -52,32 +56,51 @@ async def _transcription_pass(audio_path: str, language: str | None):
         return await client.audio.transcriptions.create(file=audio, **kwargs)
 
 
-def _split_wav(audio_path: str, output_dir: str, seconds: int = 30):
+def _silence_midpoints(audio_path: str, noise_db: int = -35, min_gap: float = 0.3):
+    """Timestamps of natural pauses in the audio, for cutting chunks without slicing through a word."""
+    result = subprocess.run([FFMPEG, "-i", audio_path, "-af", f"silencedetect=noise={noise_db}dB:d={min_gap}",
+                             "-f", "null", "-"], capture_output=True, text=True)
+    starts = [float(value) for value in re.findall(r"silence_start:\s*([\d.]+)", result.stderr)]
+    ends = [float(value) for value in re.findall(r"silence_end:\s*([\d.]+)", result.stderr)]
+    return [(start + end) / 2 for start, end in zip(starts, ends)]
+
+
+def _split_wav(audio_path: str, output_dir: str, seconds: int = 30, snap_window: float = 3.0):
     # Whisper is prone to fumbling the opening moment of whatever audio
     # buffer it's handed (a known quirk, not specific to this app). Padding
     # each chunk with a little silence up front gives it room to "warm up"
     # before the real content starts, instead of eating the first words.
     lead_in_seconds = 0.5
+    silence_points = _silence_midpoints(audio_path)
     chunks = []
     with wave.open(audio_path, "rb") as source:
         params = source.getparams()
-        frames_per_chunk = params.framerate * seconds
+        total_duration = source.getnframes() / params.framerate
         silence = b"\x00" * (int(params.framerate * lead_in_seconds) * params.sampwidth * params.nchannels)
-        offset = 0.0
+        cursor = 0.0
         index = 0
-        while True:
-            frames = source.readframes(frames_per_chunk)
+        while cursor < total_duration:
+            target = cursor + seconds
+            # Cutting exactly at a fixed interval risks slicing through a word
+            # mid-sentence, which both loses that word and resets Whisper's
+            # timing reference badly. Snap to the nearest real pause instead.
+            nearby = [point for point in silence_points
+                     if cursor < point <= min(target + snap_window, total_duration)
+                     and point >= target - snap_window]
+            boundary = min(nearby, key=lambda point: abs(point - target)) if nearby else min(target, total_duration)
+            frames_needed = int(round((boundary - cursor) * params.framerate))
+            frames = source.readframes(frames_needed)
             if not frames:
                 break
             path = Path(output_dir) / f"speech-{index}.wav"
-            with wave.open(str(path), "wb") as target:
-                target.setparams(params)
-                target.writeframes(silence)
-                target.writeframes(frames)
-            chunks.append((str(path), offset - lead_in_seconds))
+            with wave.open(str(path), "wb") as chunk_file:
+                chunk_file.setparams(params)
+                chunk_file.writeframes(silence)
+                chunk_file.writeframes(frames)
+            chunks.append((str(path), cursor - lead_in_seconds))
             bytes_per_frame = params.sampwidth * params.nchannels
             frames_read = len(frames) // bytes_per_frame
-            offset += frames_read / params.framerate
+            cursor += frames_read / params.framerate
             index += 1
     return chunks
 
