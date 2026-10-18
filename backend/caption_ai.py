@@ -46,12 +46,14 @@ def _repetition_metrics(tokens: list[str]):
             "ngram_repeat": ngram_repeat, "penalty": penalty}
 
 
-async def _transcription_pass(audio_path: str, language: str | None):
+async def _transcription_pass(audio_path: str, language: str | None, prompt: str = ""):
     client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
     kwargs = {"model": "whisper-1", "response_format": "verbose_json",
               "temperature": 0.0, "timestamp_granularities": ["word"]}
     if language:
         kwargs["language"] = language
+    if prompt:
+        kwargs["prompt"] = prompt
     with open(audio_path, "rb") as audio:
         return await client.audio.transcriptions.create(file=audio, **kwargs)
 
@@ -188,19 +190,25 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
     fallback_language = None if primary_language == "hi" else "hi"
     fallback_mode = "auto" if primary_mode == "hi" else "hi"
     selected_chunks = []
+    # Carrying the tail of the previous chunk's text forward as a prompt gives
+    # Whisper continuity across chunk boundaries (consistent spelling of names/
+    # terms, a smoother pickup right where the last chunk left off) instead of
+    # transcribing each chunk from a cold start, per OpenAI's own guidance for
+    # chunked transcription.
+    running_prompt = ""
     with tempfile.TemporaryDirectory() as temp:
         chunks = _split_wav(audio_path, temp)
         for chunk_path, offset in chunks:
             candidates = []
             try:
-                response = await _transcription_pass(chunk_path, primary_language)
+                response = await _transcription_pass(chunk_path, primary_language, running_prompt)
                 candidates.append(_build_candidate(response, primary_mode, primary_mode))
             except Exception:
                 pass
             primary = candidates[0] if candidates else None
             if not primary or not primary["trustworthy"] or primary["score"] < -0.15:
                 try:
-                    fallback = await _transcription_pass(chunk_path, fallback_language)
+                    fallback = await _transcription_pass(chunk_path, fallback_language, running_prompt)
                     candidates.append(_build_candidate(fallback, fallback_mode, primary_mode))
                 except Exception:
                     pass
@@ -212,6 +220,9 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                 word["start"] = round(word["start"] + offset, 3)
                 word["end"] = round(word["end"] + offset, 3)
             selected_chunks.append(selected)
+            if selected["words"]:
+                tail = " ".join(word["original"] for word in selected["words"][-40:])
+                running_prompt = tail[-800:]
     words = []
     for selected in selected_chunks:
         for word in selected["words"]:
