@@ -67,43 +67,64 @@ def _silence_midpoints(audio_path: str, noise_db: int = -35, min_gap: float = 0.
     return [(start + end) / 2 for start, end in zip(starts, ends)]
 
 
-def _split_wav(audio_path: str, output_dir: str, seconds: int = 30, snap_window: float = 3.0):
+def _chunk_boundaries(total_duration: float, silence_points: list[float], seconds: int, snap_window: float):
+    boundaries = [0.0]
+    cursor = 0.0
+    while cursor < total_duration:
+        target = cursor + seconds
+        # Cutting exactly at a fixed interval risks slicing through a word
+        # mid-sentence, which both loses that word and resets Whisper's
+        # timing reference badly. Snap to the nearest real pause instead.
+        nearby = [point for point in silence_points
+                 if cursor < point <= min(target + snap_window, total_duration)
+                 and point >= target - snap_window]
+        boundary = min(nearby, key=lambda point: abs(point - target)) if nearby else min(target, total_duration)
+        if boundary <= cursor:
+            break
+        boundaries.append(boundary)
+        cursor = boundary
+    return boundaries
+
+
+def _split_wav(audio_path: str, output_dir: str, seconds: int = 30, snap_window: float = 3.0,
+               overlap_seconds: float = 2.0):
     # Whisper is prone to fumbling the opening moment of whatever audio
-    # buffer it's handed (a known quirk, not specific to this app). Padding
-    # each chunk with a little silence up front gives it room to "warm up"
-    # before the real content starts, instead of eating the first words.
+    # buffer it's handed (a known quirk, not specific to this app). The very
+    # first chunk gets a silence lead-in to "warm up" before real content
+    # starts. Every later chunk instead gets primed with real overlapping
+    # audio from the tail of the previous chunk — genuine acoustic context,
+    # not just silence — and any words Whisper re-recognizes from that
+    # overlap get dropped by the caller since the previous chunk already
+    # produced them.
     lead_in_seconds = 0.5
     silence_points = _silence_midpoints(audio_path)
-    chunks = []
     with wave.open(audio_path, "rb") as source:
         params = source.getparams()
         total_duration = source.getnframes() / params.framerate
-        silence = b"\x00" * (int(params.framerate * lead_in_seconds) * params.sampwidth * params.nchannels)
-        cursor = 0.0
-        index = 0
-        while cursor < total_duration:
-            target = cursor + seconds
-            # Cutting exactly at a fixed interval risks slicing through a word
-            # mid-sentence, which both loses that word and resets Whisper's
-            # timing reference badly. Snap to the nearest real pause instead.
-            nearby = [point for point in silence_points
-                     if cursor < point <= min(target + snap_window, total_duration)
-                     and point >= target - snap_window]
-            boundary = min(nearby, key=lambda point: abs(point - target)) if nearby else min(target, total_duration)
-            frames_needed = int(round((boundary - cursor) * params.framerate))
-            frames = source.readframes(frames_needed)
-            if not frames:
-                break
-            path = Path(output_dir) / f"speech-{index}.wav"
-            with wave.open(str(path), "wb") as chunk_file:
-                chunk_file.setparams(params)
-                chunk_file.writeframes(silence)
-                chunk_file.writeframes(frames)
-            chunks.append((str(path), cursor - lead_in_seconds))
-            bytes_per_frame = params.sampwidth * params.nchannels
-            frames_read = len(frames) // bytes_per_frame
-            cursor += frames_read / params.framerate
-            index += 1
+        full_frames = source.readframes(source.getnframes())
+    bytes_per_frame = params.sampwidth * params.nchannels
+
+    def frame_slice(start_s, end_s):
+        start_frame = max(0, int(round(start_s * params.framerate)))
+        end_frame = max(start_frame, int(round(end_s * params.framerate)))
+        return full_frames[start_frame * bytes_per_frame:end_frame * bytes_per_frame]
+
+    boundaries = _chunk_boundaries(total_duration, silence_points, seconds, snap_window)
+    silence_prefix = b"\x00" * (int(params.framerate * lead_in_seconds) * bytes_per_frame)
+    chunks = []
+    for index in range(len(boundaries) - 1):
+        start, end = boundaries[index], boundaries[index + 1]
+        if index == 0:
+            prefix, prefix_duration = silence_prefix, lead_in_seconds
+        else:
+            prefix_start = max(0.0, start - overlap_seconds)
+            prefix, prefix_duration = frame_slice(prefix_start, start), start - prefix_start
+        path = Path(output_dir) / f"speech-{index}.wav"
+        with wave.open(str(path), "wb") as chunk_file:
+            chunk_file.setparams(params)
+            chunk_file.writeframes(prefix)
+            chunk_file.writeframes(frame_slice(start, end))
+        chunks.append((str(path), start - prefix_duration, start))
     return chunks
 
 
@@ -198,7 +219,7 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
     running_prompt = ""
     with tempfile.TemporaryDirectory() as temp:
         chunks = _split_wav(audio_path, temp)
-        for chunk_path, offset in chunks:
+        for chunk_path, offset, content_start in chunks:
             candidates = []
             try:
                 response = await _transcription_pass(chunk_path, primary_language, running_prompt)
@@ -219,6 +240,11 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
             for word in selected["words"]:
                 word["start"] = round(word["start"] + offset, 3)
                 word["end"] = round(word["end"] + offset, 3)
+            # Chunks after the first are primed with real overlapping audio
+            # from the previous chunk's tail (for acoustic continuity, not
+            # just silence) — drop whatever gets re-recognized from that
+            # overlap, since the previous chunk already produced those words.
+            selected["words"] = [word for word in selected["words"] if word["start"] >= content_start - 0.05]
             selected_chunks.append(selected)
             if selected["words"]:
                 tail = " ".join(word["original"] for word in selected["words"][-40:])
