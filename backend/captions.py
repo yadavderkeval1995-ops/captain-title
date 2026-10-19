@@ -80,6 +80,10 @@ class WordEdit(BaseModel):
     # the editor.
     pos_x: float | None = Field(default=None, ge=0, le=100)
     pos_y: float | None = Field(default=None, ge=0, le=100)
+    # None means "use the automatic default" (a tier change for a tiered
+    # template, or the midpoint for a plain two-line template) - True/False
+    # is an explicit manual override from a merge/split edit.
+    new_line: bool | None = None
 
 
 class ProjectEdit(BaseModel):
@@ -419,6 +423,34 @@ def _group_position(group, caption_position):
     return f"\\an{align}", margin_v
 
 
+def _auto_line_breaks(group, tiers, caption_lines):
+    """The default line-wrap, before any manual override: a tiered template
+    breaks at each tier change (not always a new line per word - a run of
+    consecutive same-tier words, e.g. two support words, still shares a
+    line); a plain template splits once at the midpoint when caption_lines
+    is 2, otherwise never breaks."""
+    if tiers:
+        breaks = [False] * len(group)
+        previous_tier = None
+        for index, word in enumerate(group):
+            tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
+            breaks[index] = index > 0 and tier != previous_tier
+            previous_tier = tier
+        return breaks
+    if caption_lines == 2 and len(group) > 1:
+        midpoint = -(-len(group) // 2)
+        return [index == midpoint for index in range(len(group))]
+    return [False] * len(group)
+
+
+def _resolve_line_breaks(group, tiers, caption_lines):
+    """The automatic default, with any word's explicit new_line (set by a
+    manual merge/split edit) taking precedence over it."""
+    auto = _auto_line_breaks(group, tiers, caption_lines)
+    return [word["new_line"] if word.get("new_line") is not None else auto[index]
+            for index, word in enumerate(group)]
+
+
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                caption_lines=1, caption_position="bottom"):
     palette = THEMES.get(theme, THEMES["viral"])
@@ -431,38 +463,24 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                                       strict_count=words_per_caption is not None)
     for group in groups:
         position_tag, margin_v = _group_position(group, caption_position)
-        # A tiered template always breaks lines at a tier change (small
-        # support words on their own line, the big key word on its own
-        # line) instead of the plain one/two-line split below - that's the
-        # whole point of the style, not something caption_lines overrides.
+        breaks = _resolve_line_breaks(group, tiers, caption_lines)
         word_parts = []
-        previous_tier = None
         for index, word in enumerate(group):
             safe = word["text"].replace("{", "").replace("}", "")
             # Color/size always come from the word itself (editable per word
             # in the UI, defaulted from the theme at generation/theme-switch
-            # time) - a tiered theme only still decides the font family and
-            # where tier changes force a line break.
+            # time) - a tiered theme only still decides the font family.
             if tiers:
                 tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
                 family = tiers[tier]["font"]
-                break_before = index > 0 and tier != previous_tier
-                previous_tier = tier
             else:
                 family = accent_family if word.get("important") else primary_family
-                break_before = False
             tags = f"\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}"
             if index == 0:
                 tags = position_tag + tags
-            separator = r"\N" if break_before else (" " if index > 0 else "")
+            separator = r"\N" if (index > 0 and breaks[index]) else (" " if index > 0 else "")
             word_parts.append(f"{separator}{{{tags}}}{safe}")
-        if tiers:
-            styled = "".join(word_parts)
-        elif caption_lines == 2 and len(word_parts) > 1:
-            midpoint = -(-len(word_parts) // 2)
-            styled = "".join(word_parts[:midpoint]) + r"\N" + "".join(word_parts[midpoint:]).lstrip()
-        else:
-            styled = "".join(word_parts)
+        styled = "".join(word_parts)
         lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
                      f"Default,,0,0,{margin_v},,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")

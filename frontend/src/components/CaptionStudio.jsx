@@ -12,31 +12,41 @@ const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item
 const fontFamilyById = Object.fromEntries(fonts.map((item) => [item.id, item.family]));
 const tiersById = Object.fromEntries(templates.map((item) => [item.id, item.tiers || null]));
 
-// Mirrors backend/captions.py's _write_ass: a tiered template breaks into a
-// new line whenever the support/feature/key tier changes, instead of the
-// plain one/two-line split used by the simpler templates.
-function splitIntoRows(groupWords, tiers, captionLines) {
+// Mirrors backend/captions.py's _auto_line_breaks/_resolve_line_breaks: the
+// automatic default (a tier change for a tiered template, the midpoint for
+// a plain two-line template) with any word's explicit new_line (set by a
+// manual merge/split edit) taking precedence over it.
+function autoLineBreaks(groupWords, tiers, captionLines) {
   if (tiers) {
-    const rows = [];
-    let current = [];
     let previousTier = null;
-    for (const word of groupWords) {
+    return groupWords.map((word, index) => {
       const tier = tiers[word.emphasis] ? word.emphasis : "support";
-      if (current.length && tier !== previousTier) {
-        rows.push(current);
-        current = [];
-      }
-      current.push(word);
+      const brk = index > 0 && tier !== previousTier;
       previousTier = tier;
-    }
-    if (current.length) rows.push(current);
-    return rows;
+      return brk;
+    });
   }
   if (captionLines === 2 && groupWords.length > 1) {
     const mid = Math.ceil(groupWords.length / 2);
-    return [groupWords.slice(0, mid), groupWords.slice(mid)];
+    return groupWords.map((_, index) => index === mid);
   }
-  return [groupWords];
+  return groupWords.map(() => false);
+}
+
+function splitIntoRows(groupWords, tiers, captionLines) {
+  const auto = autoLineBreaks(groupWords, tiers, captionLines);
+  const breaks = groupWords.map((word, index) => word.new_line ?? auto[index]);
+  const rows = [];
+  let current = [];
+  groupWords.forEach((word, index) => {
+    if (index > 0 && breaks[index]) {
+      rows.push(current);
+      current = [];
+    }
+    current.push(word);
+  });
+  if (current.length) rows.push(current);
+  return rows;
 }
 
 const MIN_DISPLAY_SECONDS = 0.35;
@@ -213,13 +223,18 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const startResize = (e) => {
     if (!visibleWords.length) return;
     e.preventDefault(); e.stopPropagation();
-    const startClientY = e.clientY;
+    // Every handle (corner, edge, any direction) should grow the text when
+    // dragged away from the box's center and shrink it when dragged toward
+    // it - using straight-line distance from the center means a sideways or
+    // diagonal drag works exactly like an up/down one, not just vertical.
+    const frameRect = videoFrameRef.current.getBoundingClientRect();
+    const centerX = frameRect.left + (boxX / 100) * frameRect.width;
+    const centerY = frameRect.top + (boxY / 100) * frameRect.height;
+    const startDistance = Math.hypot(e.clientX - centerX, e.clientY - centerY);
     const startSize = boxFontSize;
     const onMove = (moveEvent) => {
-      // The handle sits at the box's bottom-right corner, so dragging it
-      // down/away (increasing clientY) should grow the text, matching the
-      // familiar "stretch a window corner outward to make it bigger" feel.
-      const delta = (moveEvent.clientY - startClientY) * 0.3;
+      const distance = Math.hypot(moveEvent.clientX - centerX, moveEvent.clientY - centerY);
+      const delta = (distance - startDistance) * 0.3;
       setResizePreview(Math.min(92, Math.max(24, Math.round(startSize + delta))));
     };
     const onUp = () => {

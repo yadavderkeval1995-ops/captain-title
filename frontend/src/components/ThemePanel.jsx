@@ -93,6 +93,12 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
     </> : <button className={`emphasis-toggle ${selectedWord?.important ? "active" : ""}`} disabled={!selectedWord} onClick={() => onWordStyle({ important: !selectedWord?.important })} data-testid="important-word-toggle">
       <span>Impact emphasis</span><i />
     </button>}
+    <label className="control-label" data-testid="line-break-label">Line break before this word</label>
+    <div className="layout-grid three" data-testid="line-break-selector">
+      <button className={(selectedWord?.new_line ?? null) === null ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: null })} data-testid="line-break-auto-button">Auto</button>
+      <button className={selectedWord?.new_line === false ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: false })} data-testid="line-break-merge-button">Merge up</button>
+      <button className={selectedWord?.new_line === true ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: true })} data-testid="line-break-split-button">Split here</button>
+    </div>
   </aside>
   );
 };
