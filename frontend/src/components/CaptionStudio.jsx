@@ -7,6 +7,9 @@ import { ThemePanel, templates, fonts } from "@/components/ThemePanel";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { Timeline } from "@/components/Timeline";
 import { LeftRail } from "@/components/LeftRail";
+import { MediaPanel } from "@/components/MediaPanel";
+import { AudioPanel } from "@/components/AudioPanel";
+import { ElementsPanel } from "@/components/ElementsPanel";
 
 const palettes = Object.fromEntries(templates.map((item) => [item.id, [item.baseColor, item.color]]));
 const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item.accentFont ? `'${item.accentFont}', sans-serif` : null]));
@@ -107,8 +110,21 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [dragPreview, setDragPreview] = useState(null);
   const [resizePreview, setResizePreview] = useState(null);
   const [scopePrompt, setScopePrompt] = useState(null);
+  const [leftTab, setLeftTab] = useState("captions");
+  const [elements, setElements] = useState(initialProject.elements || []);
+  const [selectedElementId, setSelectedElementId] = useState(null);
+  const [audioVolume, setAudioVolume] = useState(initialProject.audio_volume ?? 100);
+  const [audioMuted, setAudioMuted] = useState(initialProject.audio_muted ?? false);
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
+
+  // The <video> element's own volume tops out at 1.0 (100%) - boosting past
+  // that only happens in the exported render's ffmpeg volume filter, not here.
+  useEffect(() => {
+    if (!videoRef.current) return;
+    videoRef.current.volume = Math.min(1, Math.max(0, audioVolume / 100));
+    videoRef.current.muted = audioMuted;
+  }, [audioVolume, audioMuted]);
 
   // The video element's own timeupdate event fires at a coarse, inconsistent
   // rate (often just 4-10x/sec), which visibly lags captions behind the
@@ -154,7 +170,21 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     }
   };
   const payload = () => ({ theme, font_id: fontId, words_per_caption: wordsPerCaption,
-                           caption_lines: captionLines, caption_position: captionPosition, words });
+                           caption_lines: captionLines, caption_position: captionPosition, words,
+                           audio_volume: audioVolume, audio_muted: audioMuted, elements });
+
+  const addElement = (char) => {
+    const id = `el_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const start = currentTime;
+    const end = Math.min(project.duration, currentTime + 2);
+    setElements((current) => [...current, { id, char, color: "#FFFFFF", font_size: 120, start, end, pos_x: 50, pos_y: 30 }]);
+    setSelectedElementId(id);
+  };
+  const updateElement = (id, changes) => setElements((current) => current.map((item) => item.id === id ? { ...item, ...changes } : item));
+  const deleteElement = (id) => {
+    setElements((current) => current.filter((item) => item.id !== id));
+    setSelectedElementId((current) => current === id ? null : current);
+  };
   const save = async () => {
     await api.put(`/projects/${project.project_id}`, payload());
     toast.success("Caption edits saved");
@@ -261,6 +291,51 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     setScopePrompt(null);
   };
 
+  // Elements are standalone stickers (not word-synced cues), so a drag or
+  // resize applies straight to that one element - no "this/all" scope
+  // prompt needed, unlike the shared caption box above.
+  const startMoveElement = (id) => (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const element = elements.find((item) => item.id === id);
+    if (!element) return;
+    const frameRect = videoFrameRef.current.getBoundingClientRect();
+    const startClientX = e.clientX, startClientY = e.clientY;
+    const startX = element.pos_x, startY = element.pos_y;
+    const onMove = (moveEvent) => {
+      const dx = ((moveEvent.clientX - startClientX) / frameRect.width) * 100;
+      const dy = ((moveEvent.clientY - startClientY) / frameRect.height) * 100;
+      updateElement(id, { pos_x: Math.min(100, Math.max(0, startX + dx)), pos_y: Math.min(100, Math.max(0, startY + dy)) });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const startResizeElement = (id) => (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const element = elements.find((item) => item.id === id);
+    if (!element) return;
+    const frameRect = videoFrameRef.current.getBoundingClientRect();
+    const centerX = frameRect.left + (element.pos_x / 100) * frameRect.width;
+    const centerY = frameRect.top + (element.pos_y / 100) * frameRect.height;
+    const startDistance = Math.hypot(e.clientX - centerX, e.clientY - centerY);
+    const startSize = element.font_size;
+    const onMove = (moveEvent) => {
+      const distance = Math.hypot(moveEvent.clientX - centerX, moveEvent.clientY - centerY);
+      const delta = (distance - startDistance) * 0.6;
+      updateElement(id, { font_size: Math.min(280, Math.max(40, Math.round(startSize + delta))) });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   return (
     <main className="studio" data-testid="caption-editor-workspace">
       <div className="studio-topbar" data-testid="project-command-bar">
@@ -273,8 +348,11 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         </div>
       </div>
       <div className="studio-grid">
-        <LeftRail active="captions" onSelect={() => {}} />
-        <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />
+        <LeftRail active={leftTab} onSelect={setLeftTab} />
+        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />}
+        {leftTab === "media" && <MediaPanel project={project} />}
+        {leftTab === "audio" && <AudioPanel volume={audioVolume} onVolume={setAudioVolume} muted={audioMuted} onMuted={setAudioMuted} />}
+        {leftTab === "elements" && <ElementsPanel elements={elements} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={addElement} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
         <section className="preview-panel" data-testid="video-preview-panel">
           <div className="video-frame" ref={videoFrameRef}>
             <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
@@ -301,6 +379,19 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               <button onClick={() => applyScope("this")} data-testid="apply-this-caption-button">This caption</button>
               <button onClick={() => applyScope("all")} data-testid="apply-all-captions-button">All captions</button>
             </div>}
+            {elements.filter((item) => currentTime >= item.start && currentTime <= item.end).map((item) => {
+              const interactive = leftTab === "elements";
+              return <div key={item.id} className={`element-overlay ${interactive && selectedElementId === item.id ? "selected" : ""}`}
+                style={{ left: `${item.pos_x}%`, top: `${item.pos_y}%`, fontSize: `${item.font_size * .62}px`, color: item.color,
+                        cursor: interactive ? "grab" : "default", pointerEvents: interactive ? "auto" : "none" }}
+                onMouseDown={interactive ? (e) => { setSelectedElementId(item.id); startMoveElement(item.id)(e); } : undefined}
+                data-testid={`element-overlay-${item.id}`}>
+                {item.char}
+                {interactive && selectedElementId === item.id && <div className="selection-box">
+                  {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResizeElement(item.id)} data-testid={`element-resize-handle-${pos}`} />)}
+                </div>}
+              </div>;
+            })}
           </div>
           <div className="preview-meta"><span data-testid="preview-format-label">9:16 PREVIEW</span><span data-testid="caption-engine-label">WORD SYNC · {theme.toUpperCase()}</span></div>
         </section>

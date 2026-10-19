@@ -86,13 +86,27 @@ class WordEdit(BaseModel):
     new_line: bool | None = None
 
 
+class ElementEdit(BaseModel):
+    id: str
+    char: str = Field(min_length=1, max_length=4)
+    color: str = "#FFFFFF"
+    font_size: int = Field(default=120, ge=40, le=280)
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    pos_x: float = Field(default=50, ge=0, le=100)
+    pos_y: float = Field(default=30, ge=0, le=100)
+
+
 class ProjectEdit(BaseModel):
     theme: str
     font_id: str = "poppins"
     words_per_caption: int | None = Field(default=None, ge=1, le=8)
     caption_lines: int = Field(default=1, ge=1, le=2)
     caption_position: str = "bottom"
+    audio_volume: int = Field(default=100, ge=0, le=200)
+    audio_muted: bool = False
     words: list[WordEdit]
+    elements: list[ElementEdit] = []
 
 
 class RetranscribeRequest(BaseModel):
@@ -130,6 +144,15 @@ def _duration(path):
         raise ValueError("Video duration unavailable")
     hours, minutes, seconds = match.groups()
     return round(int(hours) * 3600 + int(minutes) * 60 + float(seconds), 2)
+
+
+def _video_resolution(path):
+    result = subprocess.run([FFMPEG, "-i", path, "-f", "null", "-"],
+                            capture_output=True, text=True)
+    match = re.search(r"Video:.*?(\d{2,5})x(\d{2,5})", result.stderr)
+    if not match:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
 
 
 def _extract_audio(source, audio):
@@ -265,6 +288,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
             raise HTTPException(422, "This video could not be read") from exc
         if duration > 120:
             raise HTTPException(422, "Videos can be at most 120 seconds")
+        width, height = await asyncio.to_thread(_video_resolution, source)
         db = request.app.state.db
         usage_record = await _usage(db, user["user_id"])
         credit = _entitlement(usage_record, duration)
@@ -278,8 +302,10 @@ async def process_video(request: Request, file: UploadFile = File(...),
         except Exception as exc:
             raise HTTPException(503, "Video upload could not be stored. Please try again.") from exc
         project = {"project_id": project_id, "user_id": user["user_id"], "name": file.filename,
-                   "duration": duration, "theme": theme, "font_id": font_id,
+                   "duration": duration, "width": width, "height": height, "size_bytes": len(data),
+                   "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
+                   "audio_volume": 100, "audio_muted": False, "elements": [],
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -315,7 +341,9 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
         {"$set": {"theme": payload.theme, "font_id": payload.font_id,
                   "words_per_caption": payload.words_per_caption,
                   "caption_lines": payload.caption_lines, "caption_position": payload.caption_position,
+                  "audio_volume": payload.audio_volume, "audio_muted": payload.audio_muted,
                   "words": [word.model_dump() for word in payload.words],
+                  "elements": [element.model_dump() for element in payload.elements],
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
@@ -451,8 +479,19 @@ def _resolve_line_breaks(group, tiers, caption_lines):
             for index, word in enumerate(group)]
 
 
+def _write_element_dialogue(element):
+    """A sticker overlay: fixed position (no word-sync), own font size/color,
+    drawn on a layer above the caption text so it sits on top of it."""
+    safe = (element.get("char") or "").replace("{", "").replace("}", "")
+    x_px = round(element.get("pos_x", 50) / 100 * 1080)
+    y_px = round(element.get("pos_y", 30) / 100 * 1920)
+    tags = f"\\an5\\pos({x_px},{y_px})\\fs{element.get('font_size', 120)}\\c{_ass_color(element.get('color', '#FFFFFF'))}"
+    return (f"Dialogue: 1,{_ass_time(element['start'])},{_ass_time(element['end'])},"
+            f"Default,,0,0,0,,{{{tags}}}{safe}\n")
+
+
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
-               caption_lines=1, caption_position="bottom"):
+               caption_lines=1, caption_position="bottom", elements=None):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
@@ -483,6 +522,9 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         styled = "".join(word_parts)
         lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
                      f"Default,,0,0,{margin_v},,{styled}\n")
+    for element in (elements or []):
+        if element["end"] > element["start"]:
+            lines.append(_write_element_dialogue(element))
     Path(path).write_text("".join(lines), encoding="utf-8")
 
 
@@ -508,7 +550,7 @@ def _escape_filter_path(path):
     return Path(path).as_posix().replace(":", r"\:")
 
 
-def _render(source, ass_path, output, fonts_dir):
+def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=False):
     # Escaping a Windows drive-letter colon with '\:' only works for the
     # subtitles filter's own filename argument - ffmpeg's generic option
     # parser (used for fontsdir=...) doesn't honor that escape the same way
@@ -520,10 +562,12 @@ def _render(source, ass_path, output, fonts_dir):
     ass_name = os.path.basename(ass_path)
     fonts_rel = os.path.relpath(fonts_dir, work_dir)
     subtitles_arg = f"subtitles={_escape_filter_path(ass_name)}:fontsdir={_escape_filter_path(fonts_rel)}"
+    volume = 0 if audio_muted else max(0, audio_volume) / 100
     # High-quality export: crf 17 is close to visually lossless, and "slow"
     # trades encode time for better compression at that quality - both
     # reasonable given videos here are capped at 120s.
     result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", subtitles_arg,
+                             "-af", f"volume={volume}",
                              "-c:v", "libx264", "-preset", "slow", "-crf", "17",
                              "-c:a", "aac", "-b:a", "192k",
                              "-movflags", "+faststart", output], capture_output=True, text=True, cwd=work_dir)
@@ -546,9 +590,10 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         Path(source).write_bytes(data)
         _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
                   project.get("words_per_caption"), project.get("caption_lines", 1),
-                  project.get("caption_position", "bottom"))
+                  project.get("caption_position", "bottom"), project.get("elements"))
         try:
-            await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR))
+            await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
+                                    project.get("audio_volume", 100), project.get("audio_muted", False))
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()

@@ -11,13 +11,15 @@ const sections = [
   { id: "ai", label: "AI tools", icon: Sparkle },
 ];
 
-// Only Captions is wired to a real panel today. The rest mirror Captik's
-// sidebar so the layout reads right, and announce themselves as upcoming
+const ENABLED = new Set(["media", "audio", "captions", "elements"]);
+
+// Text/Adjustment/AI tools mirror Captik's sidebar so the layout reads
+// right, but aren't built yet - they announce themselves as upcoming
 // instead of silently doing nothing when clicked.
 export const LeftRail = ({ active, onSelect }) => (
   <nav className="left-rail" data-testid="left-rail">
     {sections.map(({ id, label, icon: Icon }) => {
-      const enabled = id === "captions";
+      const enabled = ENABLED.has(id);
       return (
         <button key={id} className={active === id ? "active" : ""}
           onClick={() => (enabled ? onSelect(id) : toast(`${label} is coming soon`))}
