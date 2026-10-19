@@ -1,19 +1,35 @@
-import { Palette, TextT, MagicWand } from "@phosphor-icons/react";
+import { Palette, TextAa, TextT, MagicWand } from "@phosphor-icons/react";
 import { Slider } from "@/components/ui/slider";
 
-const themes = [
-  { id: "viral", name: "Viral", color: "#FF3B30" },
-  { id: "cinematic", name: "Cinematic", color: "#FFB800" },
-  { id: "minimal", name: "Minimal", color: "#F8FAFC" },
-  { id: "podcast", name: "Podcast", color: "#A855F7" },
+export const templates = [
+  { id: "viral", name: "Viral", baseColor: "#FFFFFF", color: "#FF3B30", accentFont: "Anton" },
+  { id: "cinematic", name: "Cinematic", baseColor: "#FFF7DB", color: "#FFB800", accentFont: "Caveat" },
+  { id: "minimal", name: "Minimal", baseColor: "#FFFFFF", color: "#007AFF", accentFont: null },
+  { id: "podcast", name: "Podcast", baseColor: "#FFFFFF", color: "#A855F7", accentFont: null },
+  { id: "meme_mix", name: "Meme Mix", baseColor: "#FFFFFF", color: "#FFEB3B", accentFont: "Permanent Marker" },
+  { id: "street_pop", name: "Street Pop", baseColor: "#FFFFFF", color: "#FF6EC7", accentFont: "Caveat" },
 ];
 
-export const ThemePanel = ({ theme, onTheme, selectedWord, onWordStyle }) => (
+export const fonts = [
+  { id: "poppins", name: "Poppins", family: "'Poppins', sans-serif" },
+  { id: "anton", name: "Anton", family: "'Anton', sans-serif" },
+  { id: "bebas", name: "Bebas Neue", family: "'Bebas Neue', sans-serif" },
+  { id: "classic", name: "Classic", family: "'DejaVu Sans', sans-serif" },
+];
+
+export const ThemePanel = ({ theme, onTheme, fontId, onFont, selectedWord, onWordStyle }) => (
   <aside className="tool-panel" data-testid="caption-tools-panel">
-    <div className="panel-heading"><MagicWand size={18} /><div><span>STYLE ENGINE</span><h2 data-testid="theme-panel-heading">Caption mood</h2></div></div>
+    <div className="panel-heading"><MagicWand size={18} /><div><span>STYLE ENGINE</span><h2 data-testid="theme-panel-heading">Caption template</h2></div></div>
     <div className="theme-grid" data-testid="caption-theme-selector">
-      {themes.map((item) => <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onTheme(item.id)} data-testid={`theme-${item.id}-button`}>
+      {templates.map((item) => <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onTheme(item.id)} data-testid={`theme-${item.id}-button`}>
         <i style={{ background: item.color }} /> {item.name}
+      </button>)}
+    </div>
+    <div className="tool-divider" />
+    <div className="panel-heading compact"><TextAa size={18} /><div><span>TYPEFACE</span><h2 data-testid="font-panel-heading">Caption font</h2></div></div>
+    <div className="font-grid" data-testid="caption-font-selector">
+      {fonts.map((item) => <button key={item.id} className={fontId === item.id ? "active" : ""} style={{ fontFamily: item.family }} onClick={() => onFont(item.id)} data-testid={`font-${item.id}-button`}>
+        {item.name}
       </button>)}
     </div>
     <div className="tool-divider" />

@@ -18,13 +18,26 @@ from storage_service import APP_NAME, get_object, put_object
 
 projects_router = APIRouter(prefix="/api", tags=["captions"])
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+FONTS_DIR = Path(__file__).resolve().parent / "fonts"
 logger = logging.getLogger("captain-title.captions")
 active_jobs: set[str] = set()
+# Caption templates: a color scheme plus an optional "accent_font" used only
+# for emphasized/important words - the primary font for everything else
+# comes from the separately chosen FONTS entry below, so a template can mix
+# two fonts (accent_font set) or stay single-font (accent_font None).
 THEMES = {
-    "viral": {"base": "#FFFFFF", "accent": "#FF3B30", "font": "Arial Black"},
-    "cinematic": {"base": "#FFF7DB", "accent": "#FFB800", "font": "DejaVu Sans"},
-    "minimal": {"base": "#FFFFFF", "accent": "#007AFF", "font": "DejaVu Sans"},
-    "podcast": {"base": "#FFFFFF", "accent": "#A855F7", "font": "DejaVu Sans"},
+    "viral": {"base": "#FFFFFF", "accent": "#FF3B30", "accent_font": "Anton"},
+    "cinematic": {"base": "#FFF7DB", "accent": "#FFB800", "accent_font": "Caveat"},
+    "minimal": {"base": "#FFFFFF", "accent": "#007AFF", "accent_font": None},
+    "podcast": {"base": "#FFFFFF", "accent": "#A855F7", "accent_font": None},
+    "meme_mix": {"base": "#FFFFFF", "accent": "#FFEB3B", "accent_font": "Permanent Marker"},
+    "street_pop": {"base": "#FFFFFF", "accent": "#FF6EC7", "accent_font": "Caveat"},
+}
+FONTS = {
+    "poppins": {"label": "Poppins", "family": "Poppins"},
+    "anton": {"label": "Anton", "family": "Anton"},
+    "bebas": {"label": "Bebas Neue", "family": "Bebas Neue"},
+    "classic": {"label": "Classic", "family": "DejaVu Sans"},
 }
 
 
@@ -42,6 +55,7 @@ class WordEdit(BaseModel):
 
 class ProjectEdit(BaseModel):
     theme: str
+    font_id: str = "poppins"
     words: list[WordEdit]
 
 
@@ -184,10 +198,13 @@ async def usage(request: Request, user=Depends(current_user)):
 
 @projects_router.post("/projects/process")
 async def process_video(request: Request, file: UploadFile = File(...),
-                        theme: str = Form("viral"), speech_language: str = Form("auto"),
+                        theme: str = Form("viral"), font_id: str = Form("poppins"),
+                        speech_language: str = Form("auto"),
                         user=Depends(current_user)):
     if theme not in THEMES:
         raise HTTPException(400, "Unknown caption theme")
+    if font_id not in FONTS:
+        raise HTTPException(400, "Unknown caption font")
     if speech_language not in {"hi", "auto"}:
         raise HTTPException(400, "Speech language must be Hindi/Hinglish or Auto")
     suffix = Path(file.filename or "video.mp4").suffix.lower()
@@ -219,7 +236,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
         except Exception as exc:
             raise HTTPException(503, "Video upload could not be stored. Please try again.") from exc
         project = {"project_id": project_id, "user_id": user["user_id"], "name": file.filename,
-                   "duration": duration, "theme": theme, "words": [], "source_transcript": "",
+                   "duration": duration, "theme": theme, "font_id": font_id, "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
                    "content_type": file.content_type or "video/mp4", "credit_type": credit,
@@ -245,9 +262,12 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                          user=Depends(current_user)):
     if payload.theme not in THEMES:
         raise HTTPException(400, "Unknown theme")
+    if payload.font_id not in FONTS:
+        raise HTTPException(400, "Unknown caption font")
     result = await request.app.state.db.projects.update_one(
         {"project_id": project_id, "user_id": user["user_id"]},
-        {"$set": {"theme": payload.theme, "words": [word.model_dump() for word in payload.words],
+        {"$set": {"theme": payload.theme, "font_id": payload.font_id,
+                  "words": [word.model_dump() for word in payload.words],
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
@@ -318,14 +338,18 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4):
     return groups
 
 
-def _write_ass(path, words, theme):
-    header = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,DejaVu Sans,52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
+def _write_ass(path, words, theme, font_id="poppins"):
+    palette = THEMES.get(theme, THEMES["viral"])
+    primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
+    accent_family = palette.get("accent_font") or primary_family
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
     for group in _group_words_for_display(words):
         styled_parts = []
         for word in group:
             safe = word["text"].replace("{", "").replace("}", "")
-            styled_parts.append(f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}")
+            family = accent_family if word.get("important") else primary_family
+            styled_parts.append(f"{{\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}")
         styled = " ".join(styled_parts)
         lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},Default,,0,0,0,,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")
@@ -344,8 +368,18 @@ def _write_srt(words):
     return "\n".join(lines)
 
 
-def _render(source, ass_path, output):
-    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", f"subtitles={ass_path}",
+def _escape_filter_path(path):
+    """ffmpeg's filtergraph syntax splits options on ':' and uses '\\' to
+    escape characters, so a raw Windows path (drive-letter colon, backslash
+    separators) has to be escaped before it can be embedded as a filter
+    option value - otherwise the drive letter's colon gets parsed as the
+    end of the filename argument."""
+    return Path(path).as_posix().replace(":", r"\:")
+
+
+def _render(source, ass_path, output, fonts_dir):
+    subtitles_arg = f"subtitles={_escape_filter_path(ass_path)}:fontsdir={_escape_filter_path(fonts_dir)}"
+    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", subtitles_arg,
                              "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-c:a", "aac",
                              "-movflags", "+faststart", output], capture_output=True, text=True)
     if result.returncode:
@@ -365,9 +399,9 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         ass = os.path.join(temp, "captions.ass")
         output = os.path.join(temp, "captain-title.mp4")
         Path(source).write_bytes(data)
-        _write_ass(ass, project["words"], project["theme"])
+        _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"))
         try:
-            await asyncio.to_thread(_render, source, ass, output)
+            await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR))
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()

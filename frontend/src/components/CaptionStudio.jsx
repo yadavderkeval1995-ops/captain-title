@@ -3,14 +3,13 @@ import { DownloadSimple, FileText, FloppyDisk, Play, SpinnerGap } from "@phospho
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { api, API_ROOT, errorMessage } from "@/lib/api";
-import { ThemePanel } from "@/components/ThemePanel";
+import { ThemePanel, templates, fonts } from "@/components/ThemePanel";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { Timeline } from "@/components/Timeline";
 
-const palettes = {
-  viral: ["#FFFFFF", "#FF3B30"], cinematic: ["#FFF7DB", "#FFB800"],
-  minimal: ["#FFFFFF", "#007AFF"], podcast: ["#FFFFFF", "#A855F7"],
-};
+const palettes = Object.fromEntries(templates.map((item) => [item.id, [item.baseColor, item.color]]));
+const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item.accentFont ? `'${item.accentFont}', sans-serif` : null]));
+const fontFamilyById = Object.fromEntries(fonts.map((item) => [item.id, item.family]));
 
 const MIN_DISPLAY_SECONDS = 0.35;
 const MAX_WORDS_PER_LINE = 3;
@@ -42,6 +41,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [project, setProject] = useState(initialProject);
   const [words, setWords] = useState(initialProject.words);
   const [theme, setTheme] = useState(initialProject.theme);
+  const [fontId, setFontId] = useState(initialProject.font_id || "poppins");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -63,13 +63,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     setWords((current) => current.map((word) => ({ ...word, color: palettes[next][word.important ? 1 : 0] })));
   };
   const save = async () => {
-    await api.put(`/projects/${project.project_id}`, { theme, words });
+    await api.put(`/projects/${project.project_id}`, { theme, font_id: fontId, words });
     toast.success("Caption edits saved");
   };
   const render = async () => {
     setRendering(true);
     try {
-      await api.put(`/projects/${project.project_id}`, { theme, words });
+      await api.put(`/projects/${project.project_id}`, { theme, font_id: fontId, words });
       const { data } = await api.post(`/projects/${project.project_id}/render`);
       setProject({ ...project, status: "rendered", download_url: data.download_url });
       toast.success("Your captioned video is ready");
@@ -99,7 +99,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
   const downloadSrt = async () => {
     try {
-      await api.put(`/projects/${project.project_id}`, { theme, words });
+      await api.put(`/projects/${project.project_id}`, { theme, font_id: fontId, words });
       const response = await api.get(`/projects/${project.project_id}/srt`, { responseType: "blob" });
       const url = URL.createObjectURL(response.data); const anchor = document.createElement("a");
       anchor.href = url; anchor.download = "captain-title.srt"; anchor.click(); URL.revokeObjectURL(url);
@@ -120,13 +120,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         </div>
       </div>
       <div className="studio-grid">
-        <ThemePanel theme={theme} onTheme={chooseTheme} selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
+        <ThemePanel theme={theme} onTheme={chooseTheme} fontId={fontId} onFont={setFontId} selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
         <section className="preview-panel" data-testid="video-preview-panel">
           <div className="video-frame">
             <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
             <button className="preview-play" onClick={togglePlayback} data-testid="video-preview-play-button"><Play size={28} weight="fill" /></button>
             <div className={`caption-overlay theme-${theme}`} data-testid="live-caption-preview">
-              {visibleWords.map((word) => <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={{ color: word.color, fontSize: `${Math.max(20, word.font_size * .62)}px` }} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>)}
+              {visibleWords.map((word) => <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={{ color: word.color, fontSize: `${Math.max(20, word.font_size * .62)}px`, fontFamily: (word.important && accentFontById[theme]) || fontFamilyById[fontId] }} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>)}
             </div>
           </div>
           <div className="preview-meta"><span data-testid="preview-format-label">9:16 PREVIEW</span><span data-testid="caption-engine-label">WORD SYNC · {theme.toUpperCase()}</span></div>
