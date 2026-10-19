@@ -144,7 +144,7 @@ def _normalize_word_timings(words: list[dict]):
     return words
 
 
-def _build_candidate(response, mode: str, preferred_mode: str):
+def _build_candidate(response, mode: str, preferred_mode: str, skip_before: float = 0.0):
     data = _as_dict(response)
     response_segments = getattr(response, "segments", None) or data.get("segments") or []
     accepted_segments = []
@@ -181,7 +181,13 @@ def _build_candidate(response, mode: str, preferred_mode: str):
                 words.append({"index": len(words), "original": text, "text": text,
                               "start": round(start + offset * step, 3),
                               "end": round(min(end, start + (offset + 1) * step), 3)})
-    token_list = _tokens(" ".join(word["original"] for word in words))
+    # Chunks after the first are primed with real overlapping audio from the
+    # previous chunk (see _split_wav), so the start of this response is
+    # expected to repeat recent words verbatim — that's intentional priming,
+    # not Whisper hallucinating, and must not count against the repetition
+    # heuristics below. Score only the genuinely new content.
+    scoring_words = [word for word in words if word["start"] >= skip_before] if skip_before else words
+    token_list = _tokens(" ".join(word["original"] for word in scoring_words))
     repetition = _repetition_metrics(token_list)
     avg_logs = [float(item.get("avg_logprob", -2)) for item in accepted_segments]
     average_logprob = sum(avg_logs) / len(avg_logs) if avg_logs else (-0.55 if words else -2.0)
@@ -220,17 +226,18 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
     with tempfile.TemporaryDirectory() as temp:
         chunks = _split_wav(audio_path, temp)
         for chunk_path, offset, content_start in chunks:
+            skip_before = content_start - offset
             candidates = []
             try:
                 response = await _transcription_pass(chunk_path, primary_language, running_prompt)
-                candidates.append(_build_candidate(response, primary_mode, primary_mode))
+                candidates.append(_build_candidate(response, primary_mode, primary_mode, skip_before))
             except Exception:
                 pass
             primary = candidates[0] if candidates else None
             if not primary or not primary["trustworthy"] or primary["score"] < -0.15:
                 try:
                     fallback = await _transcription_pass(chunk_path, fallback_language, running_prompt)
-                    candidates.append(_build_candidate(fallback, fallback_mode, primary_mode))
+                    candidates.append(_build_candidate(fallback, fallback_mode, primary_mode, skip_before))
                 except Exception:
                     pass
             trustworthy = [candidate for candidate in candidates if candidate["trustworthy"]]
