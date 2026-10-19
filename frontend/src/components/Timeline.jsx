@@ -4,7 +4,7 @@ import { Pause, Play } from "@phosphor-icons/react";
 const PIXELS_PER_SECOND = 60;
 const MIN_BLOCK_WIDTH = 26;
 
-export const Timeline = ({ words, duration, currentTime, playing, onToggle, onSeek }) => {
+export const Timeline = ({ words, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect }) => {
   const trackRef = useRef(null);
   const trackWidth = Math.max(1, duration) * PIXELS_PER_SECOND;
 
@@ -61,9 +61,9 @@ export const Timeline = ({ words, duration, currentTime, playing, onToggle, onSe
       <div className="timeline-track" ref={trackRef} onMouseDown={startScrub} data-testid="timeline-word-track">
         <div className="timeline-track-inner" style={{ width: `${trackWidth}px` }}>
           <div className="playhead" style={{ left: `${currentTime * PIXELS_PER_SECOND}px` }} data-testid="timeline-playhead" />
-          {words.map((word, index) => <button key={index} className={currentTime >= word.start && currentTime <= word.end ? "active" : ""}
+          {words.map((word, index) => <button key={index} className={`${currentTime >= word.start && currentTime <= word.end ? "active" : ""} ${selectedIndex === index ? "selected" : ""}`}
             style={{ left: `${word.start * PIXELS_PER_SECOND}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (word.end - word.start) * PIXELS_PER_SECOND)}px` }}
-            onMouseDown={(e) => e.stopPropagation()} onClick={() => onSeek(word.start)} data-testid={`word-block-${index}`}>
+            onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(word.start); onSelect?.(index); }} data-testid={`word-block-${index}`}>
             {word.text}
           </button>)}
         </div>
