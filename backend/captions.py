@@ -32,6 +32,25 @@ THEMES = {
     "podcast": {"base": "#FFFFFF", "accent": "#A855F7", "accent_font": None},
     "meme_mix": {"base": "#FFFFFF", "accent": "#FFEB3B", "accent_font": "Permanent Marker"},
     "street_pop": {"base": "#FFFFFF", "accent": "#FF6EC7", "accent_font": "Caveat"},
+    # Designer "tiered" templates: a 3-way support/feature/key reading of
+    # each word (see convert_to_hinglish's emphasis field) instead of a
+    # flat important/normal split, each tier with its own font/color/size -
+    # matches the layered, mixed-typography look used by top caption apps.
+    "editorial_pop": {"tiers": {
+        "support": {"font": "Poppins", "color": "#FFFFFF", "size": 40},
+        "feature": {"font": "Playfair Display SemiBold", "color": "#FFFFFF", "size": 58},
+        "key": {"font": "Anton", "color": "#FFEB3B", "size": 82},
+    }},
+    "clean_vogue": {"tiers": {
+        "support": {"font": "Poppins", "color": "#E4E4E7", "size": 38},
+        "feature": {"font": "Playfair Display SemiBold", "color": "#FF8FC7", "size": 56},
+        "key": {"font": "Bebas Neue", "color": "#FFFFFF", "size": 86},
+    }},
+    "street_heat": {"tiers": {
+        "support": {"font": "Poppins", "color": "#FFFFFF", "size": 40},
+        "feature": {"font": "Permanent Marker", "color": "#FFFFFF", "size": 54},
+        "key": {"font": "Anton", "color": "#FF4D00", "size": 84},
+    }},
 }
 FONTS = {
     "poppins": {"label": "Poppins", "family": "Poppins"},
@@ -51,6 +70,7 @@ class WordEdit(BaseModel):
     start: float
     end: float
     important: bool = False
+    emphasis: str = "support"
     uncertain: bool = False
     color: str = "#FFFFFF"
     font_size: int = Field(default=52, ge=24, le=92)
@@ -156,9 +176,15 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
                 preview_result = await asyncio.to_thread(
                     put_object, preview_storage_path, preview_bytes, "video/webm")
         palette = THEMES[project["theme"]]
+        tiers = palette.get("tiers")
         for word in words:
-            word["color"] = palette["accent"] if word["important"] else palette["base"]
-            word["font_size"] = 62 if word["important"] else 52
+            if tiers:
+                config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
+                word["color"] = config["color"]
+                word["font_size"] = config["size"]
+            else:
+                word["color"] = palette["accent"] if word["important"] else palette["base"]
+                word["font_size"] = 62 if word["important"] else 52
         ready_fields = {
             "words": words, "source_transcript": source_transcript,
             "transcription_mode": transcription["mode"], "transcription_quality": transcription,
@@ -397,6 +423,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                caption_lines=1, caption_position="bottom"):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
+    tiers = palette.get("tiers")
     accent_family = palette.get("accent_font") or primary_family
     header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
@@ -404,19 +431,35 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                                       strict_count=words_per_caption is not None)
     for group in groups:
         position_tag, margin_v = _group_position(group, caption_position)
+        # A tiered template always breaks lines at a tier change (small
+        # support words on their own line, the big key word on its own
+        # line) instead of the plain one/two-line split below - that's the
+        # whole point of the style, not something caption_lines overrides.
         word_parts = []
+        previous_tier = None
         for index, word in enumerate(group):
             safe = word["text"].replace("{", "").replace("}", "")
-            family = accent_family if word.get("important") else primary_family
-            tags = f"\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}"
+            if tiers:
+                tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
+                config = tiers[tier]
+                tags = f"\\fn{config['font']}\\c{_ass_color(config['color'])}\\fs{config['size']}"
+                break_before = index > 0 and tier != previous_tier
+                previous_tier = tier
+            else:
+                family = accent_family if word.get("important") else primary_family
+                tags = f"\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}"
+                break_before = False
             if index == 0:
                 tags = position_tag + tags
-            word_parts.append(f"{{{tags}}}{safe}")
-        if caption_lines == 2 and len(word_parts) > 1:
+            separator = r"\N" if break_before else (" " if index > 0 else "")
+            word_parts.append(f"{separator}{{{tags}}}{safe}")
+        if tiers:
+            styled = "".join(word_parts)
+        elif caption_lines == 2 and len(word_parts) > 1:
             midpoint = -(-len(word_parts) // 2)
-            styled = " ".join(word_parts[:midpoint]) + r"\N" + " ".join(word_parts[midpoint:])
+            styled = "".join(word_parts[:midpoint]) + r"\N" + "".join(word_parts[midpoint:]).lstrip()
         else:
-            styled = " ".join(word_parts)
+            styled = "".join(word_parts)
         lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
                      f"Default,,0,0,{margin_v},,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")

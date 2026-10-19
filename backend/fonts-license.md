@@ -10,6 +10,7 @@ All of them are Google Fonts, licensed under the SIL Open Font License 1.1
 - Bebas Neue - Copyright 2020 The Bebas Neue Project Authors
 - Caveat - Copyright 2017 The Caveat Project Authors
 - Permanent Marker - Copyright 2011 Font Diner / Sideshow
+- Playfair Display - Copyright 2017 The Playfair Display Project Authors
 - Poppins - Copyright 2020 The Poppins Project Authors
 
 Fetched via the `@fontsource/*` npm packages (which redistribute the

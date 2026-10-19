@@ -11,6 +11,24 @@ export const templates = [
   { id: "podcast", name: "Podcast", baseColor: "#FFFFFF", color: "#A855F7", accentFont: null },
   { id: "meme_mix", name: "Meme Mix", baseColor: "#FFFFFF", color: "#FFEB3B", accentFont: "Permanent Marker" },
   { id: "street_pop", name: "Street Pop", baseColor: "#FFFFFF", color: "#FF6EC7", accentFont: "Caveat" },
+  // Designer "tiered" templates: a 3-way support/feature/key reading of each
+  // word instead of a flat important/normal split, each tier with its own
+  // font/color/size - mirrors backend/captions.py's THEMES tiers exactly.
+  { id: "editorial_pop", name: "Editorial Pop", color: "#FFEB3B", tiers: {
+    support: { font: "'Poppins', sans-serif", color: "#FFFFFF", size: 40 },
+    feature: { font: "'Playfair Display', serif", color: "#FFFFFF", size: 58 },
+    key: { font: "'Anton', sans-serif", color: "#FFEB3B", size: 82 },
+  } },
+  { id: "clean_vogue", name: "Clean Vogue", color: "#FF8FC7", tiers: {
+    support: { font: "'Poppins', sans-serif", color: "#E4E4E7", size: 38 },
+    feature: { font: "'Playfair Display', serif", color: "#FF8FC7", size: 56 },
+    key: { font: "'Bebas Neue', sans-serif", color: "#FFFFFF", size: 86 },
+  } },
+  { id: "street_heat", name: "Street Heat", color: "#FF4D00", tiers: {
+    support: { font: "'Poppins', sans-serif", color: "#FFFFFF", size: 40 },
+    feature: { font: "'Permanent Marker', cursive", color: "#FFFFFF", size: 54 },
+    key: { font: "'Anton', sans-serif", color: "#FF4D00", size: 84 },
+  } },
 ];
 
 export const fonts = [
@@ -22,7 +40,9 @@ export const fonts = [
 
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
-                             selectedWord, onWordStyle }) => (
+                             selectedWord, onWordStyle }) => {
+  const isTiered = !!templates.find((item) => item.id === theme)?.tiers;
+  return (
   <aside className="tool-panel" data-testid="caption-tools-panel">
     <div className="panel-heading"><MagicWand size={18} /><div><span>STYLE ENGINE</span><h2 data-testid="theme-panel-heading">Caption template</h2></div></div>
     <div className="theme-grid" data-testid="caption-theme-selector">
@@ -32,8 +52,9 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
     </div>
     <div className="tool-divider" />
     <div className="panel-heading compact"><TextAa size={18} /><div><span>TYPEFACE</span><h2 data-testid="font-panel-heading">Caption font</h2></div></div>
+    {isTiered && <p className="panel-note" data-testid="tiered-font-note">This template sets its own three fonts - the picker below doesn't apply.</p>}
     <div className="font-grid" data-testid="caption-font-selector">
-      {fonts.map((item) => <button key={item.id} className={fontId === item.id ? "active" : ""} style={{ fontFamily: item.family }} onClick={() => onFont(item.id)} data-testid={`font-${item.id}-button`}>
+      {fonts.map((item) => <button key={item.id} className={fontId === item.id ? "active" : ""} disabled={isTiered} style={{ fontFamily: item.family }} onClick={() => onFont(item.id)} data-testid={`font-${item.id}-button`}>
         {item.name}
       </button>)}
     </div>
@@ -54,13 +75,16 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
     </div>
     <div className="tool-divider" />
     <div className="panel-heading compact"><TextT size={18} /><div><span>SELECTED WORD</span><h2 data-testid="selected-word-heading">{selectedWord?.text || "Select a word"}</h2></div></div>
-    <label className="control-label" data-testid="font-size-control-label">Font size <b data-testid="selected-word-font-size">{selectedWord?.font_size || 52}px</b></label>
-    <Slider min={24} max={92} step={1} value={[selectedWord?.font_size || 52]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ font_size: value })} data-testid="font-size-slider" />
-    <label className="control-label" data-testid="word-color-control-label"><span><Palette size={16} /> Word colour</span>
-      <input type="color" value={selectedWord?.color || "#FFFFFF"} disabled={!selectedWord} onChange={(e) => onWordStyle({ color: e.target.value })} data-testid="word-color-input" />
-    </label>
-    <button className={`emphasis-toggle ${selectedWord?.important ? "active" : ""}`} disabled={!selectedWord} onClick={() => onWordStyle({ important: !selectedWord?.important })} data-testid="important-word-toggle">
-      <span>Impact emphasis</span><i />
-    </button>
+    {isTiered ? <p className="panel-note" data-testid="tiered-word-note">This template styles every word automatically by its support/feature/key role - per-word overrides below are off.</p> : <>
+      <label className="control-label" data-testid="font-size-control-label">Font size <b data-testid="selected-word-font-size">{selectedWord?.font_size || 52}px</b></label>
+      <Slider min={24} max={92} step={1} value={[selectedWord?.font_size || 52]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ font_size: value })} data-testid="font-size-slider" />
+      <label className="control-label" data-testid="word-color-control-label"><span><Palette size={16} /> Word colour</span>
+        <input type="color" value={selectedWord?.color || "#FFFFFF"} disabled={!selectedWord} onChange={(e) => onWordStyle({ color: e.target.value })} data-testid="word-color-input" />
+      </label>
+      <button className={`emphasis-toggle ${selectedWord?.important ? "active" : ""}`} disabled={!selectedWord} onClick={() => onWordStyle({ important: !selectedWord?.important })} data-testid="important-word-toggle">
+        <span>Impact emphasis</span><i />
+      </button>
+    </>}
   </aside>
-);
+  );
+};

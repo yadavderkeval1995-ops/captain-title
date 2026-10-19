@@ -10,6 +10,34 @@ import { Timeline } from "@/components/Timeline";
 const palettes = Object.fromEntries(templates.map((item) => [item.id, [item.baseColor, item.color]]));
 const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item.accentFont ? `'${item.accentFont}', sans-serif` : null]));
 const fontFamilyById = Object.fromEntries(fonts.map((item) => [item.id, item.family]));
+const tiersById = Object.fromEntries(templates.map((item) => [item.id, item.tiers || null]));
+
+// Mirrors backend/captions.py's _write_ass: a tiered template breaks into a
+// new line whenever the support/feature/key tier changes, instead of the
+// plain one/two-line split used by the simpler templates.
+function splitIntoRows(groupWords, tiers, captionLines) {
+  if (tiers) {
+    const rows = [];
+    let current = [];
+    let previousTier = null;
+    for (const word of groupWords) {
+      const tier = tiers[word.emphasis] ? word.emphasis : "support";
+      if (current.length && tier !== previousTier) {
+        rows.push(current);
+        current = [];
+      }
+      current.push(word);
+      previousTier = tier;
+    }
+    if (current.length) rows.push(current);
+    return rows;
+  }
+  if (captionLines === 2 && groupWords.length > 1) {
+    const mid = Math.ceil(groupWords.length / 2);
+    return [groupWords.slice(0, mid), groupWords.slice(mid)];
+  }
+  return [groupWords];
+}
 
 const MIN_DISPLAY_SECONDS = 0.35;
 const MAX_WORDS_PER_LINE = 3;
@@ -78,6 +106,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     return group || [];
   }, [wordGroups, currentTime]);
   const anchorWord = visibleWords[0];
+  const tiers = tiersById[theme];
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
   const boxX = dragPreview?.x ?? anchorWord?.pos_x ?? basePos.x;
   const boxY = dragPreview?.y ?? anchorWord?.pos_y ?? basePos.y;
@@ -86,7 +115,16 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const updateWord = (index, changes) => setWords((current) => current.map((word, i) => i === index ? { ...word, ...changes } : word));
   const chooseTheme = (next) => {
     setTheme(next);
-    setWords((current) => current.map((word) => ({ ...word, color: palettes[next][word.important ? 1 : 0] })));
+    const nextTiers = tiersById[next];
+    if (nextTiers) {
+      setWords((current) => current.map((word) => {
+        const tier = nextTiers[word.emphasis] ? word.emphasis : "support";
+        const config = nextTiers[tier];
+        return { ...word, color: config.color, font_size: config.size };
+      }));
+    } else {
+      setWords((current) => current.map((word) => ({ ...word, color: palettes[next][word.important ? 1 : 0] })));
+    }
   };
   const payload = () => ({ theme, font_id: fontId, words_per_caption: wordsPerCaption,
                            caption_lines: captionLines, caption_position: captionPosition, words });
@@ -157,7 +195,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
 
   const startResize = (e) => {
-    if (!visibleWords.length) return;
+    // Tiered templates size every word by its support/feature/key role, so
+    // a per-caption resize wouldn't have anywhere to apply.
+    if (!visibleWords.length || tiers) return;
     e.preventDefault(); e.stopPropagation();
     const startClientY = e.clientY;
     const startSize = boxFontSize;
@@ -212,15 +252,18 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           <div className="video-frame" ref={videoFrameRef}>
             <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
             <button className="preview-play" onClick={togglePlayback} data-testid="video-preview-play-button"><Play size={28} weight="fill" /></button>
-            {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${captionLines === 2 ? "lines-2" : ""}`}
+            {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%` }} onMouseDown={startMove} data-testid="live-caption-preview">
-              {(captionLines === 2 && visibleWords.length > 1
-                ? [visibleWords.slice(0, Math.ceil(visibleWords.length / 2)), visibleWords.slice(Math.ceil(visibleWords.length / 2))]
-                : [visibleWords]
-              ).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
-                {row.map((word) => <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={{ color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * .62)}px`, fontFamily: (word.important && accentFontById[theme]) || fontFamilyById[fontId] }} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>)}
+              {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
+                {row.map((word) => {
+                  const tierConfig = tiers && tiers[tiers[word.emphasis] ? word.emphasis : "support"];
+                  const style = tierConfig
+                    ? { color: tierConfig.color, fontSize: `${Math.max(20, tierConfig.size * .62)}px`, fontFamily: tierConfig.font }
+                    : { color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * .62)}px`, fontFamily: (word.important && accentFontById[theme]) || fontFamilyById[fontId] };
+                  return <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={style} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>;
+                })}
               </div>)}
-              <i className="resize-handle" onMouseDown={startResize} data-testid="caption-resize-handle" />
+              {!tiers && <i className="resize-handle" onMouseDown={startResize} data-testid="caption-resize-handle" />}
             </div>}
             {scopePrompt && <div className="position-scope-prompt" style={{ left: `${boxX}%`, top: `${Math.min(92, boxY + 8)}%` }} data-testid="position-scope-prompt">
               <button onClick={() => applyScope("this")} data-testid="apply-this-caption-button">This caption</button>

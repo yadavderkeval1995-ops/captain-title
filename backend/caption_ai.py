@@ -406,9 +406,13 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         "You convert Hindi or mixed Hindi-English speech to exact Roman Hinglish captions. "
         "Correct only obvious phonetic ASR spelling errors when the intended Hindi or English word is unambiguous from context. "
         "Never paraphrase, omit, merge, reorder, or add words, and keep one output token per input index. Return only a JSON array. Each item must be "
-        "{\"index\": integer, \"text\": romanized_word, \"important\": boolean, \"uncertain\": boolean}. Keep existing English words unchanged. "
+        "{\"index\": integer, \"text\": romanized_word, \"emphasis\": \"support\"|\"feature\"|\"key\", \"uncertain\": boolean}. Keep existing English words unchanged. "
         "Set uncertain=true when the ASR source word or surrounding phrase is nonsensical and cannot be corrected confidently. "
-        "Mark at most 20 percent as important, choosing emotionally strong or key meaning words."
+        "Emphasis is a 3-tier read of how a professional caption editor would highlight each word: "
+        "\"key\" is the single punchiest word in a short phrase - a number, a strong verb/adjective, a brand or product name, "
+        "the emotional peak of what's being said. Use it sparingly, roughly 1 word in every 10-15. "
+        "\"feature\" is a secondary notable word worth a visual lift but not the main punch - another name, quantity, or "
+        "descriptive word. Use it for roughly 15-20 percent of words. Every other word (articles, connectors, filler) is \"support\"."
     )
     client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
     context_line = f"Video context only for resolving product terms: {context}\n" if context else ""
@@ -431,6 +435,11 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
     for word in words:
         item = converted.get(word["index"], {})
         word["text"] = str(item.get("text") or word["original"]).strip()
-        word["important"] = bool(item.get("important", False))
+        emphasis = item.get("emphasis")
+        if emphasis not in {"support", "feature", "key"}:
+            emphasis = "support"
+        word["emphasis"] = emphasis
+        # Kept for templates/UI built around a simple on/off emphasis flag.
+        word["important"] = emphasis != "support"
         word["uncertain"] = bool(item.get("uncertain", False))
     return words
