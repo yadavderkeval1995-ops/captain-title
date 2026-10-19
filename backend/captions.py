@@ -492,8 +492,12 @@ def _escape_filter_path(path):
 
 def _render(source, ass_path, output, fonts_dir):
     subtitles_arg = f"subtitles={_escape_filter_path(ass_path)}:fontsdir={_escape_filter_path(fonts_dir)}"
+    # High-quality export: crf 17 is close to visually lossless, and "slow"
+    # trades encode time for better compression at that quality - both
+    # reasonable given videos here are capped at 120s.
     result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", subtitles_arg,
-                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-c:a", "aac",
+                             "-c:v", "libx264", "-preset", "slow", "-crf", "17",
+                             "-c:a", "aac", "-b:a", "192k",
                              "-movflags", "+faststart", output], capture_output=True, text=True)
     if result.returncode:
         logger.error("FFmpeg render failed: %s", result.stderr[-2000:])
