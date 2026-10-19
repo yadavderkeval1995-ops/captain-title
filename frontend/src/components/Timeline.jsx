@@ -25,6 +25,20 @@ export const Timeline = ({ words, duration, currentTime, playing, onToggle, onSe
     window.addEventListener("mouseup", onUp);
   };
 
+  // Keep the playhead in view as the video plays instead of letting it run
+  // off the edge of a scrolled timeline. Only while actually playing, so it
+  // never fights a manual scroll or drag-scrub.
+  useEffect(() => {
+    if (!playing) return;
+    const track = trackRef.current;
+    if (!track) return;
+    const playheadX = currentTime * PIXELS_PER_SECOND;
+    const { scrollLeft, clientWidth } = track;
+    if (playheadX > scrollLeft + clientWidth - 60 || playheadX < scrollLeft) {
+      track.scrollLeft = Math.max(0, playheadX - clientWidth * 0.2);
+    }
+  }, [currentTime, playing]);
+
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.code !== "Space") return;

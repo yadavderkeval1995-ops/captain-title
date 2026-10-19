@@ -280,7 +280,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   return <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={style} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>;
                 })}
               </div>)}
-              <i className="resize-handle" onMouseDown={startResize} data-testid="caption-resize-handle" />
+              <div className="selection-box">
+                {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResize} data-testid={`caption-resize-handle-${pos}`} />)}
+              </div>
             </div>}
             {scopePrompt && <div className="position-scope-prompt" style={{ left: `${boxX}%`, top: `${Math.min(92, boxY + 8)}%` }} data-testid="position-scope-prompt">
               <button onClick={() => applyScope("this")} data-testid="apply-this-caption-button">This caption</button>
