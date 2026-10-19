@@ -244,6 +244,15 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                     logger.exception("Fallback transcription pass failed for chunk %s", chunk_path)
             trustworthy = [candidate for candidate in candidates if candidate["trustworthy"]]
             if not trustworthy:
+                for candidate in candidates:
+                    logger.warning(
+                        "Chunk %s rejected: mode=%s score=%.3f avg_logprob=%.3f coverage=%.3f "
+                        "unique_ratio=%.3f bigram_ratio=%.3f ngram_repeat=%d words=%d",
+                        chunk_path, candidate["mode"], candidate["score"], candidate["average_logprob"],
+                        candidate["speech_coverage"], candidate["unique_ratio"], candidate["bigram_ratio"],
+                        candidate["ngram_repeat"], len(candidate["words"]))
+                if not candidates:
+                    logger.warning("Chunk %s produced no candidates at all (both passes threw)", chunk_path)
                 continue
             selected = max(trustworthy, key=lambda candidate: candidate["score"])
             for word in selected["words"]:
@@ -299,8 +308,13 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
     if not match:
         raise ValueError("Hinglish conversion did not return valid JSON")
     converted = {int(item["index"]): item for item in json.loads(match.group(0))}
-    if set(converted) != set(range(len(words))):
-        raise ValueError("Hinglish conversion did not preserve every timed word")
+    missing = set(range(len(words))) - set(converted)
+    if missing:
+        # GPT occasionally drops a handful of indices from a long JSON
+        # response instead of returning every one as instructed. Falling
+        # back to the original Whisper text for just those words (handled
+        # below) beats failing the whole video over a partial response.
+        logger.warning("Hinglish conversion dropped %d/%d word indices", len(missing), len(words))
     for word in words:
         item = converted.get(word["index"], {})
         word["text"] = str(item.get("text") or word["original"]).strip()
