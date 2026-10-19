@@ -146,6 +146,8 @@ def _build_candidate(response, skip_before: float = 0.0):
     words_text = list(timestamps.words) if timestamps else []
     starts = list(timestamps.start_time_seconds) if timestamps else []
     ends = list(timestamps.end_time_seconds) if timestamps else []
+    logger.info("Sarvam raw response: transcript=%r words=%r starts=%r ends=%r",
+                getattr(response, "transcript", None), words_text, starts, ends)
     words = []
     for text, start, end in zip(words_text, starts, ends):
         text = str(text).strip()
