@@ -335,13 +335,28 @@ def _ass_color(hex_color):
     return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}&"
 
 
+SENTENCE_END_CHARS = ".!?।॥"  # includes Devanagari danda/double danda
+
+
+def _ends_sentence(word):
+    """Whether this word closes out a sentence/dialogue line, judged from its
+    original (pre-Hinglish-romanization) text - GPT's romanization pass isn't
+    reliably instructed to keep trailing punctuation, but Sarvam's raw output
+    does carry it."""
+    original = (word.get("original") or "").strip()
+    return bool(original) and original[-1] in SENTENCE_END_CHARS
+
+
 def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, strict_count=False):
     """Group fast/short consecutive words into one display line so each stays
     on screen long enough to read (and to survive the video player's own
     timeupdate granularity) instead of flashing past one at a time. With
     strict_count (a user-chosen words-per-caption instead of "Auto"), always
     pack up to max_words rather than stopping early once min_display is met -
-    a natural pause (max_gap) is still a break point either way."""
+    a natural pause (max_gap) is still a break point either way. A sentence-
+    ending word is always the last word of its group, regardless of the gap
+    or count settings, so a caption never splices the tail of one sentence
+    onto the start of the next."""
     groups = []
     index = 0
     total = len(words)
@@ -349,7 +364,8 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
         group = [words[index]]
         group_end = words[index]["end"]
         next_index = index + 1
-        while (next_index < total and len(group) < max_words and words[next_index]["start"] - group_end < max_gap
+        while (next_index < total and len(group) < max_words and not _ends_sentence(group[-1])
+              and words[next_index]["start"] - group_end < max_gap
               and (strict_count or group_end - words[index]["start"] < min_display)):
             group.append(words[next_index])
             group_end = words[next_index]["end"]

@@ -14,13 +14,21 @@ const fontFamilyById = Object.fromEntries(fonts.map((item) => [item.id, item.fam
 const MIN_DISPLAY_SECONDS = 0.35;
 const MAX_WORDS_PER_LINE = 3;
 const MAX_GROUP_GAP = 0.4;
+const SENTENCE_END_CHARS = ".!?।॥"; // includes Devanagari danda/double danda
 const POSITION_DEFAULTS = { top: { x: 50, y: 14 }, middle: { x: 50, y: 50 }, bottom: { x: 50, y: 86 } };
+
+function endsSentence(word) {
+  const original = (word.original || "").trim();
+  return !!original && SENTENCE_END_CHARS.includes(original[original.length - 1]);
+}
 
 // Mirrors backend/captions.py's _group_words_for_display: fast/short
 // consecutive words get shown together instead of flashing past one at a
 // time faster than the player's own timeupdate resolution can catch. With an
 // explicit wordsPerCaption (not "Auto"), always pack up to that many words
-// instead of stopping early once MIN_DISPLAY_SECONDS is met.
+// instead of stopping early once MIN_DISPLAY_SECONDS is met. A sentence-
+// ending word is always the last word of its group, so a caption never
+// splices the tail of one sentence onto the start of the next.
 function groupWordsForDisplay(words, wordsPerCaption) {
   const maxWords = wordsPerCaption || MAX_WORDS_PER_LINE;
   const strict = wordsPerCaption != null;
@@ -30,7 +38,8 @@ function groupWordsForDisplay(words, wordsPerCaption) {
     const group = [words[index]];
     let groupEnd = words[index].end;
     let next = index + 1;
-    while (next < words.length && group.length < maxWords && words[next].start - groupEnd < MAX_GROUP_GAP
+    while (next < words.length && group.length < maxWords && !endsSentence(group[group.length - 1])
+          && words[next].start - groupEnd < MAX_GROUP_GAP
           && (strict || groupEnd - words[index].start < MIN_DISPLAY_SECONDS)) {
       group.push(words[next]);
       groupEnd = words[next].end;
@@ -153,7 +162,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const startClientY = e.clientY;
     const startSize = boxFontSize;
     const onMove = (moveEvent) => {
-      const delta = (startClientY - moveEvent.clientY) * 0.3;
+      // The handle sits at the box's bottom-right corner, so dragging it
+      // down/away (increasing clientY) should grow the text, matching the
+      // familiar "stretch a window corner outward to make it bigger" feel.
+      const delta = (moveEvent.clientY - startClientY) * 0.3;
       setResizePreview(Math.min(92, Math.max(24, Math.round(startSize + delta))));
     };
     const onUp = () => {
