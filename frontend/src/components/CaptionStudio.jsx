@@ -10,6 +10,9 @@ import { LeftRail } from "@/components/LeftRail";
 import { MediaPanel } from "@/components/MediaPanel";
 import { AudioPanel } from "@/components/AudioPanel";
 import { ElementsPanel } from "@/components/ElementsPanel";
+import { TextPanel } from "@/components/TextPanel";
+import { AdjustmentPanel } from "@/components/AdjustmentPanel";
+import { AiToolsPanel } from "@/components/AiToolsPanel";
 
 const palettes = Object.fromEntries(templates.map((item) => [item.id, [item.baseColor, item.color]]));
 const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item.accentFont ? `'${item.accentFont}', sans-serif` : null]));
@@ -115,6 +118,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [audioVolume, setAudioVolume] = useState(initialProject.audio_volume ?? 100);
   const [audioMuted, setAudioMuted] = useState(initialProject.audio_muted ?? false);
+  const [brightness, setBrightness] = useState(initialProject.brightness ?? 0);
+  const [contrast, setContrast] = useState(initialProject.contrast ?? 100);
+  const [saturation, setSaturation] = useState(initialProject.saturation ?? 100);
+  const [reassigning, setReassigning] = useState(false);
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
 
@@ -171,19 +178,34 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
   const payload = () => ({ theme, font_id: fontId, words_per_caption: wordsPerCaption,
                            caption_lines: captionLines, caption_position: captionPosition, words,
-                           audio_volume: audioVolume, audio_muted: audioMuted, elements });
+                           audio_volume: audioVolume, audio_muted: audioMuted,
+                           brightness, contrast, saturation, elements });
 
-  const addElement = (char) => {
+  const addElement = (char, kind = "sticker") => {
     const id = `el_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const start = currentTime;
     const end = Math.min(project.duration, currentTime + 2);
-    setElements((current) => [...current, { id, char, color: "#FFFFFF", font_size: 120, start, end, pos_x: 50, pos_y: 30 }]);
+    const fontSize = kind === "text" ? 48 : 120;
+    setElements((current) => [...current, { id, kind, char, font_id: fontId, color: "#FFFFFF", font_size: fontSize, start, end, pos_x: 50, pos_y: 30 }]);
     setSelectedElementId(id);
   };
   const updateElement = (id, changes) => setElements((current) => current.map((item) => item.id === id ? { ...item, ...changes } : item));
   const deleteElement = (id) => {
     setElements((current) => current.filter((item) => item.id !== id));
     setSelectedElementId((current) => current === id ? null : current);
+  };
+  const deleteWords = (indices) => {
+    const indexSet = new Set(indices);
+    setWords((current) => current.filter((word) => !indexSet.has(word.index)));
+  };
+  const reassignEmphasis = async () => {
+    setReassigning(true);
+    try {
+      const { data } = await api.post(`/projects/${project.project_id}/ai/emphasis`);
+      setWords(data.words);
+      toast.success("Emphasis re-tagged by AI");
+    } catch (error) { toast.error(errorMessage(error)); }
+    finally { setReassigning(false); }
   };
   const save = async () => {
     await api.put(`/projects/${project.project_id}`, payload());
@@ -352,10 +374,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />}
         {leftTab === "media" && <MediaPanel project={project} />}
         {leftTab === "audio" && <AudioPanel volume={audioVolume} onVolume={setAudioVolume} muted={audioMuted} onMuted={setAudioMuted} />}
-        {leftTab === "elements" && <ElementsPanel elements={elements} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={addElement} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
+        {leftTab === "elements" && <ElementsPanel elements={elements.filter((item) => item.kind !== "text")} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={(char) => addElement(char, "sticker")} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
+        {leftTab === "text" && <TextPanel elements={elements} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={(text) => addElement(text, "text")} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
+        {leftTab === "adjustment" && <AdjustmentPanel brightness={brightness} contrast={contrast} saturation={saturation} onBrightness={setBrightness} onContrast={setContrast} onSaturation={setSaturation} onReset={() => { setBrightness(0); setContrast(100); setSaturation(100); }} />}
+        {leftTab === "ai" && <AiToolsPanel words={words} onDeleteWords={deleteWords} onReassignEmphasis={reassignEmphasis} reassigning={reassigning} />}
         <section className="preview-panel" data-testid="video-preview-panel">
           <div className="video-frame" ref={videoFrameRef}>
-            <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
+            <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} style={{ filter: `brightness(${100 + brightness}%) contrast(${contrast}%) saturate(${saturation}%)` }} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
             <button className="preview-play" onClick={togglePlayback} data-testid="video-preview-play-button"><Play size={28} weight="fill" /></button>
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%` }} onMouseDown={startMove} data-testid="live-caption-preview">
@@ -380,9 +405,11 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               <button onClick={() => applyScope("all")} data-testid="apply-all-captions-button">All captions</button>
             </div>}
             {elements.filter((item) => currentTime >= item.start && currentTime <= item.end).map((item) => {
-              const interactive = leftTab === "elements";
+              const interactive = leftTab === "elements" || leftTab === "text";
               return <div key={item.id} className={`element-overlay ${interactive && selectedElementId === item.id ? "selected" : ""}`}
                 style={{ left: `${item.pos_x}%`, top: `${item.pos_y}%`, fontSize: `${item.font_size * .62}px`, color: item.color,
+                        fontFamily: item.kind === "text" ? fontFamilyById[item.font_id] : undefined,
+                        fontWeight: item.kind === "text" ? 700 : undefined,
                         cursor: interactive ? "grab" : "default", pointerEvents: interactive ? "auto" : "none" }}
                 onMouseDown={interactive ? (e) => { setSelectedElementId(item.id); startMoveElement(item.id)(e); } : undefined}
                 data-testid={`element-overlay-${item.id}`}>

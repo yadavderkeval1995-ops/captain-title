@@ -8,12 +8,14 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 import imageio_ffmpeg
 
 from auth import current_user
-from caption_ai import convert_to_hinglish, transcribe_words
+from caption_ai import convert_to_hinglish, reassign_emphasis, transcribe_words
 from storage_service import APP_NAME, get_object, put_object
 
 projects_router = APIRouter(prefix="/api", tags=["captions"])
@@ -88,9 +90,13 @@ class WordEdit(BaseModel):
 
 class ElementEdit(BaseModel):
     id: str
-    char: str = Field(min_length=1, max_length=4)
+    # "sticker" is one of the curated glyph buttons (Elements panel); "text"
+    # is free-form typed content (Text panel) and additionally honors font_id.
+    kind: Literal["sticker", "text"] = "sticker"
+    char: str = Field(min_length=1, max_length=60)
+    font_id: str = "poppins"
     color: str = "#FFFFFF"
-    font_size: int = Field(default=120, ge=40, le=280)
+    font_size: int = Field(default=120, ge=20, le=280)
     start: float = Field(ge=0)
     end: float = Field(ge=0)
     pos_x: float = Field(default=50, ge=0, le=100)
@@ -105,6 +111,9 @@ class ProjectEdit(BaseModel):
     caption_position: str = "bottom"
     audio_volume: int = Field(default=100, ge=0, le=200)
     audio_muted: bool = False
+    brightness: int = Field(default=0, ge=-50, le=50)
+    contrast: int = Field(default=100, ge=50, le=200)
+    saturation: int = Field(default=100, ge=0, le=200)
     words: list[WordEdit]
     elements: list[ElementEdit] = []
 
@@ -305,7 +314,8 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "duration": duration, "width": width, "height": height, "size_bytes": len(data),
                    "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
-                   "audio_volume": 100, "audio_muted": False, "elements": [],
+                   "audio_volume": 100, "audio_muted": False,
+                   "brightness": 0, "contrast": 100, "saturation": 100, "elements": [],
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -342,6 +352,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "words_per_caption": payload.words_per_caption,
                   "caption_lines": payload.caption_lines, "caption_position": payload.caption_position,
                   "audio_volume": payload.audio_volume, "audio_muted": payload.audio_muted,
+                  "brightness": payload.brightness, "contrast": payload.contrast, "saturation": payload.saturation,
                   "words": [word.model_dump() for word in payload.words],
                   "elements": [element.model_dump() for element in payload.elements],
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
@@ -381,6 +392,36 @@ async def retranscribe_project(project_id: str, payload: RetranscribeRequest, re
     schedule_caption_job(db, project_id, consume_credit=False)
     refreshed = await db.projects.find_one({"project_id": project_id}, {"_id": 0})
     return _public_project(refreshed)
+
+
+@projects_router.post("/projects/{project_id}/ai/emphasis")
+async def reassign_emphasis_endpoint(project_id: str, request: Request, user=Depends(current_user)):
+    db = request.app.state.db
+    project = await db.projects.find_one({"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not project.get("words"):
+        raise HTTPException(422, "No captions to re-tag yet")
+    try:
+        words = await reassign_emphasis(list(project["words"]), project.get("name", ""))
+    except Exception as exc:
+        raise HTTPException(502, "AI emphasis re-assignment failed. Please try again.") from exc
+    # Re-bake color/font_size from the (possibly now different) tier, same
+    # as a template switch does - a word whose tier just changed shouldn't
+    # keep styling that belonged to its old one.
+    palette = THEMES.get(project["theme"], THEMES["viral"])
+    tiers = palette.get("tiers")
+    for word in words:
+        if tiers:
+            config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
+            word["color"] = config["color"]
+            word["font_size"] = config["size"]
+        else:
+            word["color"] = palette["accent"] if word["important"] else palette["base"]
+            word["font_size"] = 62 if word["important"] else 52
+    await db.projects.update_one({"project_id": project_id}, {"$set": {
+        "words": words, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"words": words}
 
 
 def _ass_time(seconds):
@@ -480,12 +521,18 @@ def _resolve_line_breaks(group, tiers, caption_lines):
 
 
 def _write_element_dialogue(element):
-    """A sticker overlay: fixed position (no word-sync), own font size/color,
-    drawn on a layer above the caption text so it sits on top of it."""
+    """A sticker or free-text overlay: fixed position (no word-sync), own
+    font size/color, drawn on a layer above the caption text so it sits on
+    top of it. A sticker glyph relies on fontconfig's own fallback to find a
+    font that covers it (the project's chosen caption font usually doesn't);
+    a text layer instead honors its own explicit font choice."""
     safe = (element.get("char") or "").replace("{", "").replace("}", "")
     x_px = round(element.get("pos_x", 50) / 100 * 1080)
     y_px = round(element.get("pos_y", 30) / 100 * 1920)
     tags = f"\\an5\\pos({x_px},{y_px})\\fs{element.get('font_size', 120)}\\c{_ass_color(element.get('color', '#FFFFFF'))}"
+    if element.get("kind") == "text":
+        family = FONTS.get(element.get("font_id", "poppins"), FONTS["poppins"])["family"]
+        tags = f"\\fn{family}" + tags
     return (f"Dialogue: 1,{_ass_time(element['start'])},{_ass_time(element['end'])},"
             f"Default,,0,0,0,,{{{tags}}}{safe}\n")
 
@@ -550,7 +597,8 @@ def _escape_filter_path(path):
     return Path(path).as_posix().replace(":", r"\:")
 
 
-def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=False):
+def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=False,
+           brightness=0, contrast=100, saturation=100):
     # Escaping a Windows drive-letter colon with '\:' only works for the
     # subtitles filter's own filename argument - ffmpeg's generic option
     # parser (used for fontsdir=...) doesn't honor that escape the same way
@@ -563,10 +611,15 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
     fonts_rel = os.path.relpath(fonts_dir, work_dir)
     subtitles_arg = f"subtitles={_escape_filter_path(ass_name)}:fontsdir={_escape_filter_path(fonts_rel)}"
     volume = 0 if audio_muted else max(0, audio_volume) / 100
+    # Color grading runs before the subtitles are burned in, so captions
+    # stay their own full-strength color regardless of how the footage is
+    # graded - matches how caption apps treat text as a separate layer.
+    eq_arg = f"eq=brightness={brightness / 100}:contrast={contrast / 100}:saturation={saturation / 100}"
+    video_filter = f"{eq_arg},{subtitles_arg}"
     # High-quality export: crf 17 is close to visually lossless, and "slow"
     # trades encode time for better compression at that quality - both
     # reasonable given videos here are capped at 120s.
-    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", subtitles_arg,
+    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", video_filter,
                              "-af", f"volume={volume}",
                              "-c:v", "libx264", "-preset", "slow", "-crf", "17",
                              "-c:a", "aac", "-b:a", "192k",
@@ -593,7 +646,9 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
                   project.get("caption_position", "bottom"), project.get("elements"))
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
-                                    project.get("audio_volume", 100), project.get("audio_muted", False))
+                                    project.get("audio_volume", 100), project.get("audio_muted", False),
+                                    project.get("brightness", 0), project.get("contrast", 100),
+                                    project.get("saturation", 100))
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()

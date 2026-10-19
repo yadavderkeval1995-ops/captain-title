@@ -443,3 +443,40 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         word["important"] = emphasis != "support"
         word["uncertain"] = bool(item.get("uncertain", False))
     return words
+
+
+async def reassign_emphasis(words: list[dict], context: str = ""):
+    """Re-run just the 3-tier emphasis read (not the Hinglish romanization)
+    against the *current* caption text, leaving text/uncertain untouched -
+    for re-tagging after the user hand-edits words, when the original
+    emphasis assigned at generation time no longer matches what's on screen."""
+    numbered = "\n".join(f"{word['index']}: {word['text']}" for word in words)
+    system = (
+        "You are a professional caption editor deciding which words in a short-form video caption "
+        "deserve visual emphasis. Return only a JSON array, one item per input index: "
+        "{\"index\": integer, \"emphasis\": \"support\"|\"feature\"|\"key\"}. "
+        "\"key\" is the single punchiest word in a short phrase - a number, a strong verb/adjective, a brand or "
+        "product name, the emotional peak of what's being said. Use it sparingly, roughly 1 word in every 10-15. "
+        "\"feature\" is a secondary notable word worth a visual lift but not the main punch - another name, "
+        "quantity, or descriptive word. Use it for roughly 15-20 percent of words. "
+        "Every other word (articles, connectors, filler) is \"support\"."
+    )
+    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    context_line = f"Video context only for resolving product terms: {context}\n" if context else ""
+    response = await client.chat.completions.create(
+        model=os.environ.get("CAPTION_LLM_MODEL", "gpt-4o"), temperature=0,
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": f"{context_line}Assign emphasis to these indexed words:\n{numbered}"}])
+    raw = (response.choices[0].message.content or "").strip()
+    match = re.search(r"\[[\s\S]*\]", raw)
+    if not match:
+        raise ValueError("Emphasis re-assignment did not return valid JSON")
+    converted = {int(item["index"]): item for item in json.loads(match.group(0))}
+    for word in words:
+        item = converted.get(word["index"], {})
+        emphasis = item.get("emphasis")
+        if emphasis not in {"support", "feature", "key"}:
+            emphasis = word.get("emphasis", "support")
+        word["emphasis"] = emphasis
+        word["important"] = emphasis != "support"
+    return words
