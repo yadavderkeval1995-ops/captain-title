@@ -14,10 +14,32 @@ a subscription product later.
   Whisper supplies the per-word *timing* (Sarvam's REST API doesn't return
   word-level timestamps) - the two are stitched together. GPT handles the
   Hindi → Hinglish conversion pass.
-- **Frontend**: React 19 + Tailwind + Radix UI, three-zone editor (tools /
-  preview / transcript) with a bottom word timeline.
+- **Frontend**: React 19 + Tailwind + Radix UI. A Captik-style editor: a left
+  icon rail (Media / Audio / Text / Elements / Captions / Adjustment / AI
+  tools) switches the left panel's content, a center 9:16 preview, a right
+  panel tabbed Templates / Customize / Text for caption styling, and a
+  bottom word timeline. Cherry Red / Roma Red gradient brand palette over
+  black/white.
 - **Storage**: local disk by default (`backend/storage_data/`), swap for S3
   or similar before going multi-user.
+
+## Editor panels
+
+- **Captions** - the word-by-word transcript: edit text inline, see
+  uncertain words flagged, trigger a Re-listen.
+- **Media** - read-only source info (resolution, duration, file size, format).
+- **Audio** - a 0-200% volume slider and mute toggle for the original audio,
+  applied in the exported render via ffmpeg's `volume` filter.
+- **Elements** - a curated sticker/symbol picker; each one is draggable and
+  resizable on the canvas and gets its own color/size/timing.
+- **Text** - free-typed text layers (titles, labels), same drag/resize/timing
+  controls as Elements, plus a font picker.
+- **Adjustment** - brightness/contrast/saturation, baked into the export via
+  ffmpeg's `eq` filter *before* the caption burn-in, so captions and stickers
+  stay full-strength regardless of grading.
+- **AI tools** - a local filler-word scan (um, matlab, basically, toh...)
+  with one-click or bulk removal, and "Re-run AI emphasis" to re-tag which
+  words get Key/Feature/Support styling after you've hand-edited the text.
 
 ## Local setup
 
