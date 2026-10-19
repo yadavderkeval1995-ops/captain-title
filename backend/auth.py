@@ -1,26 +1,26 @@
 import asyncio
+import logging
 import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlencode
 
 import bcrypt
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = logging.getLogger("captain-title.auth")
 
 
 class Credentials(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=72)
     name: Optional[str] = Field(default=None, min_length=2, max_length=80)
-
-
-class GoogleSession(BaseModel):
-    session_id: str
 
 
 class UserOut(BaseModel):
@@ -112,18 +112,45 @@ async def login(payload: Credentials, response: Response, request: Request):
     return UserOut(**user)
 
 
-@auth_router.post("/google/session", response_model=UserOut)
-async def google_session(payload: GoogleSession, response: Response, request: Request):
+@auth_router.get("/google/login")
+async def google_login():
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI")
+    if not client_id or not redirect_uri:
+        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+        return RedirectResponse(f"{frontend_url}/?google_error=not_configured")
+    params = {
+        "client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code",
+        "scope": "openid email profile", "access_type": "online", "prompt": "select_account",
+    }
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}")
+
+
+@auth_router.get("/google/callback")
+async def google_callback(request: Request, code: Optional[str] = None, error: Optional[str] = None):
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    if error or not code:
+        return RedirectResponse(f"{frontend_url}/?google_error=denied")
+
     def exchange():
-        result = requests.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": payload.session_id}, timeout=20)
-        result.raise_for_status()
-        return result.json()
+        token_response = requests.post("https://oauth2.googleapis.com/token", data={
+            "code": code, "client_id": os.environ["GOOGLE_CLIENT_ID"],
+            "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
+            "redirect_uri": os.environ["GOOGLE_REDIRECT_URI"], "grant_type": "authorization_code",
+        }, timeout=20)
+        token_response.raise_for_status()
+        access_token = token_response.json()["access_token"]
+        info_response = requests.get("https://www.googleapis.com/oauth2/v3/userinfo",
+                                     headers={"Authorization": f"Bearer {access_token}"}, timeout=20)
+        info_response.raise_for_status()
+        return info_response.json()
+
     try:
         profile = await asyncio.to_thread(exchange)
-    except Exception as exc:
-        raise HTTPException(401, "Google sign-in could not be verified") from exc
+    except Exception:
+        logger.exception("Google OAuth token exchange failed")
+        return RedirectResponse(f"{frontend_url}/?google_error=failed")
+
     db = request.app.state.db
     email = profile["email"].lower()
     user = await db.users.find_one({"email": email}, {"_id": 0})
@@ -139,9 +166,9 @@ async def google_session(payload: GoogleSession, response: Response, request: Re
             "picture": profile.get("picture") or user.get("picture")}})
     await _ensure_usage(db, user["user_id"])
     token = await _create_session(db, user["user_id"])
+    response = RedirectResponse(f"{frontend_url}/editor")
     _set_cookie(response, token)
-    response.headers["X-Session-Token"] = token
-    return UserOut(**user)
+    return response
 
 
 @auth_router.get("/me", response_model=UserOut)

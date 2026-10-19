@@ -50,10 +50,21 @@ cp .env.example .env      # point REACT_APP_BACKEND_URL at the backend
 yarn start
 ```
 
-Email/password sign-in works out of the box. The "Continue with Google" button
-redirects to Emergent's hosted OAuth flow and only works if you're running on
-the Emergent platform — swap it for your own Google OAuth client when you're
-ready for real users.
+Email/password sign-in works out of the box. "Continue with Google" needs
+your own Google OAuth client (free, a few minutes to set up):
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials),
+   create an **OAuth 2.0 Client ID** of type **Web application**.
+2. Under **Authorized JavaScript origins**, add your frontend's URL (e.g.
+   `http://localhost:3000`).
+3. Under **Authorized redirect URIs**, add
+   `http://localhost:8000/api/auth/google/callback` (must match
+   `GOOGLE_REDIRECT_URI` below exactly).
+4. Copy the generated Client ID and Client Secret into `backend/.env`:
+   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`.
+
+Without those set, the Google button shows a friendly error and email/password
+still works fine.
 
 ### Optional: payments
 

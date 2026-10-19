@@ -1,14 +1,29 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowRight, ClosedCaptioning, GoogleLogo, Sparkle } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api, errorMessage } from "@/lib/api";
+import { api, API_ROOT, errorMessage } from "@/lib/api";
+
+const GOOGLE_ERROR_MESSAGES = {
+  not_configured: "Google sign-in isn't set up on this server yet. Use email/password, or ask the admin to add GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.",
+  denied: "Google sign-in was cancelled.",
+  failed: "Google sign-in failed. Please try again or use email/password.",
+};
 
 export const AuthScreen = ({ onAuth }) => {
   const [mode, setMode] = useState("login");
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", password: "" });
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get("google_error");
+    if (error) {
+      toast.error(GOOGLE_ERROR_MESSAGES[error] || "Google sign-in failed.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -25,9 +40,7 @@ export const AuthScreen = ({ onAuth }) => {
   };
 
   const googleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + "/editor";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    window.location.href = `${API_ROOT}/auth/google/login`;
   };
 
   return (

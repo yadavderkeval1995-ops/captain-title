@@ -95,11 +95,13 @@ class TestAuth:
                                 "password": "short", "name": "Short"}, timeout=15)
         assert r.status_code in (400, 422)
 
-    def test_google_session_invalid_sid_rejected(self):
-        # Any random session_id must be rejected by Emergent Auth backend
-        r = requests.post(f"{BASE_URL}/api/auth/google/session",
-                          json={"session_id": "definitely-not-a-real-session"}, timeout=25)
-        assert r.status_code == 401
+    def test_google_login_redirects(self):
+        r = requests.get(f"{BASE_URL}/api/auth/google/login", timeout=15, allow_redirects=False)
+        assert r.status_code in (302, 307)
+        location = r.headers.get("location", "")
+        # Redirects to Google's consent screen if GOOGLE_CLIENT_ID is configured,
+        # otherwise back to the frontend with a friendly error flag.
+        assert "accounts.google.com" in location or "google_error=not_configured" in location
 
     def test_me_without_token(self):
         r = requests.get(f"{BASE_URL}/api/auth/me", timeout=15)
