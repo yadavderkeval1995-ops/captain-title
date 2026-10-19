@@ -79,8 +79,12 @@ def _chunk_boundaries(total_duration: float, silence_points: list[float], second
     return boundaries
 
 
-def _split_wav(audio_path: str, output_dir: str, seconds: int = 30, snap_window: float = 3.0,
-               overlap_seconds: float = 2.0):
+def _split_wav(audio_path: str, output_dir: str, seconds: int = 20, snap_window: float = 2.0,
+               overlap_seconds: float = 1.5):
+    # Sarvam's real-time speech-to-text API hard-caps each request at 30
+    # seconds of audio. A chunk's worst case is `seconds + snap_window` of
+    # content plus up to `overlap_seconds` of priming audio prepended, so
+    # these defaults (20 + 2 + 1.5 = 23.5s) leave a solid safety margin.
     # Whisper is prone to fumbling the opening moment of whatever audio
     # buffer it's handed (a known quirk, not specific to this app). The very
     # first chunk gets a silence lead-in to "warm up" before real content
