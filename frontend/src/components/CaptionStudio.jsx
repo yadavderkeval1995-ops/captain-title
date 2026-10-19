@@ -6,6 +6,7 @@ import { api, API_ROOT, errorMessage } from "@/lib/api";
 import { ThemePanel, templates, fonts } from "@/components/ThemePanel";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { Timeline } from "@/components/Timeline";
+import { LeftRail } from "@/components/LeftRail";
 
 const palettes = Object.fromEntries(templates.map((item) => [item.id, [item.baseColor, item.color]]));
 const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item.accentFont ? `'${item.accentFont}', sans-serif` : null]));
@@ -272,11 +273,8 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         </div>
       </div>
       <div className="studio-grid">
-        <ThemePanel theme={theme} onTheme={chooseTheme} fontId={fontId} onFont={setFontId}
-          wordsPerCaption={wordsPerCaption} onWordsPerCaption={setWordsPerCaption}
-          captionLines={captionLines} onCaptionLines={setCaptionLines}
-          captionPosition={captionPosition} onCaptionPosition={setCaptionPosition}
-          selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
+        <LeftRail active="captions" onSelect={() => {}} />
+        <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />
         <section className="preview-panel" data-testid="video-preview-panel">
           <div className="video-frame" ref={videoFrameRef}>
             <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
@@ -306,7 +304,11 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           </div>
           <div className="preview-meta"><span data-testid="preview-format-label">9:16 PREVIEW</span><span data-testid="caption-engine-label">WORD SYNC · {theme.toUpperCase()}</span></div>
         </section>
-        <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />
+        <ThemePanel theme={theme} onTheme={chooseTheme} fontId={fontId} onFont={setFontId}
+          wordsPerCaption={wordsPerCaption} onWordsPerCaption={setWordsPerCaption}
+          captionLines={captionLines} onCaptionLines={setCaptionLines}
+          captionPosition={captionPosition} onCaptionPosition={setCaptionPosition}
+          selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
       </div>
       <Timeline words={words} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={setSelectedIndex} />
     </main>

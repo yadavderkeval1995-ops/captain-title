@@ -3,11 +3,11 @@
 @tailwind utilities;
 
 @layer base {
-  :root { --background:0 0% 4%;--foreground:0 0% 98%;--card:0 0% 8%;--card-foreground:0 0% 98%;--popover:0 0% 8%;--popover-foreground:0 0% 98%;--primary:211 100% 50%;--primary-foreground:0 0% 100%;--secondary:240 4% 16%;--secondary-foreground:0 0% 98%;--muted:240 4% 16%;--muted-foreground:240 5% 65%;--accent:211 100% 50%;--accent-foreground:0 0% 100%;--destructive:4 100% 59%;--destructive-foreground:0 0% 100%;--border:240 4% 16%;--input:240 4% 20%;--ring:211 100% 50%;--radius:.375rem; }
+  :root { --background:0 0% 4%;--foreground:0 0% 98%;--card:0 0% 8%;--card-foreground:0 0% 98%;--popover:0 0% 8%;--popover-foreground:0 0% 98%;--primary:350 83% 56%;--primary-foreground:0 0% 100%;--secondary:340 10% 16%;--secondary-foreground:0 0% 98%;--muted:340 6% 16%;--muted-foreground:340 5% 65%;--accent:350 83% 56%;--accent-foreground:0 0% 100%;--destructive:4 100% 59%;--destructive-foreground:0 0% 100%;--border:340 6% 16%;--input:340 6% 20%;--ring:350 83% 56%;--radius:.375rem; }
   * { @apply border-border; }
   html { background:#0a0a0a; }
   body { margin:0;@apply bg-background text-foreground; }
-  ::selection { background:#007aff;color:white; }
-  :focus-visible { outline:2px solid #4fa3ff;outline-offset:2px; }
+  ::selection { background:#ff2d4d;color:white; }
+  :focus-visible { outline:2px solid #ff5470;outline-offset:2px; }
   [data-debug-wrapper="true"] { display:contents!important; }
 }
