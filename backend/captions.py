@@ -491,14 +491,24 @@ def _escape_filter_path(path):
 
 
 def _render(source, ass_path, output, fonts_dir):
-    subtitles_arg = f"subtitles={_escape_filter_path(ass_path)}:fontsdir={_escape_filter_path(fonts_dir)}"
+    # Escaping a Windows drive-letter colon with '\:' only works for the
+    # subtitles filter's own filename argument - ffmpeg's generic option
+    # parser (used for fontsdir=...) doesn't honor that escape the same way
+    # and chokes right where the drive letter starts. Sidestep the whole
+    # problem by running ffmpeg from the .ass file's directory and
+    # referencing both paths relatively, so neither needs a drive letter
+    # (and therefore no colon) in the filtergraph string at all.
+    work_dir = os.path.dirname(ass_path)
+    ass_name = os.path.basename(ass_path)
+    fonts_rel = os.path.relpath(fonts_dir, work_dir)
+    subtitles_arg = f"subtitles={_escape_filter_path(ass_name)}:fontsdir={_escape_filter_path(fonts_rel)}"
     # High-quality export: crf 17 is close to visually lossless, and "slow"
     # trades encode time for better compression at that quality - both
     # reasonable given videos here are capped at 120s.
     result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", subtitles_arg,
                              "-c:v", "libx264", "-preset", "slow", "-crf", "17",
                              "-c:a", "aac", "-b:a", "192k",
-                             "-movflags", "+faststart", output], capture_output=True, text=True)
+                             "-movflags", "+faststart", output], capture_output=True, text=True, cwd=work_dir)
     if result.returncode:
         logger.error("FFmpeg render failed: %s", result.stderr[-2000:])
         raise RuntimeError("FFmpeg could not render this video")
