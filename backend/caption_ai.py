@@ -373,8 +373,14 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
             if stitched:
                 tail_words = [word["original"] for word in stitched[-40:]]
                 running_prompt = " ".join(tail_words)[-800:]
+                # Sarvam rejects any keyterm containing a comma or semicolon
+                # outright ("Send each keyterm as a separate array item"),
+                # since those characters are its own delimiter convention -
+                # transcript words often carry one as trailing punctuation.
+                cleaned_words = [re.sub(r"[,;]", "", word).strip() for word in tail_words]
                 seen = set()
-                running_keyterms = [word for word in tail_words if not (word in seen or seen.add(word))]
+                running_keyterms = [word for word in cleaned_words
+                                    if word and not (word in seen or seen.add(word))]
     words = []
     for selected in selected_chunks:
         for word in selected["words"]:
