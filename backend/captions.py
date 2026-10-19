@@ -41,6 +41,9 @@ FONTS = {
 }
 
 
+CAPTION_POSITIONS = {"top", "middle", "bottom"}
+
+
 class WordEdit(BaseModel):
     index: int
     text: str = Field(min_length=1, max_length=80)
@@ -51,11 +54,20 @@ class WordEdit(BaseModel):
     uncertain: bool = False
     color: str = "#FFFFFF"
     font_size: int = Field(default=52, ge=24, le=92)
+    # None means "no manual placement" - inherit the project's caption_position
+    # preset. A concrete value is a percentage (0-100) of canvas width/height
+    # for where the caption box's center should sit, set by dragging it in
+    # the editor.
+    pos_x: float | None = Field(default=None, ge=0, le=100)
+    pos_y: float | None = Field(default=None, ge=0, le=100)
 
 
 class ProjectEdit(BaseModel):
     theme: str
     font_id: str = "poppins"
+    words_per_caption: int | None = Field(default=None, ge=1, le=8)
+    caption_lines: int = Field(default=1, ge=1, le=2)
+    caption_position: str = "bottom"
     words: list[WordEdit]
 
 
@@ -236,7 +248,9 @@ async def process_video(request: Request, file: UploadFile = File(...),
         except Exception as exc:
             raise HTTPException(503, "Video upload could not be stored. Please try again.") from exc
         project = {"project_id": project_id, "user_id": user["user_id"], "name": file.filename,
-                   "duration": duration, "theme": theme, "font_id": font_id, "words": [], "source_transcript": "",
+                   "duration": duration, "theme": theme, "font_id": font_id,
+                   "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
+                   "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
                    "content_type": file.content_type or "video/mp4", "credit_type": credit,
@@ -264,9 +278,13 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
         raise HTTPException(400, "Unknown theme")
     if payload.font_id not in FONTS:
         raise HTTPException(400, "Unknown caption font")
+    if payload.caption_position not in CAPTION_POSITIONS:
+        raise HTTPException(400, "Unknown caption position")
     result = await request.app.state.db.projects.update_one(
         {"project_id": project_id, "user_id": user["user_id"]},
         {"$set": {"theme": payload.theme, "font_id": payload.font_id,
+                  "words_per_caption": payload.words_per_caption,
+                  "caption_lines": payload.caption_lines, "caption_position": payload.caption_position,
                   "words": [word.model_dump() for word in payload.words],
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
@@ -317,10 +335,13 @@ def _ass_color(hex_color):
     return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}&"
 
 
-def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4):
+def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, strict_count=False):
     """Group fast/short consecutive words into one display line so each stays
     on screen long enough to read (and to survive the video player's own
-    timeupdate granularity) instead of flashing past one at a time."""
+    timeupdate granularity) instead of flashing past one at a time. With
+    strict_count (a user-chosen words-per-caption instead of "Auto"), always
+    pack up to max_words rather than stopping early once min_display is met -
+    a natural pause (max_gap) is still a break point either way."""
     groups = []
     index = 0
     total = len(words)
@@ -328,8 +349,8 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4):
         group = [words[index]]
         group_end = words[index]["end"]
         next_index = index + 1
-        while (group_end - words[index]["start"] < min_display and len(group) < max_words
-              and next_index < total and words[next_index]["start"] - group_end < max_gap):
+        while (next_index < total and len(group) < max_words and words[next_index]["start"] - group_end < max_gap
+              and (strict_count or group_end - words[index]["start"] < min_display)):
             group.append(words[next_index])
             group_end = words[next_index]["end"]
             next_index += 1
@@ -338,20 +359,50 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4):
     return groups
 
 
-def _write_ass(path, words, theme, font_id="poppins"):
+# Alignment (ASS \an numpad values) and vertical margin for each position
+# preset. "middle" ignores MarginV (ASS vertically centers regardless).
+POSITION_PRESETS = {"top": (8, 150), "middle": (5, 0), "bottom": (2, 210)}
+
+
+def _group_position(group, caption_position):
+    """A group carries a manual pos_x/pos_y (dragged in the editor) on its
+    first word if the user has placed this exact caption - otherwise fall
+    back to the project's position preset."""
+    anchor = group[0]
+    pos_x, pos_y = anchor.get("pos_x"), anchor.get("pos_y")
+    if pos_x is not None and pos_y is not None:
+        x_px, y_px = round(pos_x / 100 * 1080), round(pos_y / 100 * 1920)
+        return f"\\an5\\pos({x_px},{y_px})", 0
+    align, margin_v = POSITION_PRESETS.get(caption_position, POSITION_PRESETS["bottom"])
+    return f"\\an{align}", margin_v
+
+
+def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
+               caption_lines=1, caption_position="bottom"):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     accent_family = palette.get("accent_font") or primary_family
     header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
-    for group in _group_words_for_display(words):
-        styled_parts = []
-        for word in group:
+    groups = _group_words_for_display(words, max_words=words_per_caption or 3,
+                                      strict_count=words_per_caption is not None)
+    for group in groups:
+        position_tag, margin_v = _group_position(group, caption_position)
+        word_parts = []
+        for index, word in enumerate(group):
             safe = word["text"].replace("{", "").replace("}", "")
             family = accent_family if word.get("important") else primary_family
-            styled_parts.append(f"{{\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}")
-        styled = " ".join(styled_parts)
-        lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},Default,,0,0,0,,{styled}\n")
+            tags = f"\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}"
+            if index == 0:
+                tags = position_tag + tags
+            word_parts.append(f"{{{tags}}}{safe}")
+        if caption_lines == 2 and len(word_parts) > 1:
+            midpoint = -(-len(word_parts) // 2)
+            styled = " ".join(word_parts[:midpoint]) + r"\N" + " ".join(word_parts[midpoint:])
+        else:
+            styled = " ".join(word_parts)
+        lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
+                     f"Default,,0,0,{margin_v},,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")
 
 
@@ -399,7 +450,9 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         ass = os.path.join(temp, "captions.ass")
         output = os.path.join(temp, "captain-title.mp4")
         Path(source).write_bytes(data)
-        _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"))
+        _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
+                  project.get("words_per_caption"), project.get("caption_lines", 1),
+                  project.get("caption_position", "bottom"))
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR))
         except Exception as exc:

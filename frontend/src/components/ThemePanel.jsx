@@ -1,5 +1,8 @@
-import { Palette, TextAa, TextT, MagicWand } from "@phosphor-icons/react";
+import { Palette, Rows, TextAa, TextT, MagicWand } from "@phosphor-icons/react";
 import { Slider } from "@/components/ui/slider";
+
+const wordsPerCaptionOptions = [null, 1, 2, 3, 4, 5, 6, 8];
+const positions = ["top", "middle", "bottom"];
 
 export const templates = [
   { id: "viral", name: "Viral", baseColor: "#FFFFFF", color: "#FF3B30", accentFont: "Anton" },
@@ -17,7 +20,9 @@ export const fonts = [
   { id: "classic", name: "Classic", family: "'DejaVu Sans', sans-serif" },
 ];
 
-export const ThemePanel = ({ theme, onTheme, fontId, onFont, selectedWord, onWordStyle }) => (
+export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
+                             captionLines, onCaptionLines, captionPosition, onCaptionPosition,
+                             selectedWord, onWordStyle }) => (
   <aside className="tool-panel" data-testid="caption-tools-panel">
     <div className="panel-heading"><MagicWand size={18} /><div><span>STYLE ENGINE</span><h2 data-testid="theme-panel-heading">Caption template</h2></div></div>
     <div className="theme-grid" data-testid="caption-theme-selector">
@@ -31,6 +36,21 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, selectedWord, onWor
       {fonts.map((item) => <button key={item.id} className={fontId === item.id ? "active" : ""} style={{ fontFamily: item.family }} onClick={() => onFont(item.id)} data-testid={`font-${item.id}-button`}>
         {item.name}
       </button>)}
+    </div>
+    <div className="tool-divider" />
+    <div className="panel-heading compact"><Rows size={18} /><div><span>LAYOUT</span><h2 data-testid="layout-panel-heading">Caption layout</h2></div></div>
+    <label className="control-label" data-testid="words-per-caption-label">Words per caption</label>
+    <div className="layout-grid" data-testid="words-per-caption-selector">
+      {wordsPerCaptionOptions.map((n) => <button key={n ?? "auto"} className={wordsPerCaption === n ? "active" : ""} onClick={() => onWordsPerCaption(n)} data-testid={`words-per-caption-${n ?? "auto"}-button`}>{n ?? "Auto"}</button>)}
+    </div>
+    <label className="control-label" data-testid="caption-lines-label">Lines</label>
+    <div className="layout-grid two" data-testid="caption-lines-selector">
+      <button className={captionLines === 1 ? "active" : ""} onClick={() => onCaptionLines(1)} data-testid="caption-lines-1-button">One line</button>
+      <button className={captionLines === 2 ? "active" : ""} onClick={() => onCaptionLines(2)} data-testid="caption-lines-2-button">Two lines</button>
+    </div>
+    <label className="control-label" data-testid="caption-position-label">Position</label>
+    <div className="layout-grid three" data-testid="caption-position-selector">
+      {positions.map((p) => <button key={p} className={captionPosition === p ? "active" : ""} onClick={() => onCaptionPosition(p)} data-testid={`caption-position-${p}-button`}>{p[0].toUpperCase() + p.slice(1)}</button>)}
     </div>
     <div className="tool-divider" />
     <div className="panel-heading compact"><TextT size={18} /><div><span>SELECTED WORD</span><h2 data-testid="selected-word-heading">{selectedWord?.text || "Select a word"}</h2></div></div>

@@ -14,19 +14,24 @@ const fontFamilyById = Object.fromEntries(fonts.map((item) => [item.id, item.fam
 const MIN_DISPLAY_SECONDS = 0.35;
 const MAX_WORDS_PER_LINE = 3;
 const MAX_GROUP_GAP = 0.4;
+const POSITION_DEFAULTS = { top: { x: 50, y: 14 }, middle: { x: 50, y: 50 }, bottom: { x: 50, y: 86 } };
 
 // Mirrors backend/captions.py's _group_words_for_display: fast/short
 // consecutive words get shown together instead of flashing past one at a
-// time faster than the player's own timeupdate resolution can catch.
-function groupWordsForDisplay(words) {
+// time faster than the player's own timeupdate resolution can catch. With an
+// explicit wordsPerCaption (not "Auto"), always pack up to that many words
+// instead of stopping early once MIN_DISPLAY_SECONDS is met.
+function groupWordsForDisplay(words, wordsPerCaption) {
+  const maxWords = wordsPerCaption || MAX_WORDS_PER_LINE;
+  const strict = wordsPerCaption != null;
   const groups = [];
   let index = 0;
   while (index < words.length) {
     const group = [words[index]];
     let groupEnd = words[index].end;
     let next = index + 1;
-    while (groupEnd - words[index].start < MIN_DISPLAY_SECONDS && group.length < MAX_WORDS_PER_LINE
-          && next < words.length && words[next].start - groupEnd < MAX_GROUP_GAP) {
+    while (next < words.length && group.length < maxWords && words[next].start - groupEnd < MAX_GROUP_GAP
+          && (strict || groupEnd - words[index].start < MIN_DISPLAY_SECONDS)) {
       group.push(words[next]);
       groupEnd = words[next].end;
       next += 1;
@@ -42,34 +47,48 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [words, setWords] = useState(initialProject.words);
   const [theme, setTheme] = useState(initialProject.theme);
   const [fontId, setFontId] = useState(initialProject.font_id || "poppins");
+  const [wordsPerCaption, setWordsPerCaption] = useState(initialProject.words_per_caption ?? null);
+  const [captionLines, setCaptionLines] = useState(initialProject.caption_lines || 1);
+  const [captionPosition, setCaptionPosition] = useState(initialProject.caption_position || "bottom");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [relistening, setRelistening] = useState(false);
   const [mediaRetry, setMediaRetry] = useState(0);
+  const [dragPreview, setDragPreview] = useState(null);
+  const [resizePreview, setResizePreview] = useState(null);
+  const [scopePrompt, setScopePrompt] = useState(null);
   const videoRef = useRef(null);
+  const videoFrameRef = useRef(null);
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
-  const wordGroups = useMemo(() => groupWordsForDisplay(words), [words]);
+  const wordGroups = useMemo(() => groupWordsForDisplay(words, wordsPerCaption), [words, wordsPerCaption]);
   const visibleWords = useMemo(() => {
     const group = wordGroups.find((candidate) =>
       currentTime >= candidate[0].start && currentTime <= candidate[candidate.length - 1].end);
     return group || [];
   }, [wordGroups, currentTime]);
+  const anchorWord = visibleWords[0];
+  const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
+  const boxX = dragPreview?.x ?? anchorWord?.pos_x ?? basePos.x;
+  const boxY = dragPreview?.y ?? anchorWord?.pos_y ?? basePos.y;
+  const boxFontSize = resizePreview ?? anchorWord?.font_size ?? 52;
 
   const updateWord = (index, changes) => setWords((current) => current.map((word, i) => i === index ? { ...word, ...changes } : word));
   const chooseTheme = (next) => {
     setTheme(next);
     setWords((current) => current.map((word) => ({ ...word, color: palettes[next][word.important ? 1 : 0] })));
   };
+  const payload = () => ({ theme, font_id: fontId, words_per_caption: wordsPerCaption,
+                           caption_lines: captionLines, caption_position: captionPosition, words });
   const save = async () => {
-    await api.put(`/projects/${project.project_id}`, { theme, font_id: fontId, words });
+    await api.put(`/projects/${project.project_id}`, payload());
     toast.success("Caption edits saved");
   };
   const render = async () => {
     setRendering(true);
     try {
-      await api.put(`/projects/${project.project_id}`, { theme, font_id: fontId, words });
+      await api.put(`/projects/${project.project_id}`, payload());
       const { data } = await api.post(`/projects/${project.project_id}/render`);
       setProject({ ...project, status: "rendered", download_url: data.download_url });
       toast.success("Your captioned video is ready");
@@ -99,7 +118,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
   const downloadSrt = async () => {
     try {
-      await api.put(`/projects/${project.project_id}`, { theme, font_id: fontId, words });
+      await api.put(`/projects/${project.project_id}`, payload());
       const response = await api.get(`/projects/${project.project_id}/srt`, { responseType: "blob" });
       const url = URL.createObjectURL(response.data); const anchor = document.createElement("a");
       anchor.href = url; anchor.download = "captain-title.srt"; anchor.click(); URL.revokeObjectURL(url);
@@ -107,6 +126,58 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
   const togglePlayback = () => videoRef.current?.paused ? videoRef.current.play() : videoRef.current.pause();
   const seek = (time) => { if (videoRef.current) { videoRef.current.currentTime = time; setCurrentTime(time); } };
+
+  const startMove = (e) => {
+    if (!visibleWords.length) return;
+    e.preventDefault();
+    const frameRect = videoFrameRef.current.getBoundingClientRect();
+    const startClientX = e.clientX, startClientY = e.clientY;
+    const startX = boxX, startY = boxY;
+    const onMove = (moveEvent) => {
+      const dx = ((moveEvent.clientX - startClientX) / frameRect.width) * 100;
+      const dy = ((moveEvent.clientY - startClientY) / frameRect.height) * 100;
+      setDragPreview({ x: Math.min(100, Math.max(0, startX + dx)), y: Math.min(100, Math.max(0, startY + dy)) });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setDragPreview((current) => { if (current) setScopePrompt({ kind: "position", x: current.x, y: current.y }); return null; });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const startResize = (e) => {
+    if (!visibleWords.length) return;
+    e.preventDefault(); e.stopPropagation();
+    const startClientY = e.clientY;
+    const startSize = boxFontSize;
+    const onMove = (moveEvent) => {
+      const delta = (startClientY - moveEvent.clientY) * 0.3;
+      setResizePreview(Math.min(92, Math.max(24, Math.round(startSize + delta))));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setResizePreview((current) => { if (current != null) setScopePrompt({ kind: "size", fontSize: current }); return null; });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const applyScope = (scope) => {
+    if (!scopePrompt) return;
+    const changes = scopePrompt.kind === "position"
+      ? { pos_x: scopePrompt.x, pos_y: scopePrompt.y }
+      : { font_size: scopePrompt.fontSize };
+    if (scope === "this") {
+      const indices = new Set(visibleWords.map((word) => word.index));
+      setWords((current) => current.map((word) => indices.has(word.index) ? { ...word, ...changes } : word));
+    } else {
+      setWords((current) => current.map((word) => ({ ...word, ...changes })));
+    }
+    setScopePrompt(null);
+  };
 
   return (
     <main className="studio" data-testid="caption-editor-workspace">
@@ -120,14 +191,29 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         </div>
       </div>
       <div className="studio-grid">
-        <ThemePanel theme={theme} onTheme={chooseTheme} fontId={fontId} onFont={setFontId} selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
+        <ThemePanel theme={theme} onTheme={chooseTheme} fontId={fontId} onFont={setFontId}
+          wordsPerCaption={wordsPerCaption} onWordsPerCaption={setWordsPerCaption}
+          captionLines={captionLines} onCaptionLines={setCaptionLines}
+          captionPosition={captionPosition} onCaptionPosition={setCaptionPosition}
+          selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
         <section className="preview-panel" data-testid="video-preview-panel">
-          <div className="video-frame">
+          <div className="video-frame" ref={videoFrameRef}>
             <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
             <button className="preview-play" onClick={togglePlayback} data-testid="video-preview-play-button"><Play size={28} weight="fill" /></button>
-            <div className={`caption-overlay theme-${theme}`} data-testid="live-caption-preview">
-              {visibleWords.map((word) => <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={{ color: word.color, fontSize: `${Math.max(20, word.font_size * .62)}px`, fontFamily: (word.important && accentFontById[theme]) || fontFamilyById[fontId] }} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>)}
-            </div>
+            {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${captionLines === 2 ? "lines-2" : ""}`}
+              style={{ left: `${boxX}%`, top: `${boxY}%` }} onMouseDown={startMove} data-testid="live-caption-preview">
+              {(captionLines === 2 && visibleWords.length > 1
+                ? [visibleWords.slice(0, Math.ceil(visibleWords.length / 2)), visibleWords.slice(Math.ceil(visibleWords.length / 2))]
+                : [visibleWords]
+              ).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
+                {row.map((word) => <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={{ color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * .62)}px`, fontFamily: (word.important && accentFontById[theme]) || fontFamilyById[fontId] }} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>)}
+              </div>)}
+              <i className="resize-handle" onMouseDown={startResize} data-testid="caption-resize-handle" />
+            </div>}
+            {scopePrompt && <div className="position-scope-prompt" style={{ left: `${boxX}%`, top: `${Math.min(92, boxY + 8)}%` }} data-testid="position-scope-prompt">
+              <button onClick={() => applyScope("this")} data-testid="apply-this-caption-button">This caption</button>
+              <button onClick={() => applyScope("all")} data-testid="apply-all-captions-button">All captions</button>
+            </div>}
           </div>
           <div className="preview-meta"><span data-testid="preview-format-label">9:16 PREVIEW</span><span data-testid="caption-engine-label">WORD SYNC · {theme.toUpperCase()}</span></div>
         </section>
