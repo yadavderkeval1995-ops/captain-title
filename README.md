@@ -9,7 +9,10 @@ a subscription product later.
 ## Stack
 
 - **Backend**: FastAPI + MongoDB (Motor), FFmpeg for audio extraction and
-  subtitle rendering, Sarvam AI (Saaras) for transcription and GPT for the
+  subtitle rendering. Transcription is a hybrid: Sarvam AI (Saaras) recognizes
+  *what* was said (much more accurate than Whisper for Hindi/Hinglish), while
+  Whisper supplies the per-word *timing* (Sarvam's REST API doesn't return
+  word-level timestamps) - the two are stitched together. GPT handles the
   Hindi → Hinglish conversion pass.
 - **Frontend**: React 19 + Tailwind + Radix UI, three-zone editor (tools /
   preview / transcript) with a bottom word timeline.
@@ -29,9 +32,9 @@ uvicorn server:app --reload --port 8000
 ```
 
 You need a MongoDB instance (local `mongod`, or a free MongoDB Atlas cluster),
-a [Sarvam AI API key](https://dashboard.sarvam.ai) for transcription, and an
-[OpenAI API key](https://platform.openai.com/api-keys) for the Hinglish
-conversion step.
+a [Sarvam AI API key](https://dashboard.sarvam.ai) for speech recognition, and
+an [OpenAI API key](https://platform.openai.com/api-keys) for Whisper's
+word-level timing and the Hinglish conversion step.
 
 ### Frontend
 

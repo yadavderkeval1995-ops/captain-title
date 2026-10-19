@@ -5,7 +5,7 @@ export const TranscriptPanel = ({ words, originalTranscript, transcriptionMode, 
     <div className="panel-heading"><ListBullets size={18} /><div><span>HINGLISH TRANSCRIPT</span><h2 data-testid="transcript-panel-heading">Word by word</h2></div></div>
     <div className="raw-transcript" data-testid="whisper-raw-transcript">
       <div className="raw-transcript-head">
-        <span data-testid="whisper-raw-transcript-label">WHISPER HEARD · {transcriptionMode === "hi" ? "HINDI PASS" : "ADAPTIVE PASS"}</span>
+        <span data-testid="whisper-raw-transcript-label">TRANSCRIPT · {transcriptionMode === "hi" ? "HINDI PASS" : "ADAPTIVE PASS"}</span>
         <button onClick={onRelisten} disabled={relistening} data-testid="retranscribe-project-button"><ArrowClockwise size={13} className={relistening ? "spin" : ""} /> {relistening ? "Listening…" : "Re-listen"}</button>
       </div>
       <p data-testid="whisper-raw-transcript-text">{originalTranscript || words.map((word) => word.original).join(" ")}</p>

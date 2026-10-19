@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import wave
 from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -17,8 +18,16 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 logger = logging.getLogger("captain-title.caption_ai")
 
 
+def _as_dict(value):
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return value.__dict__ if hasattr(value, "__dict__") else {}
+
+
 def _tokens(text: str):
-    return re.findall(r"[\w\u0900-\u097f]+", text.lower(), flags=re.UNICODE)
+    return re.findall(r"[\wऀ-ॿ]+", text.lower(), flags=re.UNICODE)
 
 
 def _repetition_metrics(tokens: list[str]):
@@ -41,10 +50,25 @@ def _repetition_metrics(tokens: list[str]):
             "ngram_repeat": ngram_repeat, "penalty": penalty}
 
 
-async def _transcription_pass(audio_path: str, language_code: str, keyterms: list[str] | None = None):
+async def _whisper_pass(audio_path: str, language: str | None, prompt: str = ""):
+    """Whisper is used only for its word-level timing, not its text - Sarvam's
+    Hindi/Hinglish recognition is far more accurate, but its REST API doesn't
+    return per-word timestamps (confirmed in the sarvamai SDK's own docs)."""
+    client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    kwargs = {"model": "whisper-1", "response_format": "verbose_json",
+              "temperature": 0.0, "timestamp_granularities": ["word"]}
+    if language:
+        kwargs["language"] = language
+    if prompt:
+        kwargs["prompt"] = prompt
+    with open(audio_path, "rb") as audio:
+        return await client.audio.transcriptions.create(file=audio, **kwargs)
+
+
+async def _sarvam_pass(audio_path: str, language_code: str, keyterms: list[str] | None = None):
     client = AsyncSarvamAI(api_subscription_key=os.environ["SARVAM_API_KEY"])
     kwargs = {"model": os.environ.get("SARVAM_STT_MODEL", "saaras:v4"), "mode": "codemix",
-              "language_code": language_code, "with_timestamps": True}
+              "language_code": language_code}
     if keyterms:
         kwargs["keyterms"] = keyterms
     with open(audio_path, "rb") as audio:
@@ -66,8 +90,8 @@ def _chunk_boundaries(total_duration: float, silence_points: list[float], second
     while cursor < total_duration:
         target = cursor + seconds
         # Cutting exactly at a fixed interval risks slicing through a word
-        # mid-sentence, which both loses that word and resets Whisper's
-        # timing reference badly. Snap to the nearest real pause instead.
+        # mid-sentence, which both loses that word and resets the timing
+        # reference badly. Snap to the nearest real pause instead.
         nearby = [point for point in silence_points
                  if cursor < point <= min(target + snap_window, total_duration)
                  and point >= target - snap_window]
@@ -90,9 +114,8 @@ def _split_wav(audio_path: str, output_dir: str, seconds: int = 20, snap_window:
     # first chunk gets a silence lead-in to "warm up" before real content
     # starts. Every later chunk instead gets primed with real overlapping
     # audio from the tail of the previous chunk — genuine acoustic context,
-    # not just silence — and any words Whisper re-recognizes from that
-    # overlap get dropped by the caller since the previous chunk already
-    # produced them.
+    # not just silence — and any words re-recognized from that overlap get
+    # dropped by the caller since the previous chunk already produced them.
     lead_in_seconds = 0.5
     silence_points = _silence_midpoints(audio_path)
     with wave.open(audio_path, "rb") as source:
@@ -141,78 +164,215 @@ def _normalize_word_timings(words: list[dict]):
     return words
 
 
-def _build_candidate(response, skip_before: float = 0.0):
-    timestamps = getattr(response, "timestamps", None)
-    words_text = list(timestamps.words) if timestamps else []
-    starts = list(timestamps.start_time_seconds) if timestamps else []
-    ends = list(timestamps.end_time_seconds) if timestamps else []
-    logger.info("Sarvam raw response: transcript=%r words=%r starts=%r ends=%r",
-                getattr(response, "transcript", None), words_text, starts, ends)
-    words = []
-    for text, start, end in zip(words_text, starts, ends):
-        text = str(text).strip()
+def _build_whisper_candidate(response, skip_before: float = 0.0):
+    """Extract a word-level timing skeleton from Whisper. The recognized
+    text itself is discarded later in favor of Sarvam's - this only needs to
+    be right about *when* speech happens, not *what* was said."""
+    data = _as_dict(response)
+    response_segments = getattr(response, "segments", None) or data.get("segments") or []
+    accepted_segments = []
+    for index, raw_segment in enumerate(response_segments):
+        segment = _as_dict(raw_segment)
+        text = str(segment.get("text", "")).strip()
         if not text:
             continue
-        words.append({"index": len(words), "original": text, "text": text,
-                      "start": float(start), "end": float(end)})
-    # Chunks after the first are primed with real overlapping audio from the
-    # previous chunk (see _split_wav), so the start of this response is
-    # expected to repeat recent words verbatim — that's intentional priming,
-    # not a mis-recognition, and must not count against the repetition
-    # heuristics below. Score only the genuinely new content.
+        # Whisper's very first segment of a request often gets an inflated
+        # no_speech_prob (it has no preceding audio to calibrate against),
+        # so don't let that one false-positive drop real opening speech.
+        if index > 0 and float(segment.get("no_speech_prob", 0)) >= 0.65:
+            continue
+        accepted_segments.append(segment)
+    accepted_ranges = [(float(item.get("start", 0)), float(item.get("end", 0))) for item in accepted_segments]
+    source_words = getattr(response, "words", None) or data.get("words") or []
+    words = []
+    for item in source_words:
+        item = _as_dict(item)
+        text = (item.get("word") or item.get("text") or "").strip()
+        start = float(item.get("start", 0))
+        if text and (not accepted_ranges or any(left - .1 <= start <= right + .1 for left, right in accepted_ranges)):
+            words.append({"index": len(words), "original": text, "text": text,
+                          "start": float(item.get("start", 0)),
+                          "end": float(item.get("end", item.get("start", 0) + .35))})
+    if not words:
+        for segment in accepted_segments:
+            tokens = re.findall(r"[^\s]+", str(segment.get("text", "")).strip())
+            if not tokens:
+                continue
+            start = float(segment.get("start", 0)); end = float(segment.get("end", start + .5))
+            step = max(.08, (end - start) / len(tokens))
+            for offset, text in enumerate(tokens):
+                words.append({"index": len(words), "original": text, "text": text,
+                              "start": round(start + offset * step, 3),
+                              "end": round(min(end, start + (offset + 1) * step), 3)})
     scoring_words = [word for word in words if word["start"] >= skip_before] if skip_before else words
     token_list = _tokens(" ".join(word["original"] for word in scoring_words))
     repetition = _repetition_metrics(token_list)
-    score = min(.5, len(words) * .01) - repetition["penalty"]
-    trustworthy = bool(words)
+    avg_logs = [float(item.get("avg_logprob", -2)) for item in accepted_segments]
+    average_logprob = sum(avg_logs) / len(avg_logs) if avg_logs else (-0.55 if words else -2.0)
+    trustworthy = bool(words) and average_logprob > -1.45
     if len(token_list) >= 12 and (repetition["unique_ratio"] < .24 or repetition["bigram_ratio"] > .30):
         trustworthy = False
     if repetition["ngram_repeat"] >= 3:
         trustworthy = False
-    return {"words": words, "score": score, "trustworthy": trustworthy,
-            "unique_ratio": round(repetition["unique_ratio"], 3),
-            "bigram_ratio": round(repetition["bigram_ratio"], 3),
-            "ngram_repeat": repetition["ngram_repeat"]}
+    return {"words": words, "trustworthy": trustworthy, "average_logprob": round(average_logprob, 3)}
+
+
+def _similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _align_words(whisper_tokens: list[str], sarvam_tokens: list[str]):
+    """Needleman-Wunsch style global alignment between Whisper's and Sarvam's
+    word sequences for one chunk, using fuzzy string similarity as the match
+    score. Both engines hear the same audio in the same order, so the two
+    sequences are usually close to the same length - this lines them up
+    positionally and only introduces a skip where they genuinely disagree on
+    word count (a word one engine missed or merged), rather than trusting
+    either engine's exact spelling to decide the alignment."""
+    n, m = len(whisper_tokens), len(sarvam_tokens)
+    gap = -0.6
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    choice = [[""] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        dp[i][0] = dp[i - 1][0] + gap
+        choice[i][0] = "skip_whisper"
+    for j in range(1, m + 1):
+        dp[0][j] = dp[0][j - 1] + gap
+        choice[0][j] = "skip_sarvam"
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            match_score = _similarity(whisper_tokens[i - 1], sarvam_tokens[j - 1]) - 0.4
+            best_score, best_choice = dp[i - 1][j - 1] + match_score, "match"
+            if dp[i - 1][j] + gap > best_score:
+                best_score, best_choice = dp[i - 1][j] + gap, "skip_whisper"
+            if dp[i][j - 1] + gap > best_score:
+                best_score, best_choice = dp[i][j - 1] + gap, "skip_sarvam"
+            dp[i][j] = best_score
+            choice[i][j] = best_choice
+    ops = []
+    i, j = n, m
+    while i > 0 or j > 0:
+        kind = choice[i][j]
+        if kind == "match":
+            ops.append(("match", i - 1, j - 1)); i -= 1; j -= 1
+        elif kind == "skip_whisper":
+            ops.append(("skip_whisper", i - 1)); i -= 1
+        else:
+            ops.append(("skip_sarvam", j - 1)); j -= 1
+    ops.reverse()
+    return ops
+
+
+def _emit_interpolated(result: list[dict], texts: list[str], start: float, end: float):
+    """Give a run of Sarvam words that Whisper never produced a timing slot
+    of its own, by evenly spacing them across the gap between their
+    neighboring matched words."""
+    end = max(end, start + 0.1)
+    step = max(0.08, (end - start) / len(texts))
+    for offset, text in enumerate(texts):
+        word_start = start + offset * step
+        result.append({"original": text, "start": round(word_start, 3), "end": round(min(end, word_start + step), 3)})
+
+
+def _stitch_chunk(whisper_words: list[dict], sarvam_text: str):
+    """Replace Whisper's (less accurate) words with Sarvam's recognized
+    words, while keeping Whisper's per-word timing."""
+    sarvam_tokens = sarvam_text.split()
+    if not whisper_words or not sarvam_tokens:
+        return []
+    whisper_tokens = [word["original"] for word in whisper_words]
+    ops = _align_words(whisper_tokens, sarvam_tokens)
+    result = []
+    pending: list[str] = []
+    last_end = whisper_words[0]["start"]
+    for op in ops:
+        kind = op[0]
+        if kind == "match":
+            i, j = op[1], op[2]
+            if pending:
+                _emit_interpolated(result, pending, last_end, whisper_words[i]["start"])
+                pending = []
+            result.append({"original": sarvam_tokens[j], "start": whisper_words[i]["start"], "end": whisper_words[i]["end"]})
+            last_end = whisper_words[i]["end"]
+        elif kind == "skip_whisper":
+            # A Whisper word with no Sarvam counterpart - likely a Whisper
+            # mis-hearing or hallucination Sarvam didn't reproduce. Drop the
+            # word but keep its timing as a continuity anchor.
+            last_end = max(last_end, whisper_words[op[1]]["end"])
+        else:
+            pending.append(sarvam_tokens[op[1]])
+    if pending:
+        end_anchor = max(whisper_words[-1]["end"], last_end + 0.1 * len(pending))
+        _emit_interpolated(result, pending, last_end, end_anchor)
+    return result
 
 
 async def transcribe_words(audio_path: str, speech_language: str = "auto"):
-    language_code = "hi-IN" if speech_language == "hi" else "unknown"
+    whisper_language = "hi" if speech_language == "hi" else None
+    sarvam_language_code = "hi-IN" if speech_language == "hi" else "unknown"
     selected_chunks = []
-    # Carrying a handful of recent words forward as keyterms gives Sarvam
-    # continuity across chunk boundaries (consistent spelling of names/terms)
-    # instead of transcribing each chunk from a cold start.
+    # Carrying recent words forward (as a Whisper prompt and as Sarvam
+    # keyterms) gives both engines continuity across chunk boundaries -
+    # consistent spelling of names/terms instead of a cold start each time.
+    running_prompt = ""
     running_keyterms: list[str] = []
     with tempfile.TemporaryDirectory() as temp:
         chunks = _split_wav(audio_path, temp)
         for chunk_path, offset, content_start in chunks:
             skip_before = content_start - offset
-            candidate = None
+            whisper_candidate = None
             try:
-                response = await _transcription_pass(chunk_path, language_code, running_keyterms)
-                candidate = _build_candidate(response, skip_before)
+                whisper_response = await _whisper_pass(chunk_path, whisper_language, running_prompt)
+                whisper_candidate = _build_whisper_candidate(whisper_response, skip_before)
             except Exception:
-                logger.exception("Transcription pass failed for chunk %s", chunk_path)
-            if not candidate or not candidate["trustworthy"]:
-                if candidate:
-                    logger.warning(
-                        "Chunk %s rejected: score=%.3f unique_ratio=%.3f bigram_ratio=%.3f "
-                        "ngram_repeat=%d words=%d",
-                        chunk_path, candidate["score"], candidate["unique_ratio"],
-                        candidate["bigram_ratio"], candidate["ngram_repeat"], len(candidate["words"]))
+                logger.exception("Whisper timing pass failed for chunk %s", chunk_path)
+            if not whisper_candidate or not whisper_candidate["trustworthy"] or not whisper_candidate["words"]:
+                if whisper_candidate:
+                    logger.warning("Chunk %s has no usable timing skeleton: avg_logprob=%.3f words=%d",
+                                    chunk_path, whisper_candidate["average_logprob"], len(whisper_candidate["words"]))
                 else:
-                    logger.warning("Chunk %s produced no candidate at all (pass threw)", chunk_path)
+                    logger.warning("Chunk %s produced no Whisper timing candidate (pass threw)", chunk_path)
                 continue
-            for word in candidate["words"]:
+
+            sarvam_text = ""
+            try:
+                sarvam_response = await _sarvam_pass(chunk_path, sarvam_language_code, running_keyterms)
+                sarvam_text = (getattr(sarvam_response, "transcript", "") or "").strip()
+            except Exception:
+                logger.exception("Sarvam text pass failed for chunk %s", chunk_path)
+
+            # If Sarvam fails for this one chunk, fall back to Whisper's own
+            # words rather than losing the chunk entirely.
+            stitched = _stitch_chunk(whisper_candidate["words"], sarvam_text) if sarvam_text else []
+            if not stitched:
+                stitched = whisper_candidate["words"]
+
+            scoring_words = [word for word in stitched if word["start"] >= skip_before]
+            token_list = _tokens(" ".join(word["original"] for word in scoring_words))
+            repetition = _repetition_metrics(token_list)
+            trustworthy = bool(stitched)
+            if len(token_list) >= 12 and (repetition["unique_ratio"] < .24 or repetition["bigram_ratio"] > .30):
+                trustworthy = False
+            if repetition["ngram_repeat"] >= 3:
+                trustworthy = False
+            if not trustworthy:
+                logger.warning("Chunk %s rejected after stitching: unique_ratio=%.3f bigram_ratio=%.3f "
+                                "ngram_repeat=%d words=%d", chunk_path, repetition["unique_ratio"],
+                                repetition["bigram_ratio"], repetition["ngram_repeat"], len(stitched))
+                continue
+
+            for word in stitched:
                 word["start"] = round(word["start"] + offset, 3)
                 word["end"] = round(word["end"] + offset, 3)
             # Chunks after the first are primed with real overlapping audio
-            # from the previous chunk's tail (for acoustic continuity, not
-            # just silence) — drop whatever gets re-recognized from that
-            # overlap, since the previous chunk already produced those words.
-            candidate["words"] = [word for word in candidate["words"] if word["start"] >= content_start - 0.05]
-            selected_chunks.append(candidate)
-            if candidate["words"]:
-                tail_words = [word["original"] for word in candidate["words"][-40:]]
+            # from the previous chunk's tail - drop whatever gets
+            # re-recognized from that overlap, since the previous chunk
+            # already produced those words.
+            stitched = [word for word in stitched if word["start"] >= content_start - 0.05]
+            selected_chunks.append({"words": stitched})
+            if stitched:
+                tail_words = [word["original"] for word in stitched[-40:]]
+                running_prompt = " ".join(tail_words)[-800:]
                 seen = set()
                 running_keyterms = [word for word in tail_words if not (word in seen or seen.add(word))]
     words = []
@@ -225,9 +385,8 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
     if not words or (len(words) >= 12 and (overall["unique_ratio"] < .24 or overall["bigram_ratio"] > .30 or overall["ngram_repeat"] >= 3)):
         raise ValueError("No trustworthy transcript was found. The audio may be unclear, music-heavy, or repetitive.")
     diagnostics = {
-        "mode": "sarvam-codemix",
+        "mode": "whisper-timing+sarvam-text",
         "chunks_used": len(selected_chunks),
-        "score": round(sum(item["score"] for item in selected_chunks) / max(1, len(selected_chunks)), 3),
         "unique_ratio": round(overall["unique_ratio"], 3),
         "bigram_ratio": round(overall["bigram_ratio"], 3),
         "ngram_repeat": overall["ngram_repeat"],
@@ -260,7 +419,7 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
     if missing:
         # GPT occasionally drops a handful of indices from a long JSON
         # response instead of returning every one as instructed. Falling
-        # back to the original Whisper text for just those words (handled
+        # back to the original source text for just those words (handled
         # below) beats failing the whole video over a partial response.
         logger.warning("Hinglish conversion dropped %d/%d word indices", len(missing), len(words))
     for word in words:
