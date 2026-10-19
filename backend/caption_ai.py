@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -12,6 +13,7 @@ import imageio_ffmpeg
 from openai import AsyncOpenAI
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+logger = logging.getLogger("captain-title.caption_ai")
 
 
 def _as_dict(value):
@@ -232,14 +234,14 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
                 response = await _transcription_pass(chunk_path, primary_language, running_prompt)
                 candidates.append(_build_candidate(response, primary_mode, primary_mode, skip_before))
             except Exception:
-                pass
+                logger.exception("Primary transcription pass failed for chunk %s", chunk_path)
             primary = candidates[0] if candidates else None
             if not primary or not primary["trustworthy"] or primary["score"] < -0.15:
                 try:
                     fallback = await _transcription_pass(chunk_path, fallback_language, running_prompt)
                     candidates.append(_build_candidate(fallback, fallback_mode, primary_mode, skip_before))
                 except Exception:
-                    pass
+                    logger.exception("Fallback transcription pass failed for chunk %s", chunk_path)
             trustworthy = [candidate for candidate in candidates if candidate["trustworthy"]]
             if not trustworthy:
                 continue
