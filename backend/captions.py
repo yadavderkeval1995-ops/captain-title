@@ -439,16 +439,19 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         previous_tier = None
         for index, word in enumerate(group):
             safe = word["text"].replace("{", "").replace("}", "")
+            # Color/size always come from the word itself (editable per word
+            # in the UI, defaulted from the theme at generation/theme-switch
+            # time) - a tiered theme only still decides the font family and
+            # where tier changes force a line break.
             if tiers:
                 tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
-                config = tiers[tier]
-                tags = f"\\fn{config['font']}\\c{_ass_color(config['color'])}\\fs{config['size']}"
+                family = tiers[tier]["font"]
                 break_before = index > 0 and tier != previous_tier
                 previous_tier = tier
             else:
                 family = accent_family if word.get("important") else primary_family
-                tags = f"\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}"
                 break_before = False
+            tags = f"\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}"
             if index == 0:
                 tags = position_tag + tags
             separator = r"\N" if break_before else (" " if index > 0 else "")

@@ -41,7 +41,12 @@ export const fonts = [
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
                              selectedWord, onWordStyle }) => {
-  const isTiered = !!templates.find((item) => item.id === theme)?.tiers;
+  const activeTiers = templates.find((item) => item.id === theme)?.tiers;
+  const isTiered = !!activeTiers;
+  const setEmphasis = (tier) => {
+    const config = activeTiers[tier];
+    onWordStyle({ emphasis: tier, important: tier !== "support", color: config.color, font_size: config.size });
+  };
   return (
   <aside className="tool-panel" data-testid="caption-tools-panel">
     <div className="panel-heading"><MagicWand size={18} /><div><span>STYLE ENGINE</span><h2 data-testid="theme-panel-heading">Caption template</h2></div></div>
@@ -75,16 +80,19 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
     </div>
     <div className="tool-divider" />
     <div className="panel-heading compact"><TextT size={18} /><div><span>SELECTED WORD</span><h2 data-testid="selected-word-heading">{selectedWord?.text || "Select a word"}</h2></div></div>
-    {isTiered ? <p className="panel-note" data-testid="tiered-word-note">This template styles every word automatically by its support/feature/key role - per-word overrides below are off.</p> : <>
-      <label className="control-label" data-testid="font-size-control-label">Font size <b data-testid="selected-word-font-size">{selectedWord?.font_size || 52}px</b></label>
-      <Slider min={24} max={92} step={1} value={[selectedWord?.font_size || 52]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ font_size: value })} data-testid="font-size-slider" />
-      <label className="control-label" data-testid="word-color-control-label"><span><Palette size={16} /> Word colour</span>
-        <input type="color" value={selectedWord?.color || "#FFFFFF"} disabled={!selectedWord} onChange={(e) => onWordStyle({ color: e.target.value })} data-testid="word-color-input" />
-      </label>
-      <button className={`emphasis-toggle ${selectedWord?.important ? "active" : ""}`} disabled={!selectedWord} onClick={() => onWordStyle({ important: !selectedWord?.important })} data-testid="important-word-toggle">
-        <span>Impact emphasis</span><i />
-      </button>
-    </>}
+    <label className="control-label" data-testid="font-size-control-label">Font size <b data-testid="selected-word-font-size">{selectedWord?.font_size || 52}px</b></label>
+    <Slider min={24} max={92} step={1} value={[selectedWord?.font_size || 52]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ font_size: value })} data-testid="font-size-slider" />
+    <label className="control-label" data-testid="word-color-control-label"><span><Palette size={16} /> Word colour</span>
+      <input type="color" value={selectedWord?.color || "#FFFFFF"} disabled={!selectedWord} onChange={(e) => onWordStyle({ color: e.target.value })} data-testid="word-color-input" />
+    </label>
+    {isTiered ? <>
+      <label className="control-label" data-testid="word-emphasis-label">Role in caption</label>
+      <div className="layout-grid three" data-testid="word-emphasis-selector">
+        {["support", "feature", "key"].map((tier) => <button key={tier} className={selectedWord?.emphasis === tier ? "active" : ""} disabled={!selectedWord} onClick={() => setEmphasis(tier)} data-testid={`word-emphasis-${tier}-button`}>{tier[0].toUpperCase() + tier.slice(1)}</button>)}
+      </div>
+    </> : <button className={`emphasis-toggle ${selectedWord?.important ? "active" : ""}`} disabled={!selectedWord} onClick={() => onWordStyle({ important: !selectedWord?.important })} data-testid="important-word-toggle">
+      <span>Impact emphasis</span><i />
+    </button>}
   </aside>
   );
 };

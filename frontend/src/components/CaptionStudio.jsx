@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DownloadSimple, FileText, FloppyDisk, Play, SpinnerGap } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -98,6 +98,22 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [scopePrompt, setScopePrompt] = useState(null);
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
+
+  // The video element's own timeupdate event fires at a coarse, inconsistent
+  // rate (often just 4-10x/sec), which visibly lags captions behind the
+  // actual audio. Poll currentTime every animation frame instead while
+  // playing, for tight word-level sync.
+  useEffect(() => {
+    if (!playing) return undefined;
+    let frameId;
+    const tick = () => {
+      if (videoRef.current) setCurrentTime(videoRef.current.currentTime);
+      frameId = requestAnimationFrame(tick);
+    };
+    frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameId);
+  }, [playing]);
+
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
   const wordGroups = useMemo(() => groupWordsForDisplay(words, wordsPerCaption), [words, wordsPerCaption]);
   const visibleWords = useMemo(() => {
@@ -195,9 +211,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
 
   const startResize = (e) => {
-    // Tiered templates size every word by its support/feature/key role, so
-    // a per-caption resize wouldn't have anywhere to apply.
-    if (!visibleWords.length || tiers) return;
+    if (!visibleWords.length) return;
     e.preventDefault(); e.stopPropagation();
     const startClientY = e.clientY;
     const startSize = boxFontSize;
@@ -256,14 +270,17 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               style={{ left: `${boxX}%`, top: `${boxY}%` }} onMouseDown={startMove} data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
                 {row.map((word) => {
-                  const tierConfig = tiers && tiers[tiers[word.emphasis] ? word.emphasis : "support"];
-                  const style = tierConfig
-                    ? { color: tierConfig.color, fontSize: `${Math.max(20, tierConfig.size * .62)}px`, fontFamily: tierConfig.font }
-                    : { color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * .62)}px`, fontFamily: (word.important && accentFontById[theme]) || fontFamilyById[fontId] };
+                  // Color/size always come from the word itself (editable,
+                  // defaulted from the theme at generation/theme-switch
+                  // time) - a tiered theme only still decides the font.
+                  const fontFamily = tiers
+                    ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
+                    : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
+                  const style = { color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * .62)}px`, fontFamily };
                   return <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={style} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>;
                 })}
               </div>)}
-              {!tiers && <i className="resize-handle" onMouseDown={startResize} data-testid="caption-resize-handle" />}
+              <i className="resize-handle" onMouseDown={startResize} data-testid="caption-resize-handle" />
             </div>}
             {scopePrompt && <div className="position-scope-prompt" style={{ left: `${boxX}%`, top: `${Math.min(92, boxY + 8)}%` }} data-testid="position-scope-prompt">
               <button onClick={() => applyScope("this")} data-testid="apply-this-caption-button">This caption</button>
