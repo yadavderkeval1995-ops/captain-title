@@ -297,13 +297,37 @@ def _ass_color(hex_color):
     return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}&"
 
 
+def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4):
+    """Group fast/short consecutive words into one display line so each stays
+    on screen long enough to read (and to survive the video player's own
+    timeupdate granularity) instead of flashing past one at a time."""
+    groups = []
+    index = 0
+    total = len(words)
+    while index < total:
+        group = [words[index]]
+        group_end = words[index]["end"]
+        next_index = index + 1
+        while (group_end - words[index]["start"] < min_display and len(group) < max_words
+              and next_index < total and words[next_index]["start"] - group_end < max_gap):
+            group.append(words[next_index])
+            group_end = words[next_index]["end"]
+            next_index += 1
+        groups.append(group)
+        index = next_index
+    return groups
+
+
 def _write_ass(path, words, theme):
     header = """[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,DejaVu Sans,52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
-    for word in words:
-        safe = word["text"].replace("{", "").replace("}", "")
-        styled = f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}"
-        lines.append(f"Dialogue: 0,{_ass_time(word['start'])},{_ass_time(word['end'])},Default,,0,0,0,,{styled}\n")
+    for group in _group_words_for_display(words):
+        styled_parts = []
+        for word in group:
+            safe = word["text"].replace("{", "").replace("}", "")
+            styled_parts.append(f"{{\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}}}{safe}")
+        styled = " ".join(styled_parts)
+        lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},Default,,0,0,0,,{styled}\n")
     Path(path).write_text("".join(lines), encoding="utf-8")
 
 

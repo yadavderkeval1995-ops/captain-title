@@ -12,6 +12,32 @@ const palettes = {
   minimal: ["#FFFFFF", "#007AFF"], podcast: ["#FFFFFF", "#A855F7"],
 };
 
+const MIN_DISPLAY_SECONDS = 0.35;
+const MAX_WORDS_PER_LINE = 3;
+const MAX_GROUP_GAP = 0.4;
+
+// Mirrors backend/captions.py's _group_words_for_display: fast/short
+// consecutive words get shown together instead of flashing past one at a
+// time faster than the player's own timeupdate resolution can catch.
+function groupWordsForDisplay(words) {
+  const groups = [];
+  let index = 0;
+  while (index < words.length) {
+    const group = [words[index]];
+    let groupEnd = words[index].end;
+    let next = index + 1;
+    while (groupEnd - words[index].start < MIN_DISPLAY_SECONDS && group.length < MAX_WORDS_PER_LINE
+          && next < words.length && words[next].start - groupEnd < MAX_GROUP_GAP) {
+      group.push(words[next]);
+      groupEnd = words[next].end;
+      next += 1;
+    }
+    groups.push(group);
+    index = next;
+  }
+  return groups;
+}
+
 export const CaptionStudio = ({ initialProject, onNew }) => {
   const [project, setProject] = useState(initialProject);
   const [words, setWords] = useState(initialProject.words);
@@ -24,7 +50,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [mediaRetry, setMediaRetry] = useState(0);
   const videoRef = useRef(null);
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
-  const visibleWords = useMemo(() => activeIndex >= 0 ? [words[activeIndex]] : [], [activeIndex, words]);
+  const wordGroups = useMemo(() => groupWordsForDisplay(words), [words]);
+  const visibleWords = useMemo(() => {
+    const group = wordGroups.find((candidate) =>
+      currentTime >= candidate[0].start && currentTime <= candidate[candidate.length - 1].end);
+    return group || [];
+  }, [wordGroups, currentTime]);
 
   const updateWord = (index, changes) => setWords((current) => current.map((word, i) => i === index ? { ...word, ...changes } : word));
   const chooseTheme = (next) => {
