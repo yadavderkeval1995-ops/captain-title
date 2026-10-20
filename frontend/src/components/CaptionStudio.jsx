@@ -129,8 +129,27 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [saturation, setSaturation] = useState(initialProject.saturation ?? 100);
   const [reassigning, setReassigning] = useState(false);
   const [frameWidth, setFrameWidth] = useState(0);
+  const [frameBox, setFrameBox] = useState({ w: 360, h: 640 });
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
+  const stageRef = useRef(null);
+
+  // The 9:16 video box should be sized to the largest rectangle that fits
+  // the actual available area (not a flat vh guess, which left a lot of
+  // dead black space around a too-small box on most screens) - whichever
+  // dimension is the binding constraint, width or height, depends on the
+  // stage's own shape, so this has to be measured rather than assumed.
+  useEffect(() => {
+    const node = stageRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      const unit = Math.max(0, Math.min(width / 9, height / 16));
+      setFrameBox({ w: Math.floor(unit * 9), h: Math.floor(unit * 16) });
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   // The <video> element's own volume tops out at 1.0 (100%) - boosting past
   // that only happens in the exported render's ffmpeg volume filter, not here.
@@ -173,6 +192,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
 
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
   const wordGroups = useMemo(() => groupWordsForDisplay(words, wordsPerCaption), [words, wordsPerCaption]);
+  // The Captions list and the Timeline's "Lines" view both show the same
+  // cue grouping the live preview and the final render use, each word
+  // paired with its real position in `words` (not reconstructed by identity
+  // lookup) so selecting/editing a word from either place stays correct
+  // even after words get deleted (e.g. by the AI tools filler cleanup).
+  const indexedWordGroups = useMemo(() => {
+    let position = 0;
+    return wordGroups.map((group) => group.map((word) => ({ word, index: position++ })));
+  }, [wordGroups]);
   const visibleWords = useMemo(() => {
     const group = wordGroups.find((candidate) =>
       currentTime >= candidate[0].start && currentTime <= candidate[candidate.length - 1].end);
@@ -394,7 +422,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       </div>
       <div className="studio-grid">
         <LeftRail active={leftTab} onSelect={setLeftTab} />
-        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={selectWord} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />}
+        {leftTab === "captions" && <TranscriptPanel words={words} groups={indexedWordGroups} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={selectWord} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />}
         {leftTab === "media" && <MediaPanel project={project} />}
         {leftTab === "audio" && <AudioPanel volume={audioVolume} onVolume={setAudioVolume} muted={audioMuted} onMuted={setAudioMuted} />}
         {leftTab === "elements" && <ElementsPanel elements={elements.filter((item) => item.kind !== "text")} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={(char) => addElement(char, "sticker")} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
@@ -402,7 +430,8 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         {leftTab === "adjustment" && <AdjustmentPanel brightness={brightness} contrast={contrast} saturation={saturation} onBrightness={setBrightness} onContrast={setContrast} onSaturation={setSaturation} onReset={() => { setBrightness(0); setContrast(100); setSaturation(100); }} />}
         {leftTab === "ai" && <AiToolsPanel words={words} onDeleteWords={deleteWords} onReassignEmphasis={reassignEmphasis} reassigning={reassigning} />}
         <section className="preview-panel" data-testid="video-preview-panel">
-          <div className="video-frame" ref={videoFrameRef}>
+          <div className="video-stage" ref={stageRef}>
+          <div className="video-frame" ref={videoFrameRef} style={{ width: `${frameBox.w}px`, height: `${frameBox.h}px` }}>
             <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} style={{ filter: `brightness(${100 + brightness}%) contrast(${contrast}%) saturate(${saturation}%)` }} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
             <button className="preview-play" onClick={togglePlayback} data-testid="video-preview-play-button"><Play size={28} weight="fill" /></button>
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
@@ -443,6 +472,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               </div>;
             })}
           </div>
+          </div>
           <div className="preview-meta"><span data-testid="preview-format-label">9:16 PREVIEW</span><span data-testid="caption-engine-label">WORD SYNC · {theme.toUpperCase()}</span></div>
         </section>
         <ThemePanel theme={theme} onTheme={chooseTheme} fontId={fontId} onFont={setFontId}
@@ -452,7 +482,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
           tab={themeTab} onTab={setThemeTab} />
       </div>
-      <Timeline words={words} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} />
+      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} />
     </main>
   );
 };

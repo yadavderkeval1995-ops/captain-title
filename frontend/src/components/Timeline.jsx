@@ -1,11 +1,15 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pause, Play } from "@phosphor-icons/react";
 
 const PIXELS_PER_SECOND = 60;
 const MIN_BLOCK_WIDTH = 26;
 
-export const Timeline = ({ words, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect }) => {
+export const Timeline = ({ words, groups, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect }) => {
   const trackRef = useRef(null);
+  // Lines by default - that's the view that actually shows how captions
+  // are distributed across the video; Words is there for fine-grained
+  // per-word timing work.
+  const [mode, setMode] = useState("lines");
   const trackWidth = Math.max(1, duration) * PIXELS_PER_SECOND;
 
   const seekFromClientX = (clientX) => {
@@ -57,15 +61,30 @@ export const Timeline = ({ words, duration, currentTime, playing, onToggle, onSe
         <button onClick={onToggle} title={playing ? "Pause (space)" : "Play (space)"} data-testid="timeline-play-toggle">{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button>
         <span data-testid="current-playback-time">{currentTime.toFixed(1)}s</span>
         <b data-testid="video-total-duration">/ {duration.toFixed(1)}s</b>
+        <div className="timeline-mode-toggle" data-testid="timeline-mode-toggle">
+          <button className={mode === "words" ? "active" : ""} onClick={() => setMode("words")} data-testid="timeline-mode-words-button">Words</button>
+          <button className={mode === "lines" ? "active" : ""} onClick={() => setMode("lines")} data-testid="timeline-mode-lines-button">Lines</button>
+        </div>
       </div>
       <div className="timeline-track" ref={trackRef} onMouseDown={startScrub} data-testid="timeline-word-track">
         <div className="timeline-track-inner" style={{ width: `${trackWidth}px` }}>
           <div className="playhead" style={{ left: `${currentTime * PIXELS_PER_SECOND}px` }} data-testid="timeline-playhead" />
-          {words.map((word, index) => <button key={index} className={`${currentTime >= word.start && currentTime <= word.end ? "active" : ""} ${selectedIndex === index ? "selected" : ""}`}
+          {mode === "words" && words.map((word, index) => <button key={index} className={`${currentTime >= word.start && currentTime <= word.end ? "active" : ""} ${selectedIndex === index ? "selected" : ""}`}
             style={{ left: `${word.start * PIXELS_PER_SECOND}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (word.end - word.start) * PIXELS_PER_SECOND)}px` }}
             onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(word.start); onSelect?.(index); }} data-testid={`word-block-${index}`}>
             {word.text}
           </button>)}
+          {mode === "lines" && groups.map((group, cueIndex) => {
+            const start = group[0].word.start, end = group[group.length - 1].word.end;
+            const indices = group.map((item) => item.index);
+            const isActive = currentTime >= start && currentTime <= end;
+            const isSelected = indices.includes(selectedIndex);
+            return <button key={cueIndex} className={`line-block ${isActive ? "active" : ""} ${isSelected ? "selected" : ""}`}
+              style={{ left: `${start * PIXELS_PER_SECOND}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (end - start) * PIXELS_PER_SECOND)}px` }}
+              onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(start); onSelect?.(group[0].index); }} data-testid={`line-block-${cueIndex}`}>
+              {group.map((item) => item.word.text).join(" ")}
+            </button>;
+          })}
         </div>
       </div>
     </section>
