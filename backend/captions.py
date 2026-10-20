@@ -74,6 +74,16 @@ VARIANTS = {
 # Editor-side-only fallback accent for an emphasized word when no variant is
 # selected - matches the CSS default in App.css's .emphasize-accent rule.
 DEFAULT_EMPHASIZE_ACCENT = "#EAB308"
+# Dual-script export: none of the bundled Latin display fonts (Anton, Outfit,
+# IBM Plex Sans, Poppins, Bebas Neue, DejaVu Sans) carry Devanagari glyphs, so
+# when script_mode="native" surfaces a word's native-script text we force
+# this font regardless of theme/variant, purely for glyph coverage.
+DEVANAGARI_FONT = "Noto Sans Devanagari"
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+
+
+def _has_devanagari(text):
+    return bool(_DEVANAGARI_RE.search(text or ""))
 
 
 CAPTION_POSITIONS = {"top", "middle", "bottom"}
@@ -132,6 +142,11 @@ class ElementEdit(BaseModel):
     end: float = Field(ge=0)
     pos_x: float = Field(default=50, ge=0, le=100)
     pos_y: float = Field(default=30, ge=0, le=100)
+    # Draw-order staging relative to the caption text (ASS Layer field: a
+    # higher layer draws on top). This is standard z-index staging only -
+    # there's no video matting/segmentation here, so "behind" sits behind
+    # the captions, not behind an actual person in the footage.
+    layer: Literal["front", "behind"] = "front"
 
 
 class SfxMarker(BaseModel):
@@ -168,6 +183,12 @@ class ProjectEdit(BaseModel):
     # VARIANTS table: font family + outline/shadow/blur standing in for
     # text-stroke/box-shadow, and the Emphasize accent color).
     variant: str | None = None
+    # Which script each word displays as: "roman" is word.text (the GPT
+    # Hinglish romanization); "native" is word.original (Sarvam's own
+    # Devanagari-script recognition, when the source speech was Hindi/mixed -
+    # see caption_ai.py's convert_to_hinglish). Affects the editor canvas,
+    # the Timeline labels, and both exports (_write_ass/_write_srt).
+    script_mode: Literal["roman", "native"] = "roman"
 
 
 class RetranscribeRequest(BaseModel):
@@ -367,7 +388,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
-                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None,
+                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None, "script_mode": "roman",
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -409,7 +430,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "words": [word.model_dump() for word in payload.words],
                   "elements": [element.model_dump() for element in payload.elements],
                   "sfx_markers": [marker.model_dump() for marker in payload.sfx_markers],
-                  "variant": payload.variant,
+                  "variant": payload.variant, "script_mode": payload.script_mode,
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
@@ -419,12 +440,12 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
 @projects_router.get("/projects/{project_id}/srt")
 async def export_srt(project_id: str, request: Request, user=Depends(current_user)):
     project = await request.app.state.db.projects.find_one(
-        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0, "words": 1})
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0, "words": 1, "script_mode": 1})
     if not project:
         raise HTTPException(404, "Project not found")
     if not project.get("words"):
         raise HTTPException(422, "No captions to export yet")
-    srt = _write_srt(project["words"])
+    srt = _write_srt(project["words"], project.get("script_mode", "roman"))
     return Response(srt, media_type="application/x-subrip",
                     headers={"Content-Disposition": "attachment; filename=captain-title.srt"})
 
@@ -577,10 +598,12 @@ def _resolve_line_breaks(group, tiers, caption_lines):
 
 def _write_element_dialogue(element):
     """A sticker or free-text overlay: fixed position (no word-sync), own
-    font size/color, drawn on a layer above the caption text so it sits on
-    top of it. A sticker glyph relies on fontconfig's own fallback to find a
-    font that covers it (the project's chosen caption font usually doesn't);
-    a text layer instead honors its own explicit font choice."""
+    font size/color. Draw order relative to the caption text (Layer 0) is
+    standard z-index staging only - there's no video matting/segmentation
+    here, so "behind" sits behind the captions, not behind an actual person
+    in the footage. A sticker glyph relies on fontconfig's own fallback to
+    find a font that covers it (the project's chosen caption font usually
+    doesn't); a text layer instead honors its own explicit font choice."""
     safe = (element.get("char") or "").replace("{", "").replace("}", "")
     x_px = round(element.get("pos_x", 50) / 100 * 1080)
     y_px = round(element.get("pos_y", 30) / 100 * 1920)
@@ -588,12 +611,14 @@ def _write_element_dialogue(element):
     if element.get("kind") == "text":
         family = FONTS.get(element.get("font_id", "poppins"), FONTS["poppins"])["family"]
         tags = f"\\fn{family}" + tags
-    return (f"Dialogue: 1,{_ass_time(element['start'])},{_ass_time(element['end'])},"
+    layer = -1 if element.get("layer") == "behind" else 2
+    return (f"Dialogue: {layer},{_ass_time(element['start'])},{_ass_time(element['end'])},"
             f"Default,,0,0,0,,{{{tags}}}{safe}\n")
 
 
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
-               caption_lines=1, caption_position="bottom", elements=None, variant=None):
+               caption_lines=1, caption_position="bottom", elements=None, variant=None,
+               script_mode="roman"):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
@@ -608,7 +633,8 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         breaks = _resolve_line_breaks(group, tiers, caption_lines)
         word_parts = []
         for index, word in enumerate(group):
-            safe = word["text"].replace("{", "").replace("}", "")
+            display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+            safe = display_text.replace("{", "").replace("}", "")
             # Color/size always come from the word itself (editable per word
             # in the UI, defaulted from the theme at generation/theme-switch
             # time) - a tiered theme only still decides the font family,
@@ -621,6 +647,12 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 family = tiers[tier]["font"]
             else:
                 family = accent_family if word.get("important") else primary_family
+            # Glyph coverage overrides style choice: none of the Latin
+            # display fonts above can render Devanagari, so when the native
+            # script is actually showing (word.original, not a Romanized
+            # fallback), force the one bundled font that covers it.
+            if _has_devanagari(display_text):
+                family = DEVANAGARI_FONT
             color = word.get("color", "#FFFFFF")
             font_size = word.get("font_size", 52)
             # "FOR THIS MOMENT" Emphasize toggle: a fixed accent highlight
@@ -654,10 +686,11 @@ def _srt_time(seconds):
     return f"{hours:02d}:{minutes:02d}:{int(secs):02d},{millis:03d}"
 
 
-def _write_srt(words):
+def _write_srt(words, script_mode="roman"):
     lines = []
     for index, word in enumerate(words, start=1):
-        lines.append(f"{index}\n{_srt_time(word['start'])} --> {_srt_time(word['end'])}\n{word['text']}\n")
+        text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+        lines.append(f"{index}\n{_srt_time(word['start'])} --> {_srt_time(word['end'])}\n{text}\n")
     return "\n".join(lines)
 
 
@@ -782,7 +815,7 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
                   project.get("words_per_caption"), project.get("caption_lines", 1),
                   project.get("caption_position", "bottom"), project.get("elements"),
-                  variant=project.get("variant"))
+                  variant=project.get("variant"), script_mode=project.get("script_mode", "roman"))
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
                                     project.get("audio_volume", 100), project.get("audio_muted", False),

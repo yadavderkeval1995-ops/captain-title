@@ -16,6 +16,11 @@ const TICK_INTERVALS = [1, 2, 5, 10, 15, 30, 60];
 // max zoom still draws a (slightly lower-resolution) waveform rather than
 // a blank lane.
 const MAX_CANVAS_WIDTH = 8000;
+// Captik-style filmstrip: a thumbnail grabbed every ~2.5s of the source
+// video, tiled across the timeline background right above the waveform.
+const FILMSTRIP_INTERVAL = 2.5;
+const FILMSTRIP_THUMB_W = 64;
+const FILMSTRIP_THUMB_H = 114;
 
 function formatTick(seconds) {
   const m = Math.floor(seconds / 60);
@@ -45,10 +50,12 @@ function buildFallbackPeaks(words, duration) {
 }
 
 export const Timeline = ({ words, groups, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect,
-                          onRetimeWord, mediaUrl, sfxMarkers, onAddSfx, onMoveSfx, onDeleteSfx }) => {
+                          onRetimeWord, mediaUrl, sfxMarkers, onAddSfx, onMoveSfx, onDeleteSfx, scriptMode = "roman" }) => {
   const trackRef = useRef(null);
   const canvasRef = useRef(null);
   const peaksRef = useRef(null);
+  const [filmstrip, setFilmstrip] = useState([]); // [{ time, url }]
+  const wordLabel = (word) => (scriptMode === "native" && word.original) ? word.original : word.text;
   // Lines by default - that's the view that actually shows how captions
   // are distributed across the video; Words is there for fine-grained
   // per-word timing work (and is the only mode where retime handles make
@@ -176,6 +183,57 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaUrl]);
 
+  // Filmstrip: grab a frame every FILMSTRIP_INTERVAL seconds from the
+  // project's own video. Fetching to a blob: URL first (rather than
+  // pointing <video> straight at the cross-origin API URL) keeps the
+  // canvas untainted so toDataURL() below doesn't throw a security error.
+  useEffect(() => {
+    setFilmstrip([]);
+    if (!mediaUrl || !duration) return undefined;
+    let cancelled = false;
+    let blobUrl;
+    (async () => {
+      try {
+        const response = await fetch(mediaUrl, { credentials: "include" });
+        if (!response.ok) throw new Error(`media fetch failed: ${response.status}`);
+        const blob = await response.blob();
+        if (cancelled) return;
+        blobUrl = URL.createObjectURL(blob);
+        const video = document.createElement("video");
+        video.muted = true;
+        video.playsInline = true;
+        video.src = blobUrl;
+        await new Promise((resolve, reject) => {
+          video.onloadedmetadata = resolve;
+          video.onerror = () => reject(new Error("filmstrip video load failed"));
+        });
+        if (cancelled) return;
+        const canvas = document.createElement("canvas");
+        canvas.width = FILMSTRIP_THUMB_W; canvas.height = FILMSTRIP_THUMB_H;
+        const ctx = canvas.getContext("2d");
+        const frames = [];
+        for (let t = 0; t < duration; t += FILMSTRIP_INTERVAL) {
+          if (cancelled) return;
+          await new Promise((resolve) => {
+            const onSeeked = () => { video.removeEventListener("seeked", onSeeked); resolve(); };
+            video.addEventListener("seeked", onSeeked);
+            video.currentTime = Math.min(t, Math.max(0, duration - 0.05));
+          });
+          if (cancelled) return;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          frames.push({ time: t, url: canvas.toDataURL("image/jpeg", 0.55) });
+        }
+        if (!cancelled) setFilmstrip(frames);
+      } catch (error) {
+        console.warn("Timeline: filmstrip generation failed", error);
+      } finally {
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+      }
+    })();
+    return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaUrl, duration]);
+
   const drawWaveform = () => {
     const canvas = canvasRef.current;
     const entry = peaksRef.current;
@@ -275,7 +333,7 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
                 style={{ left: `${word.start * pxPerSecond}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (word.end - word.start) * pxPerSecond)}px` }}
                 data-testid={`word-block-${index}`}>
                 <i className="retime-handle left" onMouseDown={startRetime(index, "left")} data-testid={`word-retime-left-${index}`} />
-                <button onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(word.start); onSelect?.(index); }}>{word.text}</button>
+                <button onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(word.start); onSelect?.(index); }}>{wordLabel(word)}</button>
                 <i className="retime-handle right" onMouseDown={startRetime(index, "right")} data-testid={`word-retime-right-${index}`} />
               </div>;
             })}
@@ -287,9 +345,15 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
               return <button key={cueIndex} className={`line-block ${isActive ? "active" : ""} ${isSelected ? "selected" : ""}`}
                 style={{ left: `${start * pxPerSecond}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (end - start) * pxPerSecond)}px` }}
                 onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(start); onSelect?.(group[0].index); }} data-testid={`line-block-${cueIndex}`}>
-                {group.map((item) => item.word.text).join(" ")}
+                {group.map((item) => wordLabel(item.word)).join(" ")}
               </button>;
             })}
+          </div>
+
+          <div className="timeline-lane timeline-lane-filmstrip" data-testid="timeline-lane-filmstrip">
+            {filmstrip.map((frame, i) => <img key={i} src={frame.url} alt=""
+              style={{ left: `${frame.time * pxPerSecond}px`, width: `${FILMSTRIP_INTERVAL * pxPerSecond}px` }}
+              data-testid={`filmstrip-thumb-${i}`} />)}
           </div>
 
           <div className="timeline-lane timeline-lane-waveform" data-testid="timeline-lane-waveform">

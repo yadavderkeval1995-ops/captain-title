@@ -192,6 +192,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [sfxMarkers, setSfxMarkers] = useState(initialProject.sfx_markers || []);
   const [momentPopover, setMomentPopover] = useState(null); // word index, or null when closed
   const [variant, setVariant] = useState(initialProject.variant || null); // null = template default
+  // Dual-Script Toggle: which text shows on canvas/Timeline/exports -
+  // the Romanized Hinglish word.text, or the native-script word.original
+  // Sarvam's codemix transcription already produced for Hindi/mixed speech.
+  const [scriptMode, setScriptMode] = useState(initialProject.script_mode || "roman");
   const [reassigning, setReassigning] = useState(false);
   const [safeZone, setSafeZone] = useState(false);
   const [frameWidth, setFrameWidth] = useState(0);
@@ -376,7 +380,11 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                            caption_lines: captionLines, caption_position: captionPosition, words,
                            audio_volume: audioVolume, audio_muted: audioMuted,
                            brightness, contrast, saturation, render_quality: renderQuality, elements,
-                           sfx_markers: sfxMarkers, variant });
+                           sfx_markers: sfxMarkers, variant, script_mode: scriptMode });
+  // Dual-Script Toggle: what a word's canvas/Timeline label actually shows -
+  // falls back to the Romanized text when scriptMode is "native" but this
+  // word has no native-script transcription (e.g. a user-typed edit).
+  const scriptText = (word) => (scriptMode === "native" && word.original) ? word.original : word.text;
 
   const addSfxMarker = (type, time, wordIndex) => {
     const id = `sfx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -391,7 +399,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const start = currentTime;
     const end = Math.min(project.duration, currentTime + 2);
     const fontSize = kind === "text" ? 48 : 120;
-    setElements((current) => [...current, { id, kind, char, font_id: fontId, color: "#FFFFFF", font_size: fontSize, start, end, pos_x: 50, pos_y: 30 }]);
+    setElements((current) => [...current, { id, kind, char, font_id: fontId, color: "#FFFFFF", font_size: fontSize, start, end, pos_x: 50, pos_y: 30, layer: "front" }]);
     setSelectedElementId(id);
   };
   const updateElement = (id, changes) => setElements((current) => current.map((item) => item.id === id ? { ...item, ...changes } : item));
@@ -615,7 +623,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       </div>
       <div className="studio-grid">
         <LeftRail active={leftTab} onSelect={setLeftTab} />
-        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={openMoment} onText={(index, text) => updateWord(index, { text })} onNewLine={toggleWordNewLine} onSplitWord={splitWord} onEmphasis={setWordEmphasis} onRelisten={relisten} relistening={relistening} />}
+        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={openMoment} onText={(index, text) => updateWord(index, { text })} onNewLine={toggleWordNewLine} onSplitWord={splitWord} onEmphasis={setWordEmphasis} onRelisten={relisten} relistening={relistening} scriptMode={scriptMode} onScriptMode={setScriptMode} />}
         {leftTab === "media" && <MediaPanel project={project} />}
         {leftTab === "audio" && <AudioPanel volume={audioVolume} onVolume={setAudioVolume} muted={audioMuted} onMuted={setAudioMuted} />}
         {leftTab === "elements" && <ElementsPanel elements={elements.filter((item) => item.kind !== "text")} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={(char) => addElement(char, "sticker")} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
@@ -661,7 +669,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   ].filter(Boolean).join(" ");
                   return <span key={word.index} className={className} style={style}
                     onClick={(e) => { e.stopPropagation(); openMoment(word.index); }}
-                    data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>;
+                    data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>;
                 })}
               </div>)}
               <div className="selection-box">
@@ -678,6 +686,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                 style={{ left: `${item.pos_x}%`, top: `${item.pos_y}%`, fontSize: `${item.font_size * previewScale}px`, color: item.color,
                         fontFamily: item.kind === "text" ? fontFamilyById[item.font_id] : undefined,
                         fontWeight: item.kind === "text" ? 700 : undefined,
+                        // Behind-the-Person Text Layering: standard z-index
+                        // staging relative to the caption overlay (z-index 3)
+                        // - no video matting/segmentation here, so "behind"
+                        // sits behind the captions, not behind an actual
+                        // person in the footage (matches the backend's ASS
+                        // Layer field in _write_element_dialogue).
+                        zIndex: item.layer === "behind" ? 1 : 4,
                         cursor: interactive ? "grab" : "default", pointerEvents: interactive ? "auto" : "none" }}
                 onMouseDown={interactive ? (e) => { setSelectedElementId(item.id); startMoveElement(item.id)(e); } : undefined}
                 data-testid={`element-overlay-${item.id}`}>
@@ -711,7 +726,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         canMergePrevious={momentPopover > 0}
         canMergeNext={momentPopover < words.length - 1}
       />}
-      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={openMoment} onRetimeWord={updateWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} sfxMarkers={sfxMarkers} onAddSfx={addSfxMarker} onMoveSfx={moveSfxMarker} onDeleteSfx={deleteSfxMarker} />
+      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={openMoment} onRetimeWord={updateWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} sfxMarkers={sfxMarkers} onAddSfx={addSfxMarker} onMoveSfx={moveSfxMarker} onDeleteSfx={deleteSfxMarker} scriptMode={scriptMode} />
     </main>
   );
 };
