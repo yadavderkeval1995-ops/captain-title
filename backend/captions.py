@@ -60,6 +60,20 @@ FONTS = {
     "bebas": {"label": "Bebas Neue", "family": "Bebas Neue"},
     "classic": {"label": "Classic", "family": "DejaVu Sans"},
 }
+# Template style variants (Captik-style "VARIANTS" row) - mirrors the
+# `variants` export in frontend/src/components/ThemePanel.jsx exactly:
+# font family, outline/shadow/blur standing in for text-stroke/box-shadow,
+# and the accent color used for "Emphasize"-tagged words. outline=None means
+# "use the word's own color" (a self-colored glow) rather than a fixed hue.
+VARIANTS = {
+    "rock": {"font": "Anton", "bord": 3, "outline": "#000000", "shad": 0, "blur": 0, "accent": "#FF4D00"},
+    "glow": {"font": "Outfit", "bord": 3, "outline": None, "shad": 0, "blur": 4, "accent": "#22D3EE"},
+    "swiss": {"font": "IBM Plex Sans", "bord": 0, "outline": None, "shad": 0, "blur": 0, "accent": "#007AFF"},
+    "clean": {"font": "Poppins", "bord": 0, "outline": "#000000", "shad": 2, "blur": 1, "accent": "#EAB308"},
+}
+# Editor-side-only fallback accent for an emphasized word when no variant is
+# selected - matches the CSS default in App.css's .emphasize-accent rule.
+DEFAULT_EMPHASIZE_ACCENT = "#EAB308"
 
 
 CAPTION_POSITIONS = {"top", "middle", "bottom"}
@@ -99,6 +113,9 @@ class WordEdit(BaseModel):
     kinetic: Literal["pulse", "pop", "scale", "box", "wobble"] | None = None
     # A separate accent highlight from the tiered-template "important" flag -
     # toggled per word from the moment popover, not tied to any theme/tier.
+    # Unlike kinetic above, this DOES reach the export: _write_ass recolors
+    # (to the active variant's accent, or a default yellow) and up-sizes the
+    # word, mirroring App.css's .emphasize-accent rule.
     emphasize: bool = False
 
 
@@ -119,11 +136,11 @@ class ElementEdit(BaseModel):
 
 class SfxMarker(BaseModel):
     id: str
-    # Editor-side annotation only for now - there's no licensed SFX audio
-    # bundled to actually mix into the export (see render(), which doesn't
-    # read this field). It's persisted and shown on the timeline so the
-    # marker placement itself isn't lost between sessions. The editor plays
-    # a synthesized preview tone per type, not a real sample.
+    # There's no licensed SFX audio bundled, so both the editor's on-click
+    # preview and the actual export (_render's ffmpeg filter_complex) play a
+    # synthesized placeholder tone per type instead of a real sample - see
+    # frontend/src/lib/sfx.js (editor) and _sfx_source_filter (export),
+    # which are hand-kept in sync rather than sharing one definition.
     type: Literal["whoosh", "bass_drop", "pop", "cash", "shutter"]
     time: float = Field(ge=0)
     # Word.index this marker was dropped on, if any (the "FOR THIS MOMENT"
@@ -146,8 +163,10 @@ class ProjectEdit(BaseModel):
     words: list[WordEdit]
     elements: list[ElementEdit] = []
     sfx_markers: list[SfxMarker] = []
-    # Template style variant (Rock/Glow/Swiss/Clean) - editor-side rendering
-    # only for now, like kinetic/box_width above; doesn't change the export.
+    # Template style variant (Rock/Glow/Swiss/Clean) - applied in both the
+    # editor preview (CaptionStudio.jsx) and the export (_write_ass's
+    # VARIANTS table: font family + outline/shadow/blur standing in for
+    # text-stroke/box-shadow, and the Emphasize accent color).
     variant: str | None = None
 
 
@@ -574,11 +593,12 @@ def _write_element_dialogue(element):
 
 
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
-               caption_lines=1, caption_position="bottom", elements=None):
+               caption_lines=1, caption_position="bottom", elements=None, variant=None):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
     accent_family = palette.get("accent_font") or primary_family
+    variant_config = VARIANTS.get(variant)
     header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
     groups = _group_words_for_display(words, max_words=words_per_caption or 3,
@@ -591,13 +611,30 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             safe = word["text"].replace("{", "").replace("}", "")
             # Color/size always come from the word itself (editable per word
             # in the UI, defaulted from the theme at generation/theme-switch
-            # time) - a tiered theme only still decides the font family.
-            if tiers:
+            # time) - a tiered theme only still decides the font family,
+            # unless a style variant is active, which overrides the font for
+            # every word regardless of theme/tier (matching the editor).
+            if variant_config:
+                family = variant_config["font"]
+            elif tiers:
                 tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
                 family = tiers[tier]["font"]
             else:
                 family = accent_family if word.get("important") else primary_family
-            tags = f"\\fn{family}\\c{_ass_color(word.get('color', '#FFFFFF'))}\\fs{word.get('font_size', 52)}"
+            color = word.get("color", "#FFFFFF")
+            font_size = word.get("font_size", 52)
+            # "FOR THIS MOMENT" Emphasize toggle: a fixed accent highlight
+            # (the active variant's accent, or a default yellow with none
+            # selected) plus a size bump - mirrors App.css's
+            # .emphasize-accent rule and its var(--variant-accent) hookup.
+            if word.get("emphasize"):
+                color = (variant_config or {}).get("accent", DEFAULT_EMPHASIZE_ACCENT)
+                font_size = round(font_size * 1.18)
+            tags = f"\\fn{family}\\c{_ass_color(color)}\\fs{font_size}"
+            if variant_config:
+                outline_hex = variant_config["outline"] or color
+                tags += (f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
+                         f"\\shad{variant_config['shad']}\\blur{variant_config['blur']}")
             if index == 0:
                 tags = position_tag + tags
             separator = r"\N" if (index > 0 and breaks[index]) else (" " if index > 0 else "")
@@ -641,9 +678,51 @@ RENDER_QUALITY_PRESETS = {
     "draft": {"preset": "veryfast", "crf": "26"},
 }
 
+# Mirrors frontend/src/lib/sfx.js's placeholder tones - there's no licensed
+# SFX audio bundled, so the export gets the same synthesized stand-in tone
+# the editor previews (frequency sweep + short envelope) rather than the
+# marker having no audible effect at all in the final video.
+SFX_TONE_PARAMS = {
+    "whoosh": {"freq": 180, "sweep_to": 540, "duration": 0.2},
+    "bass_drop": {"freq": 90, "sweep_to": 27, "duration": 0.4},
+    "pop": {"freq": 880, "sweep_to": 880, "duration": 0.2},
+    "cash": {"freq": 660, "sweep_to": 990, "duration": 0.2},
+    "shutter": {"freq": 1400, "sweep_to": 1400, "duration": 0.08},
+}
+
+
+def _sfx_source_filter(sfx_type, label):
+    """A standalone ffmpeg lavfi source filter (no -i input needed) that
+    synthesizes one SFX marker's placeholder tone: a linear frequency sweep
+    with a quick attack and an exponential decay envelope, matching the
+    shape (if not the exact oscillator waveform) of the Web Audio preview."""
+    params = SFX_TONE_PARAMS.get(sfx_type, SFX_TONE_PARAMS["pop"])
+    freq, sweep_to, duration = params["freq"], params["sweep_to"], params["duration"]
+    phase = f"2*PI*({freq}+({sweep_to}-{freq})*min(t/{duration},1))*t"
+    attack = min(0.015, duration / 4)
+    release = duration * 0.6
+    envelope = f"if(lt(t,{attack}),t/{attack},exp(-5*(t-{attack})/{release}))"
+    expr = f"({envelope})*sin({phase})"
+    return f"aevalsrc=exprs='{expr}':s=44100:d={duration}[{label}]"
+
+
+def _sfx_mix_filters(sfx_markers):
+    """Builds the filter_complex lines for every SFX marker - its synthesized
+    tone, panned to stereo and delayed to its exact timestamp - plus the
+    list of labels to mix in. Returns ([], []) for no markers, so a project
+    without any SFX keeps using the original, simpler filter graph untouched."""
+    lines, labels = [], []
+    for index, marker in enumerate(sfx_markers):
+        src_label, out_label = f"sfxsrc{index}", f"sfx{index}"
+        lines.append(_sfx_source_filter(marker.get("type", "pop"), src_label))
+        delay_ms = max(0, round(marker.get("time", 0) * 1000))
+        lines.append(f"[{src_label}]pan=stereo|c0=c0|c1=c0,adelay={delay_ms}|{delay_ms},volume=0.7[{out_label}]")
+        labels.append(out_label)
+    return lines, labels
+
 
 def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=False,
-           brightness=0, contrast=100, saturation=100, quality="high"):
+           brightness=0, contrast=100, saturation=100, quality="high", sfx_markers=None):
     # Escaping a Windows drive-letter colon with '\:' only works for the
     # subtitles filter's own filename argument - ffmpeg's generic option
     # parser (used for fontsdir=...) doesn't honor that escape the same way
@@ -662,11 +741,27 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
     eq_arg = f"eq=brightness={brightness / 100}:contrast={contrast / 100}:saturation={saturation / 100}"
     video_filter = f"{eq_arg},{subtitles_arg}"
     render_preset = RENDER_QUALITY_PRESETS.get(quality, RENDER_QUALITY_PRESETS["high"])
-    result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", video_filter,
-                             "-af", f"volume={volume}",
-                             "-c:v", "libx264", "-preset", render_preset["preset"], "-crf", render_preset["crf"],
-                             "-c:a", "aac", "-b:a", "192k",
-                             "-movflags", "+faststart", output], capture_output=True, text=True, cwd=work_dir)
+    common_args = ["-c:v", "libx264", "-preset", render_preset["preset"], "-crf", render_preset["crf"],
+                   "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output]
+
+    sfx_lines, sfx_labels = _sfx_mix_filters(sfx_markers or [])
+    if sfx_labels:
+        # SFX are a separate accent layer, not competing with the dialogue
+        # for headroom - normalize=0 keeps amix from auto-attenuating every
+        # input by 1/N, so the main audio stays at its own authored volume
+        # and only the SFX branches carry their own (lower) mix volume.
+        mix_inputs = "".join(f"[{label}]" for label in ["main_a", *sfx_labels])
+        filter_complex = (
+            f"[0:v]{video_filter}[vout];[0:a]volume={volume}[main_a];"
+            + ";".join(sfx_lines) + ";"
+            + f"{mix_inputs}amix=inputs={1 + len(sfx_labels)}:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
+        args = [FFMPEG, "-y", "-i", source, "-filter_complex", filter_complex,
+                "-map", "[vout]", "-map", "[aout]", *common_args]
+    else:
+        args = [FFMPEG, "-y", "-i", source, "-vf", video_filter, "-af", f"volume={volume}", *common_args]
+
+    result = subprocess.run(args, capture_output=True, text=True, cwd=work_dir)
     if result.returncode:
         logger.error("FFmpeg render failed: %s", result.stderr[-2000:])
         raise RuntimeError("FFmpeg could not render this video")
@@ -686,12 +781,14 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         Path(source).write_bytes(data)
         _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
                   project.get("words_per_caption"), project.get("caption_lines", 1),
-                  project.get("caption_position", "bottom"), project.get("elements"))
+                  project.get("caption_position", "bottom"), project.get("elements"),
+                  variant=project.get("variant"))
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
                                     project.get("audio_volume", 100), project.get("audio_muted", False),
                                     project.get("brightness", 0), project.get("contrast", 100),
-                                    project.get("saturation", 100), project.get("render_quality", "high"))
+                                    project.get("saturation", 100), project.get("render_quality", "high"),
+                                    sfx_markers=project.get("sfx_markers", []))
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()
