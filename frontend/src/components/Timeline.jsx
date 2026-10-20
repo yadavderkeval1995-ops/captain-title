@@ -58,9 +58,11 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
   return (
     <section className="timeline" data-testid="caption-timeline">
       <div className="timeline-controls">
-        <button onClick={onToggle} title={playing ? "Pause (space)" : "Play (space)"} data-testid="timeline-play-toggle">{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button>
-        <span data-testid="current-playback-time">{currentTime.toFixed(1)}s</span>
-        <b data-testid="video-total-duration">/ {duration.toFixed(1)}s</b>
+        <div className="timeline-controls-row">
+          <button onClick={onToggle} title={playing ? "Pause (space)" : "Play (space)"} data-testid="timeline-play-toggle">{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button>
+          <span data-testid="current-playback-time">{currentTime.toFixed(1)}s</span>
+          <b data-testid="video-total-duration">/ {duration.toFixed(1)}s</b>
+        </div>
         <div className="timeline-mode-toggle" data-testid="timeline-mode-toggle">
           <button className={mode === "words" ? "active" : ""} onClick={() => setMode("words")} data-testid="timeline-mode-words-button">Words</button>
           <button className={mode === "lines" ? "active" : ""} onClick={() => setMode("lines")} data-testid="timeline-mode-lines-button">Lines</button>
