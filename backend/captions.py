@@ -92,6 +92,14 @@ class WordEdit(BaseModel):
     # ASS renderer still places text at a point (\pos), not a wrapped box.
     box_width: float | None = Field(default=None, ge=0, le=100)
     box_height: float | None = Field(default=None, ge=0, le=100)
+    # "FOR THIS MOMENT" kinetic tag applied to this word while it's active in
+    # the editor preview. Editor-side only for now, like box_width/height
+    # above - the ASS renderer has no equivalent of a live CSS keyframe
+    # animation, so this doesn't change the exported video yet.
+    kinetic: Literal["pulse", "pop", "scale", "box", "wobble"] | None = None
+    # A separate accent highlight from the tiered-template "important" flag -
+    # toggled per word from the moment popover, not tied to any theme/tier.
+    emphasize: bool = False
 
 
 class ElementEdit(BaseModel):
@@ -114,9 +122,13 @@ class SfxMarker(BaseModel):
     # Editor-side annotation only for now - there's no licensed SFX audio
     # bundled to actually mix into the export (see render(), which doesn't
     # read this field). It's persisted and shown on the timeline so the
-    # marker placement itself isn't lost between sessions.
-    type: Literal["whoosh", "pop", "cash", "ding"]
+    # marker placement itself isn't lost between sessions. The editor plays
+    # a synthesized preview tone per type, not a real sample.
+    type: Literal["whoosh", "bass_drop", "pop", "cash", "shutter"]
     time: float = Field(ge=0)
+    # Word.index this marker was dropped on, if any (the "FOR THIS MOMENT"
+    # per-word SFX row) - purely informational, doesn't change how it's used.
+    word_index: int | None = None
 
 
 class ProjectEdit(BaseModel):
@@ -134,6 +146,9 @@ class ProjectEdit(BaseModel):
     words: list[WordEdit]
     elements: list[ElementEdit] = []
     sfx_markers: list[SfxMarker] = []
+    # Template style variant (Rock/Glow/Swiss/Clean) - editor-side rendering
+    # only for now, like kinetic/box_width above; doesn't change the export.
+    variant: str | None = None
 
 
 class RetranscribeRequest(BaseModel):
@@ -333,7 +348,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
-                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [],
+                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None,
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -375,6 +390,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "words": [word.model_dump() for word in payload.words],
                   "elements": [element.model_dump() for element in payload.elements],
                   "sfx_markers": [marker.model_dump() for marker in payload.sfx_markers],
+                  "variant": payload.variant,
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")

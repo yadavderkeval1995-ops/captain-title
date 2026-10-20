@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BookmarkSimple, ChatCircle, DotsThreeVertical, DownloadSimple, FileText, FloppyDisk, FrameCorners, Heart, Play, Share, SpinnerGap } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { api, API_ROOT, errorMessage } from "@/lib/api";
-import { ThemePanel, templates, fonts } from "@/components/ThemePanel";
+import { ThemePanel, templates, fonts, variants } from "@/components/ThemePanel";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { Timeline } from "@/components/Timeline";
 import { LeftRail } from "@/components/LeftRail";
@@ -12,6 +12,8 @@ import { ElementsPanel } from "@/components/ElementsPanel";
 import { TextPanel } from "@/components/TextPanel";
 import { AdjustmentPanel } from "@/components/AdjustmentPanel";
 import { AiToolsPanel } from "@/components/AiToolsPanel";
+import { MomentPopover } from "@/components/MomentPopover";
+import { playSfx } from "@/lib/sfx";
 
 const palettes = Object.fromEntries(templates.map((item) => [item.id, [item.baseColor, item.color]]));
 const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item.accentFont ? `'${item.accentFont}', sans-serif` : null]));
@@ -159,6 +161,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       setCurrentTime(word.start);
     }
   };
+  // "FOR THIS MOMENT": a single click on a word - from the Script Panel, the
+  // Timeline, or directly on the canvas - seeks/selects it exactly as
+  // before, and additionally opens the moment popover for it.
+  const openMoment = (index) => {
+    selectWord(index);
+    setMomentPopover(index);
+  };
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rendering, setRendering] = useState(false);
@@ -181,6 +190,8 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [saturation, setSaturation] = useState(initialProject.saturation ?? 100);
   const [renderQuality, setRenderQuality] = useState(initialProject.render_quality ?? "high");
   const [sfxMarkers, setSfxMarkers] = useState(initialProject.sfx_markers || []);
+  const [momentPopover, setMomentPopover] = useState(null); // word index, or null when closed
+  const [variant, setVariant] = useState(initialProject.variant || null); // null = template default
   const [reassigning, setReassigning] = useState(false);
   const [safeZone, setSafeZone] = useState(false);
   const [frameWidth, setFrameWidth] = useState(0);
@@ -245,6 +256,26 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     return () => cancelAnimationFrame(frameId);
   }, [playing]);
 
+  // Fire each SFX marker's (synthesized) tone once as playback crosses its
+  // timestamp - a separate AudioContext mixed alongside the <video>'s own
+  // audio, so the main video audio is never touched. lastTimeRef detects a
+  // seek backward (or a loop) to let markers re-trigger on a later pass,
+  // and the played set keeps a forward pass from re-firing the same one.
+  const playedSfxRef = useRef(new Set());
+  const lastTimeRef = useRef(0);
+  useEffect(() => {
+    if (currentTime < lastTimeRef.current - 0.25) playedSfxRef.current.clear();
+    lastTimeRef.current = currentTime;
+    if (!playing) return;
+    for (const marker of sfxMarkers) {
+      if (playedSfxRef.current.has(marker.id)) continue;
+      if (currentTime >= marker.time && currentTime - marker.time < 0.5) {
+        playedSfxRef.current.add(marker.id);
+        playSfx(marker.type);
+      }
+    }
+  }, [currentTime, playing, sfxMarkers]);
+
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
   const wordGroups = useMemo(() => groupWordsForDisplay(words, wordsPerCaption), [words, wordsPerCaption]);
   // The Captions list and the Timeline's "Lines" view both show the same
@@ -263,6 +294,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   }, [wordGroups, currentTime]);
   const anchorWord = visibleWords[0];
   const tiers = tiersById[theme];
+  const activeVariant = variants.find((item) => item.id === variant) || null;
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
   const boxX = dragPreview?.x ?? anchorWord?.pos_x ?? basePos.x;
   const boxY = dragPreview?.y ?? anchorWord?.pos_y ?? basePos.y;
@@ -307,6 +339,26 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const important = emphasis !== "support";
     return { ...word, emphasis, important, color: palettes[theme][important ? 1 : 0] };
   }));
+  // "FOR THIS MOMENT" popover: a standalone accent highlight, independent of
+  // the tiered-template emphasis above - just an on/off boolean the canvas
+  // renders as a fixed accent color + scale while the word is active.
+  const toggleWordEmphasize = (index) => setWords((current) => current.map((word, i) => i === index ? { ...word, emphasize: !word.emphasize } : word));
+  // "FOR THIS MOMENT" popover: the kinetic animation tag the canvas plays
+  // while this word is active (null/"none" pill clears it).
+  const setWordKinetic = (index, kinetic) => setWords((current) => current.map((word, i) => i === index ? { ...word, kinetic } : word));
+  // "FOR THIS MOMENT" popover: merge this word into its previous/next
+  // neighbor - combined text and time span, the other word removed. Mirrors
+  // splitWord's reindex (word.index stays a dense array-position id).
+  const mergeWord = (index, direction) => setWords((current) => {
+    const otherIndex = direction === "previous" ? index - 1 : index + 1;
+    if (otherIndex < 0 || otherIndex >= current.length) return current;
+    const lowIndex = Math.min(index, otherIndex);
+    const a = current[lowIndex], b = current[lowIndex + 1];
+    const merged = { ...a, text: `${a.text} ${b.text}`.trim(), original: `${a.original} ${b.original}`.trim(),
+                      start: Math.min(a.start, b.start), end: Math.max(a.end, b.end) };
+    const next = [...current.slice(0, lowIndex), merged, ...current.slice(lowIndex + 2)];
+    return next.map((item, i) => ({ ...item, index: i }));
+  });
   const chooseTheme = (next) => {
     setTheme(next);
     const nextTiers = tiersById[next];
@@ -324,11 +376,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                            caption_lines: captionLines, caption_position: captionPosition, words,
                            audio_volume: audioVolume, audio_muted: audioMuted,
                            brightness, contrast, saturation, render_quality: renderQuality, elements,
-                           sfx_markers: sfxMarkers });
+                           sfx_markers: sfxMarkers, variant });
 
-  const addSfxMarker = (type) => {
+  const addSfxMarker = (type, time, wordIndex) => {
     const id = `sfx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setSfxMarkers((current) => [...current, { id, type, time: Math.round(currentTime * 100) / 100 }]);
+    const markerTime = Math.round((time ?? currentTime) * 100) / 100;
+    setSfxMarkers((current) => [...current, { id, type, time: markerTime, word_index: wordIndex ?? null }]);
   };
   const moveSfxMarker = (id, time) => setSfxMarkers((current) => current.map((marker) => marker.id === id ? { ...marker, time } : marker));
   const deleteSfxMarker = (id) => setSfxMarkers((current) => current.filter((marker) => marker.id !== id));
@@ -562,7 +615,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       </div>
       <div className="studio-grid">
         <LeftRail active={leftTab} onSelect={setLeftTab} />
-        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={selectWord} onText={(index, text) => updateWord(index, { text })} onNewLine={toggleWordNewLine} onSplitWord={splitWord} onEmphasis={setWordEmphasis} onRelisten={relisten} relistening={relistening} />}
+        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={openMoment} onText={(index, text) => updateWord(index, { text })} onNewLine={toggleWordNewLine} onSplitWord={splitWord} onEmphasis={setWordEmphasis} onRelisten={relisten} relistening={relistening} />}
         {leftTab === "media" && <MediaPanel project={project} />}
         {leftTab === "audio" && <AudioPanel volume={audioVolume} onVolume={setAudioVolume} muted={audioMuted} onMuted={setAudioMuted} />}
         {leftTab === "elements" && <ElementsPanel elements={elements.filter((item) => item.kind !== "text")} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={(char) => addElement(char, "sticker")} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
@@ -588,18 +641,27 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%`,
                       ...(boxWidthPct != null ? { width: `${boxWidthPct}%`, maxWidth: "none" } : {}),
-                      ...(boxHeightPct != null ? { height: `${boxHeightPct}%`, overflow: "hidden" } : {}) }}
+                      ...(boxHeightPct != null ? { height: `${boxHeightPct}%`, overflow: "hidden" } : {}),
+                      ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
               onMouseDown={startMove} data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
                 {row.map((word) => {
                   // Color/size always come from the word itself (editable,
                   // defaulted from the theme at generation/theme-switch
                   // time) - a tiered theme only still decides the font.
-                  const fontFamily = tiers
+                  const fontFamily = activeVariant ? activeVariant.fontFamily : tiers
                     ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
                     : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
                   const style = { color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * previewScale)}px`, fontFamily };
-                  return <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={style} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>;
+                  const isActiveWord = activeIndex === word.index;
+                  const className = [
+                    isActiveWord ? "active" : "",
+                    isActiveWord && word.kinetic ? `kinetic-${word.kinetic}` : "",
+                    isActiveWord && word.emphasize ? "emphasize-accent" : "",
+                  ].filter(Boolean).join(" ");
+                  return <span key={word.index} className={className} style={style}
+                    onClick={(e) => { e.stopPropagation(); openMoment(word.index); }}
+                    data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>;
                 })}
               </div>)}
               <div className="selection-box">
@@ -634,9 +696,22 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           captionLines={captionLines} onCaptionLines={setCaptionLines}
           captionPosition={captionPosition} onCaptionPosition={setCaptionPosition}
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
-          tab={themeTab} onTab={setThemeTab} />
+          tab={themeTab} onTab={setThemeTab} variant={variant} onVariant={setVariant} />
       </div>
-      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} onRetimeWord={updateWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} sfxMarkers={sfxMarkers} onAddSfx={addSfxMarker} onMoveSfx={moveSfxMarker} onDeleteSfx={deleteSfxMarker} />
+      {momentPopover != null && words[momentPopover] && <MomentPopover
+        word={words[momentPopover]} index={momentPopover}
+        frameRect={videoFrameRef.current?.getBoundingClientRect() ?? null}
+        onClose={() => setMomentPopover(null)}
+        onText={(index, text) => updateWord(index, { text })}
+        onNewLine={toggleWordNewLine}
+        onMerge={(index, direction) => { mergeWord(index, direction); setMomentPopover(null); }}
+        onKinetic={setWordKinetic}
+        onEmphasize={toggleWordEmphasize}
+        onAddSfx={addSfxMarker}
+        canMergePrevious={momentPopover > 0}
+        canMergeNext={momentPopover < words.length - 1}
+      />}
+      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={openMoment} onRetimeWord={updateWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} sfxMarkers={sfxMarkers} onAddSfx={addSfxMarker} onMoveSfx={moveSfxMarker} onDeleteSfx={deleteSfxMarker} />
     </main>
   );
 };

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Balloon, Bell, MagnifyingGlassMinus, MagnifyingGlassPlus, Money, Pause, Play, Wind, X } from "@phosphor-icons/react";
+import { MagnifyingGlassMinus, MagnifyingGlassPlus, Pause, Play, X } from "@phosphor-icons/react";
+import { SFX_BY_TYPE, SFX_TYPES, playSfx } from "@/lib/sfx";
 
 const BASE_PIXELS_PER_SECOND = 60;
 const MIN_BLOCK_WIDTH = 46;
@@ -15,13 +16,6 @@ const TICK_INTERVALS = [1, 2, 5, 10, 15, 30, 60];
 // max zoom still draws a (slightly lower-resolution) waveform rather than
 // a blank lane.
 const MAX_CANVAS_WIDTH = 8000;
-const SFX_TYPES = [
-  { id: "whoosh", label: "Whoosh", icon: Wind, color: "#22d3ee" },
-  { id: "pop", label: "Pop", icon: Balloon, color: "#ffeb3b" },
-  { id: "cash", label: "Cash", icon: Money, color: "#5ee6a0" },
-  { id: "ding", label: "Ding", icon: Bell, color: "#ff8fc7" },
-];
-const SFX_BY_TYPE = Object.fromEntries(SFX_TYPES.map((item) => [item.id, item]));
 
 function formatTick(seconds) {
   const m = Math.floor(seconds / 60);
@@ -262,7 +256,7 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
           <button onClick={zoomIn} disabled={zoomIndex >= ZOOM_STEPS.length - 1} title="Zoom in" data-testid="timeline-zoom-in-button"><MagnifyingGlassPlus size={13} /></button>
         </div>
         <div className="timeline-sfx-palette" data-testid="timeline-sfx-palette">
-          {SFX_TYPES.map(({ id, label, icon: Icon, color }) => <button key={id} style={{ color }} onClick={() => onAddSfx(id)} title={`Drop a ${label} marker here`} data-testid={`add-sfx-${id}-button`}><Icon size={14} weight="fill" /></button>)}
+          {SFX_TYPES.map(({ id, label, icon: Icon, color }) => <button key={id} style={{ color }} onClick={() => { onAddSfx(id); playSfx(id); }} title={`Drop a ${label} marker here`} data-testid={`add-sfx-${id}-button`}><Icon size={14} weight="fill" /></button>)}
         </div>
       </div>
       <div className="timeline-tracks" ref={trackRef} onMouseDown={startScrub} data-testid="timeline-word-track">

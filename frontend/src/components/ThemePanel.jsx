@@ -64,6 +64,18 @@ function previewWords(template) {
   ];
 }
 
+// Template style variants (Captik's "VARIANTS" row) - a render-only layer
+// on top of whichever template is selected: font family, text stroke/
+// shadow, and the accent color used for active/emphasized words. Applied
+// as CSS on the caption overlay itself, never by touching word data, so
+// switching variants can never lose a word's own text/splits/position edits.
+export const variants = [
+  { id: "rock", label: "Rock", fontFamily: "'Anton', sans-serif", textShadow: "3px 3px 0 #000, -2px -2px 0 #000", stroke: "2px #000", accent: "#FF4D00" },
+  { id: "glow", label: "Glow", fontFamily: "'Outfit', sans-serif", textShadow: "0 0 20px currentColor, 0 0 8px currentColor", stroke: null, accent: "#22d3ee" },
+  { id: "swiss", label: "Swiss", fontFamily: "'IBM Plex Sans', sans-serif", textShadow: "none", stroke: null, accent: "#007AFF" },
+  { id: "clean", label: "Clean", fontFamily: "'Poppins', sans-serif", textShadow: "0 2px 6px rgba(0,0,0,.55)", stroke: null, accent: "#EAB308" },
+];
+
 export const fonts = [
   { id: "poppins", name: "Poppins", family: "'Poppins', sans-serif" },
   { id: "anton", name: "Anton", family: "'Anton', sans-serif" },
@@ -73,7 +85,7 @@ export const fonts = [
 
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
-                             selectedWord, onWordStyle, tab, onTab }) => {
+                             selectedWord, onWordStyle, tab, onTab, variant, onVariant }) => {
   const activeTiers = templates.find((item) => item.id === theme)?.tiers;
   const isTiered = !!activeTiers;
   const setEmphasis = (tier) => {
@@ -110,6 +122,12 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
           </button>
           );
         })}
+      </div>
+      <div className="tool-divider" />
+      <label className="control-label" data-testid="variant-selector-label"><span>Variants</span></label>
+      <div className="variant-pills" data-testid="variant-selector">
+        {variants.map((item) => <button key={item.id} className={variant === item.id ? "active" : ""} onClick={() => onVariant(variant === item.id ? null : item.id)}
+          style={{ fontFamily: item.fontFamily, color: item.accent }} data-testid={`variant-${item.id}-button`}>{item.label}</button>)}
       </div>
     </>}
 
