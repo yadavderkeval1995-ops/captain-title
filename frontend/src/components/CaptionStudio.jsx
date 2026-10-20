@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DownloadSimple, FileText, FloppyDisk, Play, SpinnerGap } from "@phosphor-icons/react";
+import { BookmarkSimple, ChatCircle, DotsThreeVertical, DownloadSimple, FileText, FloppyDisk, FrameCorners, Heart, Play, Share, SpinnerGap } from "@phosphor-icons/react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { api, API_ROOT, errorMessage } from "@/lib/api";
 import { ThemePanel, templates, fonts } from "@/components/ThemePanel";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
@@ -62,6 +61,12 @@ const MAX_GROUP_GAP = 0.4;
 const SENTENCE_END_CHARS = ".!?।॥"; // includes Devanagari danda/double danda
 const POSITION_DEFAULTS = { top: { x: 50, y: 14 }, middle: { x: 50, y: 50 }, bottom: { x: 50, y: 86 } };
 
+function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+function aspectLabel(width, height) {
+  const divisor = gcd(width, height) || 1;
+  return `${width / divisor}:${height / divisor}`;
+}
+
 function endsSentence(word) {
   const original = (word.original || "").trim();
   return !!original && SENTENCE_END_CHARS.includes(original[original.length - 1]);
@@ -109,8 +114,19 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   // Selecting a word from the Captions list or the bottom timeline should
   // land you straight on its edit controls - requiring a separate click
   // over to the right panel's Text tab every time was exactly the kind of
-  // hidden-UI friction that made editing feel clunky.
-  const selectWord = (index) => { setSelectedIndex(index); setThemeTab("text"); };
+  // hidden-UI friction that made editing feel clunky. It should also seek
+  // the video there, matching how a real script/transcript editor works -
+  // clicking a line is how you navigate the footage, not just an editing
+  // affordance.
+  const selectWord = (index) => {
+    setSelectedIndex(index);
+    setThemeTab("text");
+    const word = words[index];
+    if (word && videoRef.current) {
+      videoRef.current.currentTime = word.start;
+      setCurrentTime(word.start);
+    }
+  };
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rendering, setRendering] = useState(false);
@@ -127,7 +143,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [brightness, setBrightness] = useState(initialProject.brightness ?? 0);
   const [contrast, setContrast] = useState(initialProject.contrast ?? 100);
   const [saturation, setSaturation] = useState(initialProject.saturation ?? 100);
+  const [renderQuality, setRenderQuality] = useState(initialProject.render_quality ?? "high");
   const [reassigning, setReassigning] = useState(false);
+  const [safeZone, setSafeZone] = useState(false);
   const [frameWidth, setFrameWidth] = useState(0);
   const [frameBox, setFrameBox] = useState({ w: 360, h: 640 });
   const videoRef = useRef(null);
@@ -230,7 +248,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const payload = () => ({ theme, font_id: fontId, words_per_caption: wordsPerCaption,
                            caption_lines: captionLines, caption_position: captionPosition, words,
                            audio_volume: audioVolume, audio_muted: audioMuted,
-                           brightness, contrast, saturation, elements });
+                           brightness, contrast, saturation, render_quality: renderQuality, elements });
 
   const addElement = (char, kind = "sticker") => {
     const id = `el_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -414,10 +432,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       <div className="studio-topbar" data-testid="project-command-bar">
         <div><button onClick={onNew} data-testid="new-project-button">← New session</button><h1 data-testid="current-project-name">{project.name}</h1></div>
         <div className="project-actions">
-          <Button variant="outline" onClick={save} data-testid="save-project-button"><FloppyDisk size={18} /> Save</Button>
-          <Button variant="outline" onClick={downloadSrt} data-testid="download-srt-button"><FileText size={18} /> SRT</Button>
-          {project.status === "rendered" ? <Button onClick={download} data-testid="download-video-button"><DownloadSimple size={19} /> Download MP4</Button> :
-            <Button onClick={render} disabled={rendering} data-testid="render-video-button">{rendering ? <SpinnerGap className="spin" size={19} /> : <Play size={18} weight="fill" />} {rendering ? "Rendering…" : "Render video"}</Button>}
+          {project.width && project.height && <span className="resolution-badge" data-testid="resolution-badge">{project.width}×{project.height} · {aspectLabel(project.width, project.height)}</span>}
+          <select className="quality-select" value={renderQuality} onChange={(e) => setRenderQuality(e.target.value)} title="Export quality" data-testid="render-quality-select">
+            <option value="high">High quality</option>
+            <option value="draft">Draft (fast)</option>
+          </select>
+          <button className="utility-chip" onClick={save} data-testid="save-project-button"><FloppyDisk size={16} /> Save</button>
+          <button className="utility-chip" onClick={downloadSrt} data-testid="download-srt-button"><FileText size={16} /> SRT</button>
+          {project.status === "rendered" ? <button className="export-button" onClick={download} data-testid="download-video-button"><DownloadSimple size={19} weight="bold" /> Download MP4</button> :
+            <button className="export-button" onClick={render} disabled={rendering} data-testid="render-video-button">{rendering ? <SpinnerGap className="spin" size={19} /> : <DownloadSimple size={19} weight="bold" />} {rendering ? "Exporting…" : "Export Video"}</button>}
         </div>
       </div>
       <div className="studio-grid">
@@ -434,6 +457,17 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           <div className="video-frame" ref={videoFrameRef} style={{ width: `${frameBox.w}px`, height: `${frameBox.h}px` }}>
             <video ref={videoRef} src={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} style={{ filter: `brightness(${100 + brightness}%) contrast(${contrast}%) saturate(${saturation}%)` }} onError={() => { if (mediaRetry < 1) window.setTimeout(() => setMediaRetry(1), 1200); }} onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} playsInline data-testid="caption-video-player" />
             <button className="preview-play" onClick={togglePlayback} data-testid="video-preview-play-button"><Play size={28} weight="fill" /></button>
+            <button className={`preview-safe-zone-toggle ${safeZone ? "active" : ""}`} onClick={() => setSafeZone((current) => !current)} title="Toggle Reels/Shorts safe-zone guide" data-testid="safe-zone-toggle-button"><FrameCorners size={18} weight={safeZone ? "fill" : "regular"} /></button>
+            {safeZone && <div className="safe-zone-overlay" data-testid="safe-zone-overlay">
+              <div className="safe-zone-icons">
+                <i><Heart size={20} weight="fill" /></i>
+                <i><ChatCircle size={20} weight="fill" /></i>
+                <i><BookmarkSimple size={20} weight="fill" /></i>
+                <i><Share size={20} weight="fill" /></i>
+                <i><DotsThreeVertical size={20} weight="fill" /></i>
+              </div>
+              <div className="safe-zone-meta" />
+            </div>}
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%` }} onMouseDown={startMove} data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
@@ -482,7 +516,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
           tab={themeTab} onTab={setThemeTab} />
       </div>
-      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} />
+      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} />
     </main>
   );
 };

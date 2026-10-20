@@ -114,6 +114,7 @@ class ProjectEdit(BaseModel):
     brightness: int = Field(default=0, ge=-50, le=50)
     contrast: int = Field(default=100, ge=50, le=200)
     saturation: int = Field(default=100, ge=0, le=200)
+    render_quality: Literal["high", "draft"] = "high"
     words: list[WordEdit]
     elements: list[ElementEdit] = []
 
@@ -315,7 +316,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
-                   "brightness": 0, "contrast": 100, "saturation": 100, "elements": [],
+                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [],
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -353,6 +354,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "caption_lines": payload.caption_lines, "caption_position": payload.caption_position,
                   "audio_volume": payload.audio_volume, "audio_muted": payload.audio_muted,
                   "brightness": payload.brightness, "contrast": payload.contrast, "saturation": payload.saturation,
+                  "render_quality": payload.render_quality,
                   "words": [word.model_dump() for word in payload.words],
                   "elements": [element.model_dump() for element in payload.elements],
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
@@ -597,8 +599,17 @@ def _escape_filter_path(path):
     return Path(path).as_posix().replace(":", r"\:")
 
 
+RENDER_QUALITY_PRESETS = {
+    # "high" is close to visually lossless; "draft" trades quality for a
+    # much faster encode when you just want to sanity-check timing/styling
+    # before spending the time on a full-quality export.
+    "high": {"preset": "slow", "crf": "17"},
+    "draft": {"preset": "veryfast", "crf": "26"},
+}
+
+
 def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=False,
-           brightness=0, contrast=100, saturation=100):
+           brightness=0, contrast=100, saturation=100, quality="high"):
     # Escaping a Windows drive-letter colon with '\:' only works for the
     # subtitles filter's own filename argument - ffmpeg's generic option
     # parser (used for fontsdir=...) doesn't honor that escape the same way
@@ -616,12 +627,10 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
     # graded - matches how caption apps treat text as a separate layer.
     eq_arg = f"eq=brightness={brightness / 100}:contrast={contrast / 100}:saturation={saturation / 100}"
     video_filter = f"{eq_arg},{subtitles_arg}"
-    # High-quality export: crf 17 is close to visually lossless, and "slow"
-    # trades encode time for better compression at that quality - both
-    # reasonable given videos here are capped at 120s.
+    render_preset = RENDER_QUALITY_PRESETS.get(quality, RENDER_QUALITY_PRESETS["high"])
     result = subprocess.run([FFMPEG, "-y", "-i", source, "-vf", video_filter,
                              "-af", f"volume={volume}",
-                             "-c:v", "libx264", "-preset", "slow", "-crf", "17",
+                             "-c:v", "libx264", "-preset", render_preset["preset"], "-crf", render_preset["crf"],
                              "-c:a", "aac", "-b:a", "192k",
                              "-movflags", "+faststart", output], capture_output=True, text=True, cwd=work_dir)
     if result.returncode:
@@ -648,7 +657,7 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
                                     project.get("audio_volume", 100), project.get("audio_muted", False),
                                     project.get("brightness", 0), project.get("contrast", 100),
-                                    project.get("saturation", 100))
+                                    project.get("saturation", 100), project.get("render_quality", "high"))
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()

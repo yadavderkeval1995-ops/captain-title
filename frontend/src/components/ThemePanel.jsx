@@ -9,13 +9,23 @@ const tabs = [
   { id: "text", label: "Text", icon: TextT },
 ];
 
+// `card.*` is purely for the Templates grid preview below - it never feeds
+// the actual render pipeline (that's baseColor/color/accentFont/tiers,
+// mirrored exactly from backend/captions.py's THEMES), it just has to look
+// like a faithful small-scale sample of what that combination produces.
 export const templates = [
-  { id: "viral", name: "Viral", baseColor: "#FFFFFF", color: "#FF3B30", accentFont: "Anton" },
-  { id: "cinematic", name: "Cinematic", baseColor: "#FFF7DB", color: "#FFB800", accentFont: "Caveat" },
-  { id: "minimal", name: "Minimal", baseColor: "#FFFFFF", color: "#007AFF", accentFont: null },
-  { id: "podcast", name: "Podcast", baseColor: "#FFFFFF", color: "#A855F7", accentFont: null },
-  { id: "meme_mix", name: "Meme Mix", baseColor: "#FFFFFF", color: "#FFEB3B", accentFont: "Permanent Marker" },
-  { id: "street_pop", name: "Street Pop", baseColor: "#FFFFFF", color: "#FF6EC7", accentFont: "Caveat" },
+  { id: "viral", name: "Viral", baseColor: "#FFFFFF", color: "#FF3B30", accentFont: "Anton",
+    card: { stroke: "1.5px #000", shadow: "0 3px 0 #000", glow: null, highlight: false } },
+  { id: "cinematic", name: "Cinematic", baseColor: "#FFF7DB", color: "#FFB800", accentFont: "Caveat",
+    card: { stroke: null, shadow: "0 2px 10px rgba(0,0,0,.6)", glow: "0 0 14px rgba(255,184,0,.65)", highlight: false } },
+  { id: "minimal", name: "Minimal", baseColor: "#FFFFFF", color: "#007AFF", accentFont: null,
+    card: { stroke: null, shadow: "0 1px 3px rgba(0,0,0,.5)", glow: null, highlight: false } },
+  { id: "podcast", name: "Podcast", baseColor: "#FFFFFF", color: "#A855F7", accentFont: null,
+    card: { stroke: null, shadow: "0 2px 8px rgba(0,0,0,.55)", glow: "0 0 10px rgba(168,85,247,.5)", highlight: false } },
+  { id: "meme_mix", name: "Meme Mix", baseColor: "#FFFFFF", color: "#FFEB3B", accentFont: "Permanent Marker",
+    card: { stroke: "1.5px #000", shadow: "0 3px 0 #000", glow: null, highlight: true } },
+  { id: "street_pop", name: "Street Pop", baseColor: "#FFFFFF", color: "#FF6EC7", accentFont: "Caveat",
+    card: { stroke: "1px #fff", shadow: "0 2px 8px rgba(0,0,0,.6)", glow: "0 0 12px rgba(255,110,199,.55)", highlight: false } },
   // Designer "tiered" templates: a 3-way support/feature/key reading of each
   // word instead of a flat important/normal split, each tier with its own
   // font/color/size - mirrors backend/captions.py's THEMES tiers exactly.
@@ -23,18 +33,36 @@ export const templates = [
     support: { font: "'Poppins', sans-serif", color: "#FFFFFF", size: 40 },
     feature: { font: "'Playfair Display', serif", color: "#FFFFFF", size: 58 },
     key: { font: "'Anton', sans-serif", color: "#FFEB3B", size: 82 },
-  } },
+  }, card: { stroke: null, shadow: "0 2px 6px rgba(0,0,0,.6)", glow: null, highlight: true } },
   { id: "clean_vogue", name: "Clean Vogue", color: "#FF8FC7", tiers: {
     support: { font: "'Poppins', sans-serif", color: "#E4E4E7", size: 38 },
     feature: { font: "'Playfair Display', serif", color: "#FF8FC7", size: 56 },
     key: { font: "'Bebas Neue', sans-serif", color: "#FFFFFF", size: 86 },
-  } },
+  }, card: { stroke: null, shadow: "0 2px 6px rgba(0,0,0,.6)", glow: "0 0 10px rgba(255,143,199,.5)", highlight: false } },
   { id: "street_heat", name: "Street Heat", color: "#FF4D00", tiers: {
     support: { font: "'Poppins', sans-serif", color: "#FFFFFF", size: 40 },
     feature: { font: "'Permanent Marker', cursive", color: "#FFFFFF", size: 54 },
     key: { font: "'Anton', sans-serif", color: "#FF4D00", size: 84 },
-  } },
+  }, card: { stroke: "1px #000", shadow: "0 3px 0 #000", glow: "0 0 12px rgba(255,77,0,.55)", highlight: true } },
 ];
+
+// Two or three sample words rendered at card scale, reusing each template's
+// real font/color choices - a flat template contrasts its base vs accent
+// word exactly like `word.important` does; a tiered one walks its tiers.
+function previewWords(template) {
+  if (template.tiers) {
+    const order = ["support", "feature", "key"].filter((tier) => template.tiers[tier]);
+    return order.map((tier) => {
+      const config = template.tiers[tier];
+      return { text: tier === "key" ? "HOOK" : tier, font: config.font, color: config.color, size: Math.min(26, Math.max(12, Math.round(config.size * 0.32))), weight: tier === "support" ? 600 : 800 };
+    });
+  }
+  const accentFont = template.accentFont ? `'${template.accentFont}', sans-serif` : "'Poppins', sans-serif";
+  return [
+    { text: "the", font: "'Poppins', sans-serif", color: template.baseColor, size: 15, weight: 600 },
+    { text: "HOOK", font: accentFont, color: template.color, size: 25, weight: 700 },
+  ];
+}
 
 export const fonts = [
   { id: "poppins", name: "Poppins", family: "'Poppins', sans-serif" },
@@ -62,10 +90,26 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
 
     {tab === "templates" && <>
       <div className="panel-heading"><Sparkle size={18} /><div><span>STYLE ENGINE</span><h2 data-testid="theme-panel-heading">Caption template</h2></div></div>
-      <div className="theme-grid" data-testid="caption-theme-selector">
-        {templates.map((item) => <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onTheme(item.id)} data-testid={`theme-${item.id}-button`}>
-          <i style={{ background: item.color }} /> {item.name}
-        </button>)}
+      <div className="template-grid" data-testid="caption-theme-selector">
+        {templates.map((item) => {
+          const words = previewWords(item);
+          return (
+          <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onTheme(item.id)} data-testid={`theme-${item.id}-button`}>
+            <span className="template-card-preview">
+              {words.map((word, index) => <span key={index} className="template-card-word"
+                style={{
+                  fontFamily: word.font, color: word.color, fontSize: `${word.size}px`, fontWeight: word.weight,
+                  WebkitTextStroke: item.card.stroke || undefined,
+                  textShadow: [item.card.shadow, item.card.glow].filter(Boolean).join(", ") || undefined,
+                  background: item.card.highlight && index === words.length - 1 ? "rgba(255,255,255,.12)" : undefined,
+                  padding: item.card.highlight && index === words.length - 1 ? "1px 5px" : undefined,
+                  borderRadius: item.card.highlight && index === words.length - 1 ? "3px" : undefined,
+                }}>{word.text}</span>)}
+            </span>
+            <span className="template-card-name">{item.name}</span>
+          </button>
+          );
+        })}
       </div>
     </>}
 
