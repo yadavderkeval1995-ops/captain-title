@@ -7,6 +7,14 @@ const MIN_WORD_DURATION = 0.08;
 const PEAKS_PER_SECOND = 20;
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.5, 2, 3];
 const TICK_INTERVALS = [1, 2, 5, 10, 15, 30, 60];
+// Browsers cap a single canvas's intrinsic pixel width well below what a
+// long, zoomed-in timeline needs (mobile Safari in particular, around
+// 4096-8192px) - past that cap the canvas silently stops rendering
+// anything at all. Keep the bitmap itself under that ceiling and stretch
+// it to the full track width with CSS instead, so a 10-minute video at
+// max zoom still draws a (slightly lower-resolution) waveform rather than
+// a blank lane.
+const MAX_CANVAS_WIDTH = 8000;
 const SFX_TYPES = [
   { id: "whoosh", label: "Whoosh", icon: Wind, color: "#22d3ee" },
   { id: "pop", label: "Pop", icon: Balloon, color: "#ffeb3b" },
@@ -24,6 +32,22 @@ function formatTick(seconds) {
 function tickInterval(pxPerSecond) {
   for (const n of TICK_INTERVALS) if (n * pxPerSecond >= 56) return n;
   return TICK_INTERVALS[TICK_INTERVALS.length - 1];
+}
+
+// Used when real audio decode fails (unsupported codec, CORS, or a project
+// with no audio extracted yet) so the waveform lane is never just a blank
+// rectangle: louder while a word is being spoken, quiet in the gaps, with a
+// deterministic (not random) wobble so it doesn't look like a dead flat bar.
+function buildFallbackPeaks(words, duration) {
+  const sampleCount = Math.max(1, Math.round(Math.max(duration, 1) * PEAKS_PER_SECOND));
+  const peaks = new Float32Array(sampleCount);
+  for (let i = 0; i < sampleCount; i++) {
+    const t = i / PEAKS_PER_SECOND;
+    const speaking = words.some((word) => t >= word.start && t <= word.end);
+    const wobble = 0.65 + 0.35 * Math.abs(Math.sin(i * 12.9898));
+    peaks[i] = speaking ? 0.35 * wobble : 0.04;
+  }
+  return peaks;
 }
 
 export const Timeline = ({ words, groups, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect,
@@ -116,15 +140,17 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
   // current pixels-per-second happens to be.
   useEffect(() => {
     peaksRef.current = null;
-    if (!mediaUrl) return undefined;
+    if (!mediaUrl) { drawWaveform(); return undefined; }
     let cancelled = false;
+    let context;
     (async () => {
       try {
         const response = await fetch(mediaUrl, { credentials: "include" });
+        if (!response.ok) throw new Error(`media fetch failed: ${response.status}`);
         const buffer = await response.arrayBuffer();
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContextClass) return;
-        const context = new AudioContextClass();
+        if (!AudioContextClass) throw new Error("Web Audio API unavailable");
+        context = new AudioContextClass();
         const audioBuffer = await context.decodeAudioData(buffer);
         if (cancelled) return;
         const channel = audioBuffer.getChannelData(0);
@@ -138,13 +164,17 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
           for (let j = start; j < end; j++) max = Math.max(max, Math.abs(channel[j]));
           peaks[i] = max;
         }
-        peaksRef.current = peaks;
-        context.close();
-      } catch {
-        // No waveform is a cosmetic loss, not a functional one - the
-        // timeline still works fine without it (e.g. decode unsupported,
-        // CORS, or a still-processing project with no audio yet).
+        peaksRef.current = { data: peaks, fallback: false };
+      } catch (error) {
+        // Real decode failed (unsupported codec, CORS, or no audio
+        // extracted yet) - fall back to a synthetic waveform derived from
+        // the words' own timing instead of leaving the lane blank, and log
+        // it: a silently empty canvas is exactly what makes this hard to
+        // diagnose in the field.
+        console.warn("Timeline: waveform decode failed, using fallback peaks", error);
+        if (!cancelled) peaksRef.current = { data: buildFallbackPeaks(words, duration), fallback: true };
       } finally {
+        context?.close();
         if (!cancelled) drawWaveform();
       }
     })();
@@ -154,15 +184,16 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
 
   const drawWaveform = () => {
     const canvas = canvasRef.current;
-    const peaks = peaksRef.current;
+    const entry = peaksRef.current;
     if (!canvas) return;
-    const height = canvas.height;
+    const width = canvas.width, height = canvas.height;
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, height);
+    ctx.clearRect(0, 0, width, height);
+    const peaks = entry?.data;
     if (!peaks || !peaks.length) return;
-    ctx.fillStyle = "rgba(34,211,238,.55)";
+    ctx.fillStyle = entry.fallback ? "rgba(34,211,238,.22)" : "rgba(34,211,238,.55)";
     const mid = height / 2;
-    const pxPerPeak = trackWidth / peaks.length;
+    const pxPerPeak = width / peaks.length;
     for (let i = 0; i < peaks.length; i++) {
       const barHeight = Math.max(1, peaks[i] * mid);
       const x = i * pxPerPeak;
@@ -173,7 +204,12 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    canvas.width = Math.ceil(trackWidth);
+    // Stay under the browser's intrinsic canvas pixel-width ceiling (a
+    // long video at high zoom can easily exceed it) and stretch the
+    // bitmap to the full track width with CSS instead - a lower-resolution
+    // waveform beats a canvas that silently refuses to render at all.
+    canvas.width = Math.max(1, Math.min(MAX_CANVAS_WIDTH, Math.ceil(trackWidth)));
+    canvas.style.width = `${trackWidth}px`;
     drawWaveform();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackWidth]);

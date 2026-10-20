@@ -61,6 +61,38 @@ const MAX_GROUP_GAP = 0.4;
 const SENTENCE_END_CHARS = ".!?।॥"; // includes Devanagari danda/double danda
 const POSITION_DEFAULTS = { top: { x: 50, y: 14 }, middle: { x: 50, y: 50 }, bottom: { x: 50, y: 86 } };
 
+// Per-handle resize behaviour: which sign of the mouse delta on each axis
+// grows the box, and whether that axis is touched at all by this handle.
+// Edge handles (tc/bc/ml/mr) touch exactly one axis; corner handles touch
+// both. The box is always resized symmetrically around its own fixed
+// center (same point dragging moves), so a signed per-axis delta - never
+// an unsigned distance - is what keeps a drag past the center from ever
+// "inverting" the box: growth only ever follows the handle's own outward
+// direction, clamped at a floor instead of crossing through zero.
+const RESIZE_HANDLES = {
+  tl: { x: -1, y: -1 }, tc: { x: 0, y: -1 }, tr: { x: 1, y: -1 },
+  ml: { x: -1, y: 0 }, mr: { x: 1, y: 0 },
+  bl: { x: -1, y: 1 }, bc: { x: 0, y: 1 }, br: { x: 1, y: 1 },
+};
+const MIN_BOX_WIDTH_PX = 60;
+const MIN_BOX_HEIGHT_PX = 30;
+
+// Shared by the caption box and every element/sticker overlay: resize a
+// rectangle from its own center using a signed, direction-aware delta
+// (never an unsigned radius), clamped to a pixel floor so it can't invert.
+// Returns the new size in px plus a font-scale factor derived from however
+// much the touched axes actually changed (area-based, so a single-axis
+// edge drag still nudges the font a sensible amount).
+function resizeBox(handle, dx, dy, startWidthPx, startHeightPx) {
+  const dir = RESIZE_HANDLES[handle];
+  const widthTouched = dir.x !== 0;
+  const heightTouched = dir.y !== 0;
+  const nextWidthPx = widthTouched ? Math.max(MIN_BOX_WIDTH_PX, startWidthPx + dx * dir.x * 2) : startWidthPx;
+  const nextHeightPx = heightTouched ? Math.max(MIN_BOX_HEIGHT_PX, startHeightPx + dy * dir.y * 2) : startHeightPx;
+  const scale = Math.sqrt((nextWidthPx * nextHeightPx) / (startWidthPx * startHeightPx));
+  return { widthTouched, heightTouched, nextWidthPx, nextHeightPx, scale };
+}
+
 function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
 function aspectLabel(width, height) {
   const divisor = gcd(width, height) || 1;
@@ -134,6 +166,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [mediaRetry, setMediaRetry] = useState(0);
   const [dragPreview, setDragPreview] = useState(null);
   const [resizePreview, setResizePreview] = useState(null);
+  // { width, height } in % of frame, during an active caption-box drag -
+  // only the axis/axes the grabbed handle actually touches are populated,
+  // so an edge-only drag never silently pins the other dimension.
+  const [boxSizePreview, setBoxSizePreview] = useState(null);
   const [scopePrompt, setScopePrompt] = useState(null);
   const [leftTab, setLeftTab] = useState("captions");
   const [elements, setElements] = useState(initialProject.elements || []);
@@ -231,8 +267,46 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const boxX = dragPreview?.x ?? anchorWord?.pos_x ?? basePos.x;
   const boxY = dragPreview?.y ?? anchorWord?.pos_y ?? basePos.y;
   const boxFontSize = resizePreview ?? anchorWord?.font_size ?? 52;
+  // null means "auto" (sized to content, as before) - only set once a
+  // handle that touches that axis has actually been dragged.
+  const boxWidthPct = boxSizePreview?.width ?? anchorWord?.box_width ?? null;
+  const boxHeightPct = boxSizePreview?.height ?? anchorWord?.box_height ?? null;
 
   const updateWord = (index, changes) => setWords((current) => current.map((word, i) => i === index ? { ...word, ...changes } : word));
+  // Script panel popover: toggle a manual caption-line break before this word.
+  const toggleWordNewLine = (index) => setWords((current) => current.map((word, i) => i === index ? { ...word, new_line: !word.new_line } : word));
+  // Script panel popover: split one word into two adjacent words, time-sliced
+  // proportionally to where the character split falls, inserted in place.
+  const splitWord = (index, splitPos) => setWords((current) => {
+    const word = current[index];
+    if (!word) return current;
+    const text = word.text;
+    const pos = Math.min(Math.max(1, splitPos ?? Math.ceil(text.length / 2)), text.length - 1);
+    const left = text.slice(0, pos).trim();
+    const right = text.slice(pos).trim();
+    if (!left || !right) return current;
+    const mid = word.start + (word.end - word.start) * (pos / text.length);
+    const wordLeft = { ...word, text: left, original: left, end: mid };
+    const wordRight = { ...word, text: right, original: right, start: mid, new_line: null, box_width: null, box_height: null };
+    const next = [...current.slice(0, index), wordLeft, wordRight, ...current.slice(index + 1)];
+    // .index is a dense array-position id (see caption_ai.py's transcript
+    // builder) that deleteWords() matches against - an insert has to
+    // renumber everything after it so no two words ever share one.
+    return next.map((item, i) => ({ ...item, index: i }));
+  });
+  // Script panel popover: set one word's emphasis tier, recoloring it the
+  // same way a full theme switch would (tiered theme's tier palette, or the
+  // plain important/not-important palette for a non-tiered theme).
+  const setWordEmphasis = (index, emphasis) => setWords((current) => current.map((word, i) => {
+    if (i !== index) return word;
+    const nextTiers = tiersById[theme];
+    if (nextTiers) {
+      const config = nextTiers[nextTiers[emphasis] ? emphasis : "support"];
+      return { ...word, emphasis, color: config.color, font_size: config.size };
+    }
+    const important = emphasis !== "support";
+    return { ...word, emphasis, important, color: palettes[theme][important ? 1 : 0] };
+  }));
   const chooseTheme = (next) => {
     setTheme(next);
     const nextTiers = tiersById[next];
@@ -337,41 +411,65 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const frameRect = videoFrameRef.current.getBoundingClientRect();
     const startClientX = e.clientX, startClientY = e.clientY;
     const startX = boxX, startY = boxY;
+    // A ref, not a nested setState-inside-an-updater read, is what reliably
+    // carries the drag's final position to onUp (see startResize's note).
+    const liveRef = { current: null };
     const onMove = (moveEvent) => {
       const dx = ((moveEvent.clientX - startClientX) / frameRect.width) * 100;
       const dy = ((moveEvent.clientY - startClientY) / frameRect.height) * 100;
-      setDragPreview({ x: Math.min(100, Math.max(0, startX + dx)), y: Math.min(100, Math.max(0, startY + dy)) });
+      const next = { x: Math.min(100, Math.max(0, startX + dx)), y: Math.min(100, Math.max(0, startY + dy)) };
+      liveRef.current = next;
+      setDragPreview(next);
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      setDragPreview((current) => { if (current) setScopePrompt({ kind: "position", x: current.x, y: current.y }); return null; });
+      setDragPreview(null);
+      if (liveRef.current) setScopePrompt({ kind: "position", x: liveRef.current.x, y: liveRef.current.y });
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
 
-  const startResize = (e) => {
+  // Direction-aware: tc/bc only touch height, ml/mr only touch width,
+  // corners touch both - and every axis is clamped to a pixel floor, so
+  // dragging a handle inward (even past where the opposite edge would be)
+  // settles at the minimum instead of inverting/flipping the box.
+  const startResize = (handle) => (e) => {
     if (!visibleWords.length) return;
     e.preventDefault(); e.stopPropagation();
-    // Every handle (corner, edge, any direction) should grow the text when
-    // dragged away from the box's center and shrink it when dragged toward
-    // it - using straight-line distance from the center means a sideways or
-    // diagonal drag works exactly like an up/down one, not just vertical.
+    const overlayEl = e.currentTarget.closest(".caption-overlay");
+    const overlayRect = overlayEl.getBoundingClientRect();
     const frameRect = videoFrameRef.current.getBoundingClientRect();
-    const centerX = frameRect.left + (boxX / 100) * frameRect.width;
-    const centerY = frameRect.top + (boxY / 100) * frameRect.height;
-    const startDistance = Math.hypot(e.clientX - centerX, e.clientY - centerY);
-    const startSize = boxFontSize;
+    const startWidthPx = overlayRect.width, startHeightPx = overlayRect.height;
+    const startClientX = e.clientX, startClientY = e.clientY;
+    const startFontSize = boxFontSize;
+    // setState updater functions run on React's own schedule, not
+    // synchronously at the call site - nesting a second setState inside one
+    // updater to read "the value the first one just computed" is unreliable
+    // (it can observe a stale/pre-drag value). A plain ref sidesteps that:
+    // onMove always has the true latest numbers for onUp to read back.
+    const liveRef = { current: null };
     const onMove = (moveEvent) => {
-      const distance = Math.hypot(moveEvent.clientX - centerX, moveEvent.clientY - centerY);
-      const delta = (distance - startDistance) * 0.3;
-      setResizePreview(Math.min(92, Math.max(24, Math.round(startSize + delta))));
+      const dx = moveEvent.clientX - startClientX;
+      const dy = moveEvent.clientY - startClientY;
+      const { widthTouched, heightTouched, nextWidthPx, nextHeightPx, scale } =
+        resizeBox(handle, dx, dy, startWidthPx, startHeightPx);
+      const fontSize = Math.min(92, Math.max(24, Math.round(startFontSize * scale)));
+      const size = {
+        width: widthTouched ? Math.min(96, (nextWidthPx / frameRect.width) * 100) : undefined,
+        height: heightTouched ? Math.min(96, (nextHeightPx / frameRect.height) * 100) : undefined,
+      };
+      liveRef.current = { fontSize, size };
+      setResizePreview(fontSize);
+      setBoxSizePreview(size);
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      setResizePreview((current) => { if (current != null) setScopePrompt({ kind: "size", fontSize: current }); return null; });
+      setResizePreview(null);
+      setBoxSizePreview(null);
+      if (liveRef.current) setScopePrompt({ kind: "box", fontSize: liveRef.current.fontSize, ...liveRef.current.size });
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -379,8 +477,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
 
   const applyScope = (scope) => {
     if (!scopePrompt) return;
-    const changes = scopePrompt.kind === "position"
-      ? { pos_x: scopePrompt.x, pos_y: scopePrompt.y }
+    const changes = scopePrompt.kind === "position" ? { pos_x: scopePrompt.x, pos_y: scopePrompt.y }
+      : scopePrompt.kind === "box" ? {
+        font_size: scopePrompt.fontSize,
+        ...(scopePrompt.width !== undefined ? { box_width: scopePrompt.width } : {}),
+        ...(scopePrompt.height !== undefined ? { box_height: scopePrompt.height } : {}),
+      }
       : { font_size: scopePrompt.fontSize };
     if (scope === "this") {
       const indices = new Set(visibleWords.map((word) => word.index));
@@ -414,19 +516,25 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     window.addEventListener("mouseup", onUp);
   };
 
-  const startResizeElement = (id) => (e) => {
+  // An element is a single glyph/short text, not a wrapping box, so there's
+  // no separate width/height to track - but it shares the same flip bug fix:
+  // a signed delta projected onto the handle's own outward direction (never
+  // an unsigned radius), clamped to a floor, so no handle can ever drive the
+  // size through zero and out the other side.
+  const startResizeElement = (id, handle) => (e) => {
     e.preventDefault(); e.stopPropagation();
     const element = elements.find((item) => item.id === id);
     if (!element) return;
-    const frameRect = videoFrameRef.current.getBoundingClientRect();
-    const centerX = frameRect.left + (element.pos_x / 100) * frameRect.width;
-    const centerY = frameRect.top + (element.pos_y / 100) * frameRect.height;
-    const startDistance = Math.hypot(e.clientX - centerX, e.clientY - centerY);
+    const dir = RESIZE_HANDLES[handle];
+    const norm = Math.hypot(dir.x, dir.y) || 1;
+    const unitX = dir.x / norm, unitY = dir.y / norm;
+    const startClientX = e.clientX, startClientY = e.clientY;
     const startSize = element.font_size;
     const onMove = (moveEvent) => {
-      const distance = Math.hypot(moveEvent.clientX - centerX, moveEvent.clientY - centerY);
-      const delta = (distance - startDistance) * 0.6;
-      updateElement(id, { font_size: Math.min(280, Math.max(40, Math.round(startSize + delta))) });
+      const dx = moveEvent.clientX - startClientX;
+      const dy = moveEvent.clientY - startClientY;
+      const signedDelta = (dx * unitX + dy * unitY) * 1.6;
+      updateElement(id, { font_size: Math.min(280, Math.max(20, Math.round(startSize + signedDelta))) });
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
@@ -454,7 +562,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       </div>
       <div className="studio-grid">
         <LeftRail active={leftTab} onSelect={setLeftTab} />
-        {leftTab === "captions" && <TranscriptPanel words={words} groups={indexedWordGroups} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={selectWord} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />}
+        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={selectWord} onText={(index, text) => updateWord(index, { text })} onNewLine={toggleWordNewLine} onSplitWord={splitWord} onEmphasis={setWordEmphasis} onRelisten={relisten} relistening={relistening} />}
         {leftTab === "media" && <MediaPanel project={project} />}
         {leftTab === "audio" && <AudioPanel volume={audioVolume} onVolume={setAudioVolume} muted={audioMuted} onMuted={setAudioMuted} />}
         {leftTab === "elements" && <ElementsPanel elements={elements.filter((item) => item.kind !== "text")} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={(char) => addElement(char, "sticker")} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
@@ -478,7 +586,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               <div className="safe-zone-meta" />
             </div>}
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
-              style={{ left: `${boxX}%`, top: `${boxY}%` }} onMouseDown={startMove} data-testid="live-caption-preview">
+              style={{ left: `${boxX}%`, top: `${boxY}%`,
+                      ...(boxWidthPct != null ? { width: `${boxWidthPct}%`, maxWidth: "none" } : {}),
+                      ...(boxHeightPct != null ? { height: `${boxHeightPct}%`, overflow: "hidden" } : {}) }}
+              onMouseDown={startMove} data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
                 {row.map((word) => {
                   // Color/size always come from the word itself (editable,
@@ -492,7 +603,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                 })}
               </div>)}
               <div className="selection-box">
-                {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResize} data-testid={`caption-resize-handle-${pos}`} />)}
+                {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResize(pos)} data-testid={`caption-resize-handle-${pos}`} />)}
               </div>
             </div>}
             {scopePrompt && <div className="position-scope-prompt" style={{ left: `${boxX}%`, top: `${Math.min(92, boxY + 8)}%` }} data-testid="position-scope-prompt">
@@ -510,7 +621,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                 data-testid={`element-overlay-${item.id}`}>
                 {item.char}
                 {interactive && selectedElementId === item.id && <div className="selection-box">
-                  {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResizeElement(item.id)} data-testid={`element-resize-handle-${pos}`} />)}
+                  {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResizeElement(item.id, pos)} data-testid={`element-resize-handle-${pos}`} />)}
                 </div>}
               </div>;
             })}

@@ -86,6 +86,12 @@ class WordEdit(BaseModel):
     # template, or the midpoint for a plain two-line template) - True/False
     # is an explicit manual override from a merge/split edit.
     new_line: bool | None = None
+    # None means "auto" (size to content, as before). A concrete value is a
+    # percentage of canvas width/height for an explicit box size set by
+    # dragging a resize handle in the editor. Editor-side only for now - the
+    # ASS renderer still places text at a point (\pos), not a wrapped box.
+    box_width: float | None = Field(default=None, ge=0, le=100)
+    box_height: float | None = Field(default=None, ge=0, le=100)
 
 
 class ElementEdit(BaseModel):
