@@ -105,6 +105,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [captionLines, setCaptionLines] = useState(initialProject.caption_lines || 1);
   const [captionPosition, setCaptionPosition] = useState(initialProject.caption_position || "bottom");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [themeTab, setThemeTab] = useState("templates");
+  // Selecting a word from the Captions list or the bottom timeline should
+  // land you straight on its edit controls - requiring a separate click
+  // over to the right panel's Text tab every time was exactly the kind of
+  // hidden-UI friction that made editing feel clunky.
+  const selectWord = (index) => { setSelectedIndex(index); setThemeTab("text"); };
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [rendering, setRendering] = useState(false);
@@ -122,6 +128,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [contrast, setContrast] = useState(initialProject.contrast ?? 100);
   const [saturation, setSaturation] = useState(initialProject.saturation ?? 100);
   const [reassigning, setReassigning] = useState(false);
+  const [frameWidth, setFrameWidth] = useState(0);
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
 
@@ -132,6 +139,22 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     videoRef.current.volume = Math.min(1, Math.max(0, audioVolume / 100));
     videoRef.current.muted = audioMuted;
   }, [audioVolume, audioMuted]);
+
+  // Caption/element font sizes are defined against the 1080x1920 canvas the
+  // backend bakes into the ASS script (see captions.py's PlayResX/PlayResY),
+  // so the preview has to know its own on-screen pixel width to scale a
+  // font_size down to a matching on-screen size - a fixed guess here was the
+  // actual bug behind "caption looks fine in the editor but tiny in the
+  // rendered video": the preview box's real size depends on the viewer's
+  // window/screen, not a constant.
+  useEffect(() => {
+    const node = videoFrameRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => setFrameWidth(entries[0].contentRect.width));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const previewScale = frameWidth ? frameWidth / 1080 : 0.62;
 
   // The video element's own timeupdate event fires at a coarse, inconsistent
   // rate (often just 4-10x/sec), which visibly lags captions behind the
@@ -371,7 +394,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       </div>
       <div className="studio-grid">
         <LeftRail active={leftTab} onSelect={setLeftTab} />
-        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={setSelectedIndex} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />}
+        {leftTab === "captions" && <TranscriptPanel words={words} originalTranscript={project.source_transcript} transcriptionMode={project.transcription_mode} activeIndex={activeIndex} selectedIndex={selectedIndex} onSelect={selectWord} onText={(index, text) => updateWord(index, { text })} onRelisten={relisten} relistening={relistening} />}
         {leftTab === "media" && <MediaPanel project={project} />}
         {leftTab === "audio" && <AudioPanel volume={audioVolume} onVolume={setAudioVolume} muted={audioMuted} onMuted={setAudioMuted} />}
         {leftTab === "elements" && <ElementsPanel elements={elements.filter((item) => item.kind !== "text")} selectedId={selectedElementId} onSelect={setSelectedElementId} onAdd={(char) => addElement(char, "sticker")} onUpdate={updateElement} onDelete={deleteElement} currentTime={currentTime} duration={project.duration} />}
@@ -392,7 +415,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   const fontFamily = tiers
                     ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
                     : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
-                  const style = { color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * .62)}px`, fontFamily };
+                  const style = { color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * previewScale)}px`, fontFamily };
                   return <span key={word.index} className={activeIndex === word.index ? "active" : ""} style={style} data-testid={`preview-caption-word-${word.index}`}>{word.text}</span>;
                 })}
               </div>)}
@@ -407,7 +430,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
             {elements.filter((item) => currentTime >= item.start && currentTime <= item.end).map((item) => {
               const interactive = leftTab === "elements" || leftTab === "text";
               return <div key={item.id} className={`element-overlay ${interactive && selectedElementId === item.id ? "selected" : ""}`}
-                style={{ left: `${item.pos_x}%`, top: `${item.pos_y}%`, fontSize: `${item.font_size * .62}px`, color: item.color,
+                style={{ left: `${item.pos_x}%`, top: `${item.pos_y}%`, fontSize: `${item.font_size * previewScale}px`, color: item.color,
                         fontFamily: item.kind === "text" ? fontFamilyById[item.font_id] : undefined,
                         fontWeight: item.kind === "text" ? 700 : undefined,
                         cursor: interactive ? "grab" : "default", pointerEvents: interactive ? "auto" : "none" }}
@@ -426,9 +449,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           wordsPerCaption={wordsPerCaption} onWordsPerCaption={setWordsPerCaption}
           captionLines={captionLines} onCaptionLines={setCaptionLines}
           captionPosition={captionPosition} onCaptionPosition={setCaptionPosition}
-          selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)} />
+          selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
+          tab={themeTab} onTab={setThemeTab} />
       </div>
-      <Timeline words={words} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={setSelectedIndex} />
+      <Timeline words={words} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} />
     </main>
   );
 };

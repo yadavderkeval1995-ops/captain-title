@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Palette, Rows, Sparkle, SquaresFour, TextT } from "@phosphor-icons/react";
 import { Slider } from "@/components/ui/slider";
 
@@ -46,8 +45,7 @@ export const fonts = [
 
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
-                             selectedWord, onWordStyle }) => {
-  const [tab, setTab] = useState("templates");
+                             selectedWord, onWordStyle, tab, onTab }) => {
   const activeTiers = templates.find((item) => item.id === theme)?.tiers;
   const isTiered = !!activeTiers;
   const setEmphasis = (tier) => {
@@ -57,7 +55,7 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
   return (
   <aside className="tool-panel" data-testid="caption-tools-panel">
     <div className="panel-tabs" data-testid="caption-tool-tabs">
-      {tabs.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)} data-testid={`caption-tab-${id}-button`}>
+      {tabs.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? "active" : ""} onClick={() => onTab(id)} data-testid={`caption-tab-${id}-button`}>
         <Icon size={17} /> {label}
       </button>)}
     </div>
