@@ -103,6 +103,16 @@ class ElementEdit(BaseModel):
     pos_y: float = Field(default=30, ge=0, le=100)
 
 
+class SfxMarker(BaseModel):
+    id: str
+    # Editor-side annotation only for now - there's no licensed SFX audio
+    # bundled to actually mix into the export (see render(), which doesn't
+    # read this field). It's persisted and shown on the timeline so the
+    # marker placement itself isn't lost between sessions.
+    type: Literal["whoosh", "pop", "cash", "ding"]
+    time: float = Field(ge=0)
+
+
 class ProjectEdit(BaseModel):
     theme: str
     font_id: str = "poppins"
@@ -117,6 +127,7 @@ class ProjectEdit(BaseModel):
     render_quality: Literal["high", "draft"] = "high"
     words: list[WordEdit]
     elements: list[ElementEdit] = []
+    sfx_markers: list[SfxMarker] = []
 
 
 class RetranscribeRequest(BaseModel):
@@ -316,7 +327,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
-                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [],
+                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [],
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -357,6 +368,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "render_quality": payload.render_quality,
                   "words": [word.model_dump() for word in payload.words],
                   "elements": [element.model_dump() for element in payload.elements],
+                  "sfx_markers": [marker.model_dump() for marker in payload.sfx_markers],
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")

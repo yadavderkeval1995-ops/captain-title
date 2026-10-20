@@ -1,18 +1,41 @@
 import { useEffect, useRef, useState } from "react";
-import { MagnifyingGlassMinus, MagnifyingGlassPlus, Pause, Play } from "@phosphor-icons/react";
+import { Balloon, Bell, MagnifyingGlassMinus, MagnifyingGlassPlus, Money, Pause, Play, Wind, X } from "@phosphor-icons/react";
 
 const BASE_PIXELS_PER_SECOND = 60;
 const MIN_BLOCK_WIDTH = 46;
+const MIN_WORD_DURATION = 0.08;
 const PEAKS_PER_SECOND = 20;
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.5, 2, 3];
+const TICK_INTERVALS = [1, 2, 5, 10, 15, 30, 60];
+const SFX_TYPES = [
+  { id: "whoosh", label: "Whoosh", icon: Wind, color: "#22d3ee" },
+  { id: "pop", label: "Pop", icon: Balloon, color: "#ffeb3b" },
+  { id: "cash", label: "Cash", icon: Money, color: "#5ee6a0" },
+  { id: "ding", label: "Ding", icon: Bell, color: "#ff8fc7" },
+];
+const SFX_BY_TYPE = Object.fromEntries(SFX_TYPES.map((item) => [item.id, item]));
 
-export const Timeline = ({ words, groups, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect, mediaUrl }) => {
+function formatTick(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function tickInterval(pxPerSecond) {
+  for (const n of TICK_INTERVALS) if (n * pxPerSecond >= 56) return n;
+  return TICK_INTERVALS[TICK_INTERVALS.length - 1];
+}
+
+export const Timeline = ({ words, groups, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect,
+                          onRetimeWord, mediaUrl, sfxMarkers, onAddSfx, onMoveSfx, onDeleteSfx }) => {
   const trackRef = useRef(null);
   const canvasRef = useRef(null);
   const peaksRef = useRef(null);
   // Lines by default - that's the view that actually shows how captions
   // are distributed across the video; Words is there for fine-grained
-  // per-word timing work.
+  // per-word timing work (and is the only mode where retime handles make
+  // sense - a Lines block spans several words, so "drag its edge" has no
+  // single unambiguous word boundary to move).
   const [mode, setMode] = useState("lines");
   const [zoom, setZoom] = useState(1);
   const pxPerSecond = BASE_PIXELS_PER_SECOND * zoom;
@@ -31,6 +54,54 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
   const startScrub = (e) => {
     seekFromClientX(e.clientX);
     const onMove = (moveEvent) => seekFromClientX(moveEvent.clientX);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Drag a word block's left/right edge to re-time its start/end, clamped
+  // against its own minimum duration, its neighbors, and the clip bounds.
+  const startRetime = (index, edge) => (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const word = words[index];
+    const prevWord = words[index - 1];
+    const nextWord = words[index + 1];
+    const startClientX = e.clientX;
+    const origStart = word.start, origEnd = word.end;
+    const onMove = (moveEvent) => {
+      const dx = (moveEvent.clientX - startClientX) / pxPerSecond;
+      if (edge === "left") {
+        let next = Math.max(0, origStart + dx);
+        next = Math.min(next, origEnd - MIN_WORD_DURATION);
+        if (prevWord) next = Math.max(next, prevWord.end);
+        onRetimeWord(index, { start: Math.round(next * 100) / 100 });
+      } else {
+        let next = Math.min(duration, origEnd + dx);
+        next = Math.max(next, origStart + MIN_WORD_DURATION);
+        if (nextWord) next = Math.min(next, nextWord.start);
+        onRetimeWord(index, { end: Math.round(next * 100) / 100 });
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const startDragSfx = (marker) => (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const startClientX = e.clientX;
+    const origTime = marker.time;
+    const onMove = (moveEvent) => {
+      const dx = (moveEvent.clientX - startClientX) / pxPerSecond;
+      const next = Math.min(duration, Math.max(0, origTime + dx));
+      onMoveSfx(marker.id, Math.round(next * 100) / 100);
+    };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -89,7 +160,7 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, height);
     if (!peaks || !peaks.length) return;
-    ctx.fillStyle = "rgba(255,80,105,.35)";
+    ctx.fillStyle = "rgba(34,211,238,.55)";
     const mid = height / 2;
     const pxPerPeak = trackWidth / peaks.length;
     for (let i = 0; i < peaks.length; i++) {
@@ -133,6 +204,10 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onToggle]);
 
+  const interval = tickInterval(pxPerSecond);
+  const ticks = [];
+  for (let t = 0; t <= duration; t += interval) ticks.push(t);
+
   return (
     <section className="timeline" data-testid="caption-timeline">
       <div className="timeline-controls">
@@ -150,27 +225,58 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
           <span data-testid="timeline-zoom-value">{Math.round(zoom * 100)}%</span>
           <button onClick={zoomIn} disabled={zoomIndex >= ZOOM_STEPS.length - 1} title="Zoom in" data-testid="timeline-zoom-in-button"><MagnifyingGlassPlus size={13} /></button>
         </div>
+        <div className="timeline-sfx-palette" data-testid="timeline-sfx-palette">
+          {SFX_TYPES.map(({ id, label, icon: Icon, color }) => <button key={id} style={{ color }} onClick={() => onAddSfx(id)} title={`Drop a ${label} marker here`} data-testid={`add-sfx-${id}-button`}><Icon size={14} weight="fill" /></button>)}
+        </div>
       </div>
-      <div className="timeline-track" ref={trackRef} onMouseDown={startScrub} data-testid="timeline-word-track">
-        <div className="timeline-track-inner" style={{ width: `${trackWidth}px` }}>
-          <canvas ref={canvasRef} className="timeline-waveform" height={72} data-testid="timeline-waveform" />
-          <div className="playhead" style={{ left: `${currentTime * pxPerSecond}px` }} data-testid="timeline-playhead" />
-          {mode === "words" && words.map((word, index) => <button key={index} className={`${currentTime >= word.start && currentTime <= word.end ? "active" : ""} ${selectedIndex === index ? "selected" : ""}`}
-            style={{ left: `${word.start * pxPerSecond}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (word.end - word.start) * pxPerSecond)}px` }}
-            onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(word.start); onSelect?.(index); }} data-testid={`word-block-${index}`}>
-            {word.text}
-          </button>)}
-          {mode === "lines" && groups.map((group, cueIndex) => {
-            const start = group[0].word.start, end = group[group.length - 1].word.end;
-            const indices = group.map((item) => item.index);
-            const isActive = currentTime >= start && currentTime <= end;
-            const isSelected = indices.includes(selectedIndex);
-            return <button key={cueIndex} className={`line-block ${isActive ? "active" : ""} ${isSelected ? "selected" : ""}`}
-              style={{ left: `${start * pxPerSecond}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (end - start) * pxPerSecond)}px` }}
-              onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(start); onSelect?.(group[0].index); }} data-testid={`line-block-${cueIndex}`}>
-              {group.map((item) => item.word.text).join(" ")}
-            </button>;
-          })}
+      <div className="timeline-tracks" ref={trackRef} onMouseDown={startScrub} data-testid="timeline-word-track">
+        <div className="timeline-tracks-inner" style={{ width: `${trackWidth}px` }}>
+          <div className="playhead" style={{ left: `${currentTime * pxPerSecond}px` }} data-testid="timeline-playhead"><i /></div>
+
+          <div className="timeline-ruler" data-testid="timeline-ruler">
+            {ticks.map((t) => <div key={t} className="timeline-tick" style={{ left: `${t * pxPerSecond}px` }}><b /><span>{formatTick(t)}</span></div>)}
+          </div>
+
+          <div className="timeline-lane timeline-lane-captions" data-testid="timeline-lane-captions">
+            {mode === "words" && words.map((word, index) => {
+              const isActive = currentTime >= word.start && currentTime <= word.end;
+              const isSelected = selectedIndex === index;
+              return <div key={index} className={`caption-block ${isActive ? "active" : ""} ${isSelected ? "selected" : ""}`}
+                style={{ left: `${word.start * pxPerSecond}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (word.end - word.start) * pxPerSecond)}px` }}
+                data-testid={`word-block-${index}`}>
+                <i className="retime-handle left" onMouseDown={startRetime(index, "left")} data-testid={`word-retime-left-${index}`} />
+                <button onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(word.start); onSelect?.(index); }}>{word.text}</button>
+                <i className="retime-handle right" onMouseDown={startRetime(index, "right")} data-testid={`word-retime-right-${index}`} />
+              </div>;
+            })}
+            {mode === "lines" && groups.map((group, cueIndex) => {
+              const start = group[0].word.start, end = group[group.length - 1].word.end;
+              const indices = group.map((item) => item.index);
+              const isActive = currentTime >= start && currentTime <= end;
+              const isSelected = indices.includes(selectedIndex);
+              return <button key={cueIndex} className={`line-block ${isActive ? "active" : ""} ${isSelected ? "selected" : ""}`}
+                style={{ left: `${start * pxPerSecond}px`, width: `${Math.max(MIN_BLOCK_WIDTH, (end - start) * pxPerSecond)}px` }}
+                onMouseDown={(e) => e.stopPropagation()} onClick={() => { onSeek(start); onSelect?.(group[0].index); }} data-testid={`line-block-${cueIndex}`}>
+                {group.map((item) => item.word.text).join(" ")}
+              </button>;
+            })}
+          </div>
+
+          <div className="timeline-lane timeline-lane-waveform" data-testid="timeline-lane-waveform">
+            <canvas ref={canvasRef} className="timeline-waveform" height={44} data-testid="timeline-waveform" />
+          </div>
+
+          <div className="timeline-lane timeline-lane-sfx" data-testid="timeline-lane-sfx">
+            {sfxMarkers.map((marker) => {
+              const meta = SFX_BY_TYPE[marker.type];
+              const Icon = meta.icon;
+              return <div key={marker.id} className="sfx-marker" style={{ left: `${marker.time * pxPerSecond}px`, borderColor: meta.color, color: meta.color }}
+                onMouseDown={startDragSfx(marker)} title={`${meta.label} · ${marker.time.toFixed(2)}s - drag to move`} data-testid={`sfx-marker-${marker.id}`}>
+                <Icon size={11} weight="fill" /><span>{meta.label}</span>
+                <button onMouseDown={(e) => e.stopPropagation()} onClick={() => onDeleteSfx(marker.id)} title="Remove marker" data-testid={`sfx-marker-delete-${marker.id}`}><X size={9} weight="bold" /></button>
+              </div>;
+            })}
+          </div>
         </div>
       </div>
     </section>

@@ -144,6 +144,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [contrast, setContrast] = useState(initialProject.contrast ?? 100);
   const [saturation, setSaturation] = useState(initialProject.saturation ?? 100);
   const [renderQuality, setRenderQuality] = useState(initialProject.render_quality ?? "high");
+  const [sfxMarkers, setSfxMarkers] = useState(initialProject.sfx_markers || []);
   const [reassigning, setReassigning] = useState(false);
   const [safeZone, setSafeZone] = useState(false);
   const [frameWidth, setFrameWidth] = useState(0);
@@ -248,7 +249,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const payload = () => ({ theme, font_id: fontId, words_per_caption: wordsPerCaption,
                            caption_lines: captionLines, caption_position: captionPosition, words,
                            audio_volume: audioVolume, audio_muted: audioMuted,
-                           brightness, contrast, saturation, render_quality: renderQuality, elements });
+                           brightness, contrast, saturation, render_quality: renderQuality, elements,
+                           sfx_markers: sfxMarkers });
+
+  const addSfxMarker = (type) => {
+    const id = `sfx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setSfxMarkers((current) => [...current, { id, type, time: Math.round(currentTime * 100) / 100 }]);
+  };
+  const moveSfxMarker = (id, time) => setSfxMarkers((current) => current.map((marker) => marker.id === id ? { ...marker, time } : marker));
+  const deleteSfxMarker = (id) => setSfxMarkers((current) => current.filter((marker) => marker.id !== id));
 
   const addElement = (char, kind = "sticker") => {
     const id = `el_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -516,7 +525,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
           tab={themeTab} onTab={setThemeTab} />
       </div>
-      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} />
+      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={selectWord} onRetimeWord={updateWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} sfxMarkers={sfxMarkers} onAddSfx={addSfxMarker} onMoveSfx={moveSfxMarker} onDeleteSfx={deleteSfxMarker} />
     </main>
   );
 };
