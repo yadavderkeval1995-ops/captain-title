@@ -116,6 +116,24 @@ class WordEdit(BaseModel):
     # ASS renderer still places text at a point (\pos), not a wrapped box.
     box_width: float | None = Field(default=None, ge=0, le=100)
     box_height: float | None = Field(default=None, ge=0, le=100)
+    # None means "no manual rotation" (0deg). A concrete value tilts this
+    # caption's whole box around its own center point (the same point \pos
+    # anchors on, via \an5), set by the Transform panel's Rotation slider.
+    rotation: float | None = Field(default=None, ge=-45, le=45)
+    # None means "use the project default line spacing" (LINE_HEIGHT in
+    # captions.py / App.css's .caption-overlay). A concrete value is a
+    # multiplier on each row's own tallest word, same role LINE_HEIGHT plays
+    # - set by the Transform panel's Line Height slider.
+    line_height: float | None = Field(default=None, ge=0.8, le=2.0)
+    # None means "auto grouping" (the heuristics in _group_words_for_display
+    # decide where one caption/display-group ends and the next begins).
+    # True forces a new group to start at this word (a manual "Split at
+    # Word"/"Split at Playhead" edit); False forces this word to join the
+    # PREVIOUS group even if the heuristics would otherwise break here (a
+    # manual "Merge with Next" edit, applied to the first word of the group
+    # being merged away). Mirrors new_line's tri-state pattern one level up,
+    # at the caption-grouping level instead of the line-wrap level.
+    new_caption: bool | None = None
     # "FOR THIS MOMENT" kinetic tag applied to this word while it's active in
     # the editor preview. Editor-side only for now, like box_width/height
     # above - the ASS renderer has no equivalent of a live CSS keyframe
@@ -543,7 +561,13 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
     a natural pause (max_gap) is still a break point either way. A sentence-
     ending word is always the last word of its group, regardless of the gap
     or count settings, so a caption never splices the tail of one sentence
-    onto the start of the next."""
+    onto the start of the next.
+
+    A word's own new_caption overrides all of the above: True always starts
+    a new group right at that word (a manual "Split" edit), False always
+    keeps it in the previous group (a manual "Merge" edit) even past
+    max_words/max_gap/sentence-end - the same tri-state pattern new_line
+    uses one level down, for caption boundaries instead of line wraps."""
     groups = []
     index = 0
     total = len(words)
@@ -551,11 +575,18 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
         group = [words[index]]
         group_end = words[index]["end"]
         next_index = index + 1
-        while (next_index < total and len(group) < max_words and not _ends_sentence(group[-1])
-              and words[next_index]["start"] - group_end < max_gap
-              and (strict_count or group_end - words[index]["start"] < min_display)):
-            group.append(words[next_index])
-            group_end = words[next_index]["end"]
+        while next_index < total:
+            nxt = words[next_index]
+            forced_split = nxt.get("new_caption") is True
+            forced_merge = nxt.get("new_caption") is False
+            if forced_split:
+                break
+            if not forced_merge and not (len(group) < max_words and not _ends_sentence(group[-1])
+                  and nxt["start"] - group_end < max_gap
+                  and (strict_count or group_end - words[index]["start"] < min_display)):
+                break
+            group.append(nxt)
+            group_end = nxt["end"]
             next_index += 1
         groups.append(group)
         index = next_index
@@ -591,14 +622,29 @@ POP_BLUR_BOOST = 3
 
 
 def _group_center(group, caption_position):
-    """A group carries a manual pos_x/pos_y (dragged in the editor) on its
-    first word if the user has placed this exact caption - otherwise fall
-    back to the project's position preset."""
+    """A group carries a manual pos_x/pos_y (dragged, or set from the
+    Transform panel's Position sliders) on its first word if the user has
+    placed this exact caption - otherwise fall back to the project's
+    position preset."""
     anchor = group[0]
     pos_x, pos_y = anchor.get("pos_x"), anchor.get("pos_y")
     if pos_x is None or pos_y is None:
         pos_x, pos_y = POSITION_DEFAULTS.get(caption_position, POSITION_DEFAULTS["bottom"])
     return round(pos_x / 100 * 1080), round(pos_y / 100 * 1920)
+
+
+def _group_rotation(group):
+    """The Transform panel's Rotation slider, set per-caption on the
+    group's anchor (first) word - None/0 means no rotation."""
+    return group[0].get("rotation") or 0
+
+
+def _group_line_height(group):
+    """The Transform panel's Line Height slider, set per-caption on the
+    group's anchor (first) word - None means "use the project default"
+    (LINE_HEIGHT), same multiplier App.css's .caption-overlay falls back
+    to in the preview."""
+    return group[0].get("line_height") or LINE_HEIGHT
 
 
 def _split_rows(group, breaks):
@@ -686,6 +732,8 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                                       strict_count=words_per_caption is not None)
     for group in groups:
         center_x, center_y = _group_center(group, caption_position)
+        rotation = _group_rotation(group)
+        line_height = _group_line_height(group)
         breaks = _resolve_line_breaks(group, tiers, caption_lines)
         rows = _split_rows(group, breaks)
 
@@ -764,7 +812,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         for row in rows:
             sizes = [word_tags(word, (word.get("original") or word["text"])
                                 if script_mode == "native" else word["text"])[1] for word in row]
-            row_heights.append(max(sizes, default=52) * LINE_HEIGHT)
+            row_heights.append(max(sizes, default=52) * line_height)
         total_height = sum(row_heights) + ROW_GAP_PX * (len(rows) - 1)
         row_top = center_y - total_height / 2
 
@@ -778,7 +826,12 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 safe = display_text.replace("{", "").replace("}", "")
                 tags, _ = word_tags(word, display_text)
                 if index == 0:
-                    tags = f"\\an5\\pos({center_x},{row_center_y})" + tags
+                    # \org pins the rotation pivot to the whole caption
+                    # block's own center (not this row's own \pos) so a
+                    # multi-row caption rotates as one rigid block instead
+                    # of each row spinning independently around itself.
+                    frz = f"\\org({center_x},{center_y})\\frz{rotation:g}" if rotation else ""
+                    tags = f"\\an5\\pos({center_x},{row_center_y}){frz}" + tags
                 separator = " " if index > 0 else ""
                 word_parts.append(f"{separator}{{{tags}}}{safe}")
             styled = "".join(word_parts)

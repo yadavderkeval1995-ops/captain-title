@@ -22,7 +22,8 @@ const KINETIC_STYLES = [
 // click shouldn't pop this open clear across the screen next to the video.
 // Falls back to anchoring beside the video frame when no anchorRect is
 // given (Timeline clicks, where the frame is already the relevant context).
-export const MomentPopover = ({ word, index, frameRect, anchorRect, onClose, onText, onNewLine, onMerge, onKinetic, onEmphasize, onAddSfx, canMergePrevious, canMergeNext }) => {
+export const MomentPopover = ({ word, index, frameRect, anchorRect, onClose, onText, onNewLine, onMerge, onKinetic, onEmphasize, onAddSfx, canMergePrevious, canMergeNext,
+                                onSplitCaption, onMergeCaptionUp, canSplitCaption, canMergeCaptionUp }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(word.text);
   const popoverRef = useRef(null);
@@ -124,6 +125,22 @@ export const MomentPopover = ({ word, index, frameRect, anchorRect, onClose, onT
           <button onClick={() => setEditing(true)} className="col-span-2 flex items-center justify-center gap-1 rounded bg-zinc-800 px-2 py-1.5 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-700"
             data-testid={`moment-edit-spelling-${index}`}>
             <PencilSimple size={12} /> Edit Spelling
+          </button>
+        </div>
+
+        <span className="mt-2.5 block mb-1 text-[9px] font-semibold tracking-[.12em] text-zinc-500">CAPTION (SEPARATE FROM THE LINE ABOVE)</span>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button onClick={() => onSplitCaption(index)} disabled={!canSplitCaption}
+            className="flex items-center justify-center gap-1 rounded bg-zinc-800 px-2 py-1.5 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-700 disabled:opacity-35 disabled:cursor-not-allowed"
+            title="Starts a brand-new caption box right at this word, splitting the current one in two"
+            data-testid={`moment-split-caption-${index}`}>
+            <Scissors size={12} weight="fill" /> Split Caption
+          </button>
+          <button onClick={() => onMergeCaptionUp(index)} disabled={!canMergeCaptionUp}
+            className="flex items-center justify-center gap-1 rounded bg-zinc-800 px-2 py-1.5 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-700 disabled:opacity-35 disabled:cursor-not-allowed"
+            title="Joins this word's caption box into the previous one"
+            data-testid={`moment-merge-caption-up-${index}`}>
+            <ArrowUUpLeft size={12} weight="fill" /> Merge Up
           </button>
         </div>
       </motion.div>

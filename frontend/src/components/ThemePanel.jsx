@@ -1,4 +1,4 @@
-import { Palette, Rows, Sparkle, SquaresFour, TextT } from "@phosphor-icons/react";
+import { ArrowsOutCardinal, Palette, Rows, Sparkle, SquaresFour, TextT } from "@phosphor-icons/react";
 import { Slider } from "@/components/ui/slider";
 
 const wordsPerCaptionOptions = [null, 1, 2, 3, 4, 5, 6, 8];
@@ -7,7 +7,13 @@ const tabs = [
   { id: "templates", label: "Templates", icon: SquaresFour },
   { id: "customize", label: "Customize", icon: Rows },
   { id: "text", label: "Text", icon: TextT },
+  { id: "transform", label: "Transform", icon: ArrowsOutCardinal },
 ];
+// Quick Position Y presets inside the Transform tab - the same percentages
+// POSITION_DEFAULTS (CaptionStudio.jsx) and _group_center (captions.py) use
+// for the Top/Middle/Bottom layout preset buttons, so a preset here lands
+// exactly where that preset would.
+const TRANSFORM_Y_PRESETS = [{ label: "Top", y: 14 }, { label: "Middle", y: 50 }, { label: "Bottom", y: 80 }];
 
 // `card.*` is purely for the Templates grid preview below - it never feeds
 // the actual render pipeline (that's baseColor/color/accentFont/tiers,
@@ -86,7 +92,10 @@ export const fonts = [
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
                              selectedWord, onWordStyle, tab, onTab, variant, onVariant,
-                             captionStyle, onCaptionStyle, bold, onBold, italic, onItalic }) => {
+                             captionStyle, onCaptionStyle, bold, onBold, italic, onItalic,
+                             hasActiveCaption, boxX, boxY, boxFontSize, boxRotation, boxLineHeight,
+                             onCaptionPos, onCaptionScale, onCaptionRotation, onCaptionLineHeight,
+                             onApplyTransformToAll, onResetTransform }) => {
   const activeTiers = templates.find((item) => item.id === theme)?.tiers;
   const isTiered = !!activeTiers;
   const setEmphasis = (tier) => {
@@ -191,6 +200,41 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
         <button className={(selectedWord?.new_line ?? null) === null ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: null })} data-testid="line-break-auto-button">Auto</button>
         <button className={selectedWord?.new_line === false ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: false })} data-testid="line-break-merge-button">Merge up</button>
         <button className={selectedWord?.new_line === true ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: true })} data-testid="line-break-split-button">Split here</button>
+      </div>
+      <label className="control-label" data-testid="caption-break-label">Caption split before this word</label>
+      <div className="layout-grid three" data-testid="caption-break-selector">
+        <button className={(selectedWord?.new_caption ?? null) === null ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_caption: null })} data-testid="caption-break-auto-button">Auto</button>
+        <button className={selectedWord?.new_caption === false ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_caption: false })} data-testid="caption-break-merge-button">Merge up</button>
+        <button className={selectedWord?.new_caption === true ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_caption: true })} data-testid="caption-break-split-button">Split here</button>
+      </div>
+      <p className="panel-note" data-testid="caption-break-note">A caption split starts a whole new caption box (own position/size/timing) here - a line break above only wraps text within the same box.</p>
+    </>}
+
+    {tab === "transform" && <>
+      <div className="panel-heading"><ArrowsOutCardinal size={18} /><div><span>THIS CAPTION</span><h2 data-testid="transform-panel-heading">Transform &amp; style</h2></div></div>
+      {!hasActiveCaption && <p className="panel-note" data-testid="transform-no-caption-note">Play or scrub to a caption to transform it.</p>}
+      <label className="control-label" data-testid="transform-scale-label">Scale / size <b data-testid="transform-scale-value">{Math.round(boxFontSize)}px</b></label>
+      <Slider min={16} max={120} step={1} value={[boxFontSize]} disabled={!hasActiveCaption} onValueChange={([value]) => onCaptionScale(value)} data-testid="transform-scale-slider" />
+
+      <label className="control-label" data-testid="transform-pos-y-label">Position Y <b data-testid="transform-pos-y-value">{Math.round(boxY)}%</b></label>
+      <Slider min={5} max={95} step={1} value={[boxY]} disabled={!hasActiveCaption} onValueChange={([value]) => onCaptionPos({ y: value })} data-testid="transform-pos-y-slider" />
+      <div className="layout-grid three" data-testid="transform-pos-y-presets">
+        {TRANSFORM_Y_PRESETS.map(({ label, y }) => <button key={label} disabled={!hasActiveCaption} onClick={() => onCaptionPos({ y })} data-testid={`transform-pos-y-preset-${label.toLowerCase()}-button`}>{label}</button>)}
+      </div>
+
+      <label className="control-label" data-testid="transform-pos-x-label">Position X <b data-testid="transform-pos-x-value">{Math.round(boxX)}%</b></label>
+      <Slider min={0} max={100} step={1} value={[boxX]} disabled={!hasActiveCaption} onValueChange={([value]) => onCaptionPos({ x: value })} data-testid="transform-pos-x-slider" />
+
+      <label className="control-label" data-testid="transform-rotation-label">Rotation <b data-testid="transform-rotation-value">{Math.round(boxRotation)}&deg;</b></label>
+      <Slider min={-45} max={45} step={1} value={[boxRotation]} disabled={!hasActiveCaption} onValueChange={([value]) => onCaptionRotation(value)} data-testid="transform-rotation-slider" />
+
+      <label className="control-label" data-testid="transform-line-height-label">Line height <b data-testid="transform-line-height-value">{boxLineHeight.toFixed(2)}</b></label>
+      <Slider min={0.8} max={2.0} step={0.05} value={[boxLineHeight]} disabled={!hasActiveCaption} onValueChange={([value]) => onCaptionLineHeight(value)} data-testid="transform-line-height-slider" />
+
+      <div className="tool-divider" />
+      <div className="layout-grid two" data-testid="transform-actions">
+        <button disabled={!hasActiveCaption} onClick={onApplyTransformToAll} data-testid="transform-apply-all-button">Apply to All Captions</button>
+        <button disabled={!hasActiveCaption} onClick={onResetTransform} data-testid="transform-reset-button">Reset to Default</button>
       </div>
     </>}
   </aside>

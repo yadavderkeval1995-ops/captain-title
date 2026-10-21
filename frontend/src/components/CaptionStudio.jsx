@@ -76,25 +76,6 @@ const RESIZE_HANDLES = {
   ml: { x: -1, y: 0 }, mr: { x: 1, y: 0 },
   bl: { x: -1, y: 1 }, bc: { x: 0, y: 1 }, br: { x: 1, y: 1 },
 };
-const MIN_BOX_WIDTH_PX = 60;
-const MIN_BOX_HEIGHT_PX = 30;
-
-// Shared by the caption box and every element/sticker overlay: resize a
-// rectangle from its own center using a signed, direction-aware delta
-// (never an unsigned radius), clamped to a pixel floor so it can't invert.
-// Returns the new size in px plus a font-scale factor derived from however
-// much the touched axes actually changed (area-based, so a single-axis
-// edge drag still nudges the font a sensible amount).
-function resizeBox(handle, dx, dy, startWidthPx, startHeightPx) {
-  const dir = RESIZE_HANDLES[handle];
-  const widthTouched = dir.x !== 0;
-  const heightTouched = dir.y !== 0;
-  const nextWidthPx = widthTouched ? Math.max(MIN_BOX_WIDTH_PX, startWidthPx + dx * dir.x * 2) : startWidthPx;
-  const nextHeightPx = heightTouched ? Math.max(MIN_BOX_HEIGHT_PX, startHeightPx + dy * dir.y * 2) : startHeightPx;
-  const scale = Math.sqrt((nextWidthPx * nextHeightPx) / (startWidthPx * startHeightPx));
-  return { widthTouched, heightTouched, nextWidthPx, nextHeightPx, scale };
-}
-
 function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
 function aspectLabel(width, height) {
   const divisor = gcd(width, height) || 1;
@@ -113,6 +94,13 @@ function endsSentence(word) {
 // instead of stopping early once MIN_DISPLAY_SECONDS is met. A sentence-
 // ending word is always the last word of its group, so a caption never
 // splices the tail of one sentence onto the start of the next.
+//
+// A word's own new_caption overrides all of that: true always starts a new
+// group right at that word (a manual "Split" edit, from the moment popover
+// or the Timeline's Split at Playhead button); false always keeps it in the
+// previous group (a manual "Merge up" edit) even past maxWords/the gap/a
+// sentence end - same tri-state pattern new_line already uses one level
+// down, for caption boundaries instead of line wraps.
 function groupWordsForDisplay(words, wordsPerCaption) {
   const maxWords = wordsPerCaption || MAX_WORDS_PER_LINE;
   const strict = wordsPerCaption != null;
@@ -122,11 +110,16 @@ function groupWordsForDisplay(words, wordsPerCaption) {
     const group = [words[index]];
     let groupEnd = words[index].end;
     let next = index + 1;
-    while (next < words.length && group.length < maxWords && !endsSentence(group[group.length - 1])
-          && words[next].start - groupEnd < MAX_GROUP_GAP
-          && (strict || groupEnd - words[index].start < MIN_DISPLAY_SECONDS)) {
-      group.push(words[next]);
-      groupEnd = words[next].end;
+    while (next < words.length) {
+      const nextWord = words[next];
+      const forcedSplit = nextWord.new_caption === true;
+      const forcedMerge = nextWord.new_caption === false;
+      if (forcedSplit) break;
+      if (!forcedMerge && !(group.length < maxWords && !endsSentence(group[group.length - 1])
+            && nextWord.start - groupEnd < MAX_GROUP_GAP
+            && (strict || groupEnd - words[index].start < MIN_DISPLAY_SECONDS))) break;
+      group.push(nextWord);
+      groupEnd = nextWord.end;
       next += 1;
     }
     groups.push(group);
@@ -178,13 +171,6 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [rendering, setRendering] = useState(false);
   const [relistening, setRelistening] = useState(false);
   const [mediaRetry, setMediaRetry] = useState(0);
-  const [dragPreview, setDragPreview] = useState(null);
-  const [resizePreview, setResizePreview] = useState(null);
-  // { width, height } in % of frame, during an active caption-box drag -
-  // only the axis/axes the grabbed handle actually touches are populated,
-  // so an edge-only drag never silently pins the other dimension.
-  const [boxSizePreview, setBoxSizePreview] = useState(null);
-  const [scopePrompt, setScopePrompt] = useState(null);
   const [leftTab, setLeftTab] = useState("captions");
   const [elements, setElements] = useState(initialProject.elements || []);
   const [selectedElementId, setSelectedElementId] = useState(null);
@@ -216,12 +202,6 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
   const stageRef = useRef(null);
-  // Set true mid-drag by startMove once the cursor has actually moved -
-  // read (and reset) by a word span's onClick to swallow the spurious
-  // click a drag-release fires on whatever word happens to still be under
-  // the cursor (the caption box follows the mouse, so that's always the
-  // word you started dragging).
-  const dragMovedRef = useRef(false);
 
   // The 9:16 video box should be sized to the largest rectangle that fits
   // the actual available area (not a flat vh guess, which left a lot of
@@ -319,17 +299,32 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const tiers = tiersById[theme];
   const activeVariant = variants.find((item) => item.id === variant) || null;
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
-  const boxX = dragPreview?.x ?? anchorWord?.pos_x ?? basePos.x;
-  const boxY = dragPreview?.y ?? anchorWord?.pos_y ?? basePos.y;
-  const boxFontSize = resizePreview ?? anchorWord?.font_size ?? 66;
-  // null means "auto" (sized to content, as before) - only set once a
-  // handle that touches that axis has actually been dragged.
-  const boxWidthPct = boxSizePreview?.width ?? anchorWord?.box_width ?? null;
-  const boxHeightPct = boxSizePreview?.height ?? anchorWord?.box_height ?? null;
+  const boxX = anchorWord?.pos_x ?? basePos.x;
+  const boxY = anchorWord?.pos_y ?? basePos.y;
+  const boxFontSize = anchorWord?.font_size ?? 66;
+  const boxRotation = anchorWord?.rotation ?? 0;
+  const boxLineHeight = anchorWord?.line_height ?? 1.1;
 
   const updateWord = (index, changes) => setWords((current) => current.map((word, i) => i === index ? { ...word, ...changes } : word));
   // Script panel popover: toggle a manual caption-line break before this word.
   const toggleWordNewLine = (index) => setWords((current) => current.map((word, i) => i === index ? { ...word, new_line: !word.new_line } : word));
+  // "Split Caption"/Split at Playhead: force a brand-new caption group to
+  // start right at this word (Segment A = everything before it, keeping its
+  // own end time; Segment B = this word onward) - same "before this word"
+  // convention new_line already uses one level up, just for the caption
+  // boundary groupWordsForDisplay computes instead of a line wrap within one.
+  const splitCaptionBeforeWord = (index) => setWords((current) => current.map((word, i) => i === index ? { ...word, new_caption: true } : word));
+  // "Merge Up": force this word to join the PREVIOUS caption group even past
+  // whatever auto-grouping heuristic (word count/gap/sentence-end) would
+  // otherwise break here - the inverse of splitCaptionBeforeWord, and the
+  // way to merge segment S with S+1: call this on S+1's own first word.
+  const mergeCaptionUp = (index) => setWords((current) => current.map((word, i) => i === index ? { ...word, new_caption: false } : word));
+  // Timeline's dedicated "Split at Playhead" button: splits the caption
+  // currently on screen into two, right at whichever word is playing under
+  // the scrubber - a no-op (and disabled) if the playhead is already sitting
+  // on the first word of its group, since there'd be nothing to split off.
+  const canSplitAtPlayhead = activeIndex >= 0 && anchorWord && anchorWord.index !== activeIndex;
+  const splitAtPlayhead = () => { if (canSplitAtPlayhead) splitCaptionBeforeWord(activeIndex); };
   // Script panel popover: split one word into two adjacent words, time-sliced
   // proportionally to where the character split falls, inserted in place.
   const splitWord = (index, splitPos) => setWords((current) => {
@@ -499,137 +494,46 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const togglePlayback = () => videoRef.current?.paused ? videoRef.current.play() : videoRef.current.pause();
   const seek = (time) => { if (videoRef.current) { videoRef.current.currentTime = time; setCurrentTime(time); } };
 
-  const startMove = (e) => {
+  // The Transform & Style panel replaces the old drag-to-move/drag-to-resize
+  // canvas handles (which kept flickering/snapping back) with direct sliders.
+  // Every setter below writes straight into `words` for the CURRENTLY VISIBLE
+  // caption (visibleWords, the group on screen at the current playhead
+  // position) - no drag preview/commit dance needed, since a slider's value
+  // IS the committed value the instant it changes.
+  const transformThisCaption = (changes) => {
     if (!visibleWords.length) return;
-    e.preventDefault();
-    const frameRect = videoFrameRef.current.getBoundingClientRect();
-    const startClientX = e.clientX, startClientY = e.clientY;
-    const startX = boxX, startY = boxY;
-    dragMovedRef.current = false;
-    // A ref, not a nested setState-inside-an-updater read, is what reliably
-    // carries the drag's final position to onUp (see startResize's note).
-    const liveRef = { current: null };
-    const onMove = (moveEvent) => {
-      if (Math.abs(moveEvent.clientX - startClientX) > 3 || Math.abs(moveEvent.clientY - startClientY) > 3) {
-        // The box visually follows the cursor as it's dragged, so the word
-        // span under the pointer at mousedown is still under it at mouseup
-        // - the browser fires a native click on it same as any other click.
-        // Flagging a real drag here lets the word's onClick below swallow
-        // that one spurious click instead of popping its "FOR THIS MOMENT"
-        // card open right on top of the position you just dragged to.
-        dragMovedRef.current = true;
-      }
-      const dx = ((moveEvent.clientX - startClientX) / frameRect.width) * 100;
-      const dy = ((moveEvent.clientY - startClientY) / frameRect.height) * 100;
-      const next = { x: Math.min(100, Math.max(0, startX + dx)), y: Math.min(100, Math.max(0, startY + dy)) };
-      liveRef.current = next;
-      setDragPreview(next);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      // dragPreview is deliberately left set (not reverted to null here) so
-      // the box stays exactly where it was dropped while the this/all scope
-      // prompt is open - applyScope/cancelScopePrompt below are what finally
-      // clear it, once the user has actually chosen what to do with it.
-      if (liveRef.current) setScopePrompt({ kind: "position", x: liveRef.current.x, y: liveRef.current.y });
-      else setDragPreview(null);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    const indices = new Set(visibleWords.map((word) => word.index));
+    setWords((current) => current.map((word) => indices.has(word.index) ? { ...word, ...changes } : word));
   };
-
-  // Direction-aware: tc/bc only touch height, ml/mr only touch width,
-  // corners touch both - and every axis is clamped to a pixel floor, so
-  // dragging a handle inward (even past where the opposite edge would be)
-  // settles at the minimum instead of inverting/flipping the box.
-  const startResize = (handle) => (e) => {
+  const setCaptionPos = ({ x, y }) => transformThisCaption({ pos_x: x ?? boxX, pos_y: y ?? boxY });
+  // Scaling (not flattening) every word's own font_size by the ratio between
+  // the new and old anchor size keeps a tiered template's relative word
+  // sizes intact instead of forcing every word in the caption to one size.
+  const setCaptionScale = (size) => {
+    const ratio = size / (boxFontSize || 1);
     if (!visibleWords.length) return;
-    e.preventDefault(); e.stopPropagation();
-    const overlayEl = e.currentTarget.closest(".caption-overlay");
-    const overlayRect = overlayEl.getBoundingClientRect();
-    const frameRect = videoFrameRef.current.getBoundingClientRect();
-    const startWidthPx = overlayRect.width, startHeightPx = overlayRect.height;
-    const startClientX = e.clientX, startClientY = e.clientY;
-    const startFontSize = boxFontSize;
-    // setState updater functions run on React's own schedule, not
-    // synchronously at the call site - nesting a second setState inside one
-    // updater to read "the value the first one just computed" is unreliable
-    // (it can observe a stale/pre-drag value). A plain ref sidesteps that:
-    // onMove always has the true latest numbers for onUp to read back.
-    const liveRef = { current: null };
-    const onMove = (moveEvent) => {
-      const dx = moveEvent.clientX - startClientX;
-      const dy = moveEvent.clientY - startClientY;
-      const { widthTouched, heightTouched, nextWidthPx, nextHeightPx, scale } =
-        resizeBox(handle, dx, dy, startWidthPx, startHeightPx);
-      const fontSize = Math.min(92, Math.max(24, Math.round(startFontSize * scale)));
-      const size = {
-        width: widthTouched ? Math.min(96, (nextWidthPx / frameRect.width) * 100) : undefined,
-        height: heightTouched ? Math.min(96, (nextHeightPx / frameRect.height) * 100) : undefined,
-      };
-      liveRef.current = { fontSize, size };
-      setResizePreview(fontSize);
-      setBoxSizePreview(size);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      // Same reasoning as startMove's onUp: leave resizePreview/
-      // boxSizePreview set so the box doesn't visually snap back to its
-      // pre-resize size the instant the mouse is released, before the
-      // this/all scope prompt has even been answered.
-      if (liveRef.current) setScopePrompt({ kind: "box", fontSize: liveRef.current.fontSize, ...liveRef.current.size });
-      else { setResizePreview(null); setBoxSizePreview(null); }
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    const indices = new Set(visibleWords.map((word) => word.index));
+    setWords((current) => current.map((word) => indices.has(word.index)
+      ? { ...word, font_size: Math.min(120, Math.max(16, Math.round(word.font_size * ratio))) } : word));
   };
-
-  const applyScope = (scope) => {
-    if (!scopePrompt) return;
-    const changes = scopePrompt.kind === "position" ? { pos_x: scopePrompt.x, pos_y: scopePrompt.y }
-      : scopePrompt.kind === "box" ? {
-        font_size: scopePrompt.fontSize,
-        ...(scopePrompt.width !== undefined ? { box_width: scopePrompt.width } : {}),
-        ...(scopePrompt.height !== undefined ? { box_height: scopePrompt.height } : {}),
-      }
-      : { font_size: scopePrompt.fontSize };
-    if (scope === "this") {
-      const indices = new Set(visibleWords.map((word) => word.index));
-      setWords((current) => current.map((word) => indices.has(word.index) ? { ...word, ...changes } : word));
-    } else {
-      setWords((current) => current.map((word) => ({ ...word, ...changes })));
-    }
-    setScopePrompt(null);
-    // The words themselves now carry the committed values, so the preview
-    // overrides that held the box in place while this prompt was open can
-    // finally be released.
-    setDragPreview(null);
-    setResizePreview(null);
-    setBoxSizePreview(null);
+  const setCaptionRotation = (deg) => transformThisCaption({ rotation: deg });
+  const setCaptionLineHeight = (value) => transformThisCaption({ line_height: value });
+  // Broadcasts THIS caption's current position/rotation/line-height/size to
+  // every caption in the project - same "every word, uniformly" semantics
+  // the old resize-handle's "All captions" scope button already used for
+  // font_size, just extended to the new Transform panel fields too.
+  const applyTransformToAll = () => {
+    const changes = { pos_x: boxX, pos_y: boxY, rotation: boxRotation || null, line_height: boxLineHeight, font_size: boxFontSize };
+    setWords((current) => current.map((word) => ({ ...word, ...changes })));
   };
-
-  // Dismissing the this/all prompt without choosing either (click elsewhere,
-  // Escape) cancels the pending move/resize - the box reverts to whatever
-  // it was before the drag, same as if the drag had never happened.
-  const cancelScopePrompt = () => {
-    setScopePrompt(null);
-    setDragPreview(null);
-    setResizePreview(null);
-    setBoxSizePreview(null);
+  const resetTransform = () => {
+    if (!visibleWords.length) return;
+    const indices = new Set(visibleWords.map((word) => word.index));
+    setWords((current) => current.map((word) => indices.has(word.index)
+      ? { ...word, pos_x: null, pos_y: null, rotation: null, line_height: null, box_width: null, box_height: null,
+          font_size: word.important ? 76 : 66 }
+      : word));
   };
-  useEffect(() => {
-    if (!scopePrompt) return undefined;
-    const onKeyDown = (e) => { if (e.key === "Escape") cancelScopePrompt(); };
-    const onMouseDown = (e) => {
-      if (!e.target.closest(".position-scope-prompt") && !e.target.closest(".caption-overlay")) cancelScopePrompt();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("mousedown", onMouseDown);
-    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("mousedown", onMouseDown); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopePrompt]);
 
   // Elements are standalone stickers (not word-synced cues), so a drag or
   // resize applies straight to that one element - no "this/all" scope
@@ -725,16 +629,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
             </div>}
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%`,
+                      transform: `translate(-50%,-50%) rotate(${boxRotation}deg)`, lineHeight: boxLineHeight,
                       fontWeight: bold ? 800 : 400, fontStyle: italic ? "italic" : "normal",
-                      ...(boxWidthPct != null ? { width: `${boxWidthPct}%`, maxWidth: "none" } : {}),
-                      ...(boxHeightPct != null ? { height: `${boxHeightPct}%`, overflow: "hidden" } : {}),
                       // "Outlined" text style: a bold black stroke + offset
                       // shadow, independent of theme/variant - a variant's
                       // own stroke/shadow design always wins when one is
                       // active, mirroring _write_ass's own priority.
                       ...(!activeVariant && captionStyle === "outlined" ? { WebkitTextStroke: "2px #000", textShadow: "2px 2px 0 #000" } : {}),
                       ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
-              onMouseDown={startMove} data-testid="live-caption-preview">
+              data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
                 {row.map((word) => {
                   // Color/size always come from the word itself (editable,
@@ -743,7 +646,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   const fontFamily = activeVariant ? activeVariant.fontFamily : tiers
                     ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
                     : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
-                  const style = { color: word.color, fontSize: `${Math.max(20, (resizePreview != null ? boxFontSize : word.font_size) * previewScale)}px`, fontFamily };
+                  const style = { color: word.color, fontSize: `${Math.max(20, word.font_size * previewScale)}px`, fontFamily };
                   const isActiveWord = activeIndex === word.index;
                   const className = [
                     isActiveWord ? "active" : "",
@@ -751,17 +654,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     isActiveWord && word.emphasize ? "emphasize-accent" : "",
                   ].filter(Boolean).join(" ");
                   return <span key={word.index} className={className} style={style}
-                    onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
+                    onClick={(e) => { e.stopPropagation(); openMoment(word.index); }}
                     data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>;
                 })}
               </div>)}
-              <div className="selection-box">
-                {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResize(pos)} data-testid={`caption-resize-handle-${pos}`} />)}
-              </div>
-            </div>}
-            {scopePrompt && <div className="position-scope-prompt" style={{ left: `${boxX}%`, top: `${Math.min(92, boxY + 8)}%` }} data-testid="position-scope-prompt">
-              <button onClick={() => applyScope("this")} data-testid="apply-this-caption-button">This caption</button>
-              <button onClick={() => applyScope("all")} data-testid="apply-all-captions-button">All captions</button>
             </div>}
             {elements.filter((item) => currentTime >= item.start && currentTime <= item.end).map((item) => {
               const interactive = leftTab === "elements" || leftTab === "text";
@@ -796,7 +692,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
           tab={themeTab} onTab={setThemeTab} variant={variant} onVariant={setVariant}
           captionStyle={captionStyle} onCaptionStyle={setCaptionStyle}
-          bold={bold} onBold={setBold} italic={italic} onItalic={setItalic} />
+          bold={bold} onBold={setBold} italic={italic} onItalic={setItalic}
+          hasActiveCaption={visibleWords.length > 0}
+          boxX={boxX} boxY={boxY} boxFontSize={boxFontSize} boxRotation={boxRotation} boxLineHeight={boxLineHeight}
+          onCaptionPos={setCaptionPos} onCaptionScale={setCaptionScale}
+          onCaptionRotation={setCaptionRotation} onCaptionLineHeight={setCaptionLineHeight}
+          onApplyTransformToAll={applyTransformToAll} onResetTransform={resetTransform} />
       </div>
       {momentPopover != null && words[momentPopover] && <MomentPopover
         word={words[momentPopover]} index={momentPopover}
@@ -811,8 +712,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         onAddSfx={addSfxMarker}
         canMergePrevious={momentPopover > 0}
         canMergeNext={momentPopover < words.length - 1}
+        onSplitCaption={(index) => { splitCaptionBeforeWord(index); setMomentPopover(null); }}
+        onMergeCaptionUp={(index) => { mergeCaptionUp(index); setMomentPopover(null); }}
+        canSplitCaption={momentPopover > 0}
+        canMergeCaptionUp={momentPopover > 0}
       />}
-      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={openMoment} onRetimeWord={updateWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} sfxMarkers={sfxMarkers} onAddSfx={addSfxMarker} onMoveSfx={moveSfxMarker} onDeleteSfx={deleteSfxMarker} scriptMode={scriptMode} />
+      <Timeline words={words} groups={indexedWordGroups} duration={project.duration} currentTime={currentTime} playing={playing} onToggle={togglePlayback} onSeek={seek} selectedIndex={selectedIndex} onSelect={openMoment} onRetimeWord={updateWord} mediaUrl={`${API_ROOT}/projects/${project.project_id}/media?attempt=${mediaRetry}`} sfxMarkers={sfxMarkers} onAddSfx={addSfxMarker} onMoveSfx={moveSfxMarker} onDeleteSfx={deleteSfxMarker} scriptMode={scriptMode} onSplitAtPlayhead={splitAtPlayhead} canSplitAtPlayhead={canSplitAtPlayhead} />
     </main>
   );
 };

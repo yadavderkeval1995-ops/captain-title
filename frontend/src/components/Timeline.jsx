@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MagnifyingGlassMinus, MagnifyingGlassPlus, Pause, Play, X } from "@phosphor-icons/react";
+import { MagnifyingGlassMinus, MagnifyingGlassPlus, Pause, Play, Scissors, X } from "@phosphor-icons/react";
 import { SFX_BY_TYPE, SFX_TYPES, playSfx } from "@/lib/sfx";
 
 const BASE_PIXELS_PER_SECOND = 60;
@@ -50,7 +50,8 @@ function buildFallbackPeaks(words, duration) {
 }
 
 export const Timeline = ({ words, groups, duration, currentTime, playing, onToggle, onSeek, selectedIndex, onSelect,
-                          onRetimeWord, mediaUrl, sfxMarkers, onAddSfx, onMoveSfx, onDeleteSfx, scriptMode = "roman" }) => {
+                          onRetimeWord, mediaUrl, sfxMarkers, onAddSfx, onMoveSfx, onDeleteSfx, scriptMode = "roman",
+                          onSplitAtPlayhead, canSplitAtPlayhead }) => {
   const trackRef = useRef(null);
   const canvasRef = useRef(null);
   const peaksRef = useRef(null);
@@ -303,6 +304,10 @@ export const Timeline = ({ words, groups, duration, currentTime, playing, onTogg
           <button onClick={onToggle} title={playing ? "Pause (space)" : "Play (space)"} data-testid="timeline-play-toggle">{playing ? <Pause weight="fill" /> : <Play weight="fill" />}</button>
           <span data-testid="current-playback-time">{currentTime.toFixed(1)}s</span>
           <b data-testid="video-total-duration">/ {duration.toFixed(1)}s</b>
+          <button className="timeline-split-playhead" onClick={onSplitAtPlayhead} disabled={!canSplitAtPlayhead}
+            title="Split the caption currently on screen into two, right at the playhead" data-testid="split-at-playhead-button">
+            <Scissors size={14} weight="fill" /> Split at Playhead
+          </button>
         </div>
         <div className="timeline-mode-toggle" data-testid="timeline-mode-toggle">
           <button className={mode === "words" ? "active" : ""} onClick={() => setMode("words")} data-testid="timeline-mode-words-button">Words</button>
