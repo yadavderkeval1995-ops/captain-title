@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise, ListBullets, Scissors, TextAa, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ListBullets, Scissors, TextAa, Warning, X } from "@phosphor-icons/react";
 
 const SENTENCE_END_CHARS = ".!?।॥"; // includes Devanagari danda/double danda
 const CHUNK_SIZE = 4; // short, scannable cards instead of one tall sentence block
@@ -154,12 +154,12 @@ export const TranscriptPanel = ({ words, originalTranscript, transcriptionMode, 
                   activeIndex === index ? "bg-[#ff2d4d] text-white"
                     : selectedIndex === index ? "bg-zinc-700 text-white ring-1 ring-[#ff2d4d]"
                     : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white"
-                } ${word.uncertain ? "italic" : ""} ${word.important || word.emphasis === "key" ? "font-bold" : ""}`}
-                title="Click to seek · double-click or right-click to edit"
+                } ${word.important || word.emphasis === "key" ? "font-bold" : ""}`}
+                title={word.uncertain ? "Uncertain transcription - double-click to fix the spelling" : "Click to seek · double-click or right-click to edit"}
                 data-testid={`script-word-${index}`}>
-                <span className="text-[13px]" data-testid={`script-word-text-${index}`}>
+                <span className="flex items-center gap-1 text-[13px]" data-testid={`script-word-text-${index}`}>
                   {scriptMode === "native" ? (word.original || word.text) : word.text}
-                  {word.uncertain && <sup className="ml-0.5 text-amber-400" data-testid={`uncertain-word-indicator-${index}`}>?</sup>}
+                  {word.uncertain && <Warning className="shrink-0 text-amber-400" size={11} weight="fill" data-testid={`uncertain-word-indicator-${index}`} />}
                 </span>
               </button>)}
             </div>

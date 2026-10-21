@@ -99,7 +99,7 @@ class WordEdit(BaseModel):
     emphasis: str = "support"
     uncertain: bool = False
     color: str = "#FFFFFF"
-    font_size: int = Field(default=52, ge=24, le=92)
+    font_size: int = Field(default=66, ge=24, le=92)
     # None means "no manual placement" - inherit the project's caption_position
     # preset. A concrete value is a percentage (0-100) of canvas width/height
     # for where the caption box's center should sit, set by dragging it in
@@ -303,7 +303,7 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
                 word["font_size"] = config["size"]
             else:
                 word["color"] = palette["accent"] if word["important"] else palette["base"]
-                word["font_size"] = 62 if word["important"] else 52
+                word["font_size"] = 76 if word["important"] else 66
         ready_fields = {
             "words": words, "source_transcript": source_transcript,
             "transcription_mode": transcription["mode"], "transcription_quality": transcription,
@@ -506,7 +506,7 @@ async def reassign_emphasis_endpoint(project_id: str, request: Request, user=Dep
             word["font_size"] = config["size"]
         else:
             word["color"] = palette["accent"] if word["important"] else palette["base"]
-            word["font_size"] = 62 if word["important"] else 52
+            word["font_size"] = 76 if word["important"] else 66
     await db.projects.update_one({"project_id": project_id}, {"$set": {
         "words": words, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"words": words}
@@ -567,7 +567,7 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
 # Mirrors CaptionStudio.jsx's POSITION_DEFAULTS exactly (percentages of the
 # 1080x1920 canvas) - the point the whole caption block (every row of it) is
 # centered on, same as the preview's `top:${boxY}%; transform:translate(-50%,-50%)`.
-POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 86)}
+POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 80)}
 # Matches .caption-overlay's CSS line-height:1.25 and gap:2px - used to stack
 # a multi-row caption's lines tightly, growing evenly in both directions
 # from the block's own center, instead of libass's own (much taller) default

@@ -61,7 +61,7 @@ const MIN_DISPLAY_SECONDS = 0.35;
 const MAX_WORDS_PER_LINE = 3;
 const MAX_GROUP_GAP = 0.4;
 const SENTENCE_END_CHARS = ".!?।॥"; // includes Devanagari danda/double danda
-const POSITION_DEFAULTS = { top: { x: 50, y: 14 }, middle: { x: 50, y: 50 }, bottom: { x: 50, y: 86 } };
+const POSITION_DEFAULTS = { top: { x: 50, y: 14 }, middle: { x: 50, y: 50 }, bottom: { x: 50, y: 80 } };
 
 // Per-handle resize behaviour: which sign of the mouse delta on each axis
 // grows the box, and whether that axis is touched at all by this handle.
@@ -216,6 +216,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
   const stageRef = useRef(null);
+  // Set true mid-drag by startMove once the cursor has actually moved -
+  // read (and reset) by a word span's onClick to swallow the spurious
+  // click a drag-release fires on whatever word happens to still be under
+  // the cursor (the caption box follows the mouse, so that's always the
+  // word you started dragging).
+  const dragMovedRef = useRef(false);
 
   // The 9:16 video box should be sized to the largest rectangle that fits
   // the actual available area (not a flat vh guess, which left a lot of
@@ -315,7 +321,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
   const boxX = dragPreview?.x ?? anchorWord?.pos_x ?? basePos.x;
   const boxY = dragPreview?.y ?? anchorWord?.pos_y ?? basePos.y;
-  const boxFontSize = resizePreview ?? anchorWord?.font_size ?? 52;
+  const boxFontSize = resizePreview ?? anchorWord?.font_size ?? 66;
   // null means "auto" (sized to content, as before) - only set once a
   // handle that touches that axis has actually been dragged.
   const boxWidthPct = boxSizePreview?.width ?? anchorWord?.box_width ?? null;
@@ -399,6 +405,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   // falls back to the Romanized text when scriptMode is "native" but this
   // word has no native-script transcription (e.g. a user-typed edit).
   const scriptText = (word) => (scriptMode === "native" && word.original) ? word.original : word.text;
+  // Top/Middle/Bottom preset buttons: also clears every word's own manual
+  // pos_x/pos_y, since a per-word drag-and-drop position otherwise always
+  // takes priority over the preset (same rule the export's _group_center
+  // uses) - without this, clicking a preset after ever having dragged a
+  // caption anywhere had no visible effect at all.
+  const choosePosition = (position) => {
+    setCaptionPosition(position);
+    setWords((current) => current.map((word) => ({ ...word, pos_x: null, pos_y: null })));
+  };
 
   const addSfxMarker = (type, time, wordIndex) => {
     const id = `sfx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -490,10 +505,20 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const frameRect = videoFrameRef.current.getBoundingClientRect();
     const startClientX = e.clientX, startClientY = e.clientY;
     const startX = boxX, startY = boxY;
+    dragMovedRef.current = false;
     // A ref, not a nested setState-inside-an-updater read, is what reliably
     // carries the drag's final position to onUp (see startResize's note).
     const liveRef = { current: null };
     const onMove = (moveEvent) => {
+      if (Math.abs(moveEvent.clientX - startClientX) > 3 || Math.abs(moveEvent.clientY - startClientY) > 3) {
+        // The box visually follows the cursor as it's dragged, so the word
+        // span under the pointer at mousedown is still under it at mouseup
+        // - the browser fires a native click on it same as any other click.
+        // Flagging a real drag here lets the word's onClick below swallow
+        // that one spurious click instead of popping its "FOR THIS MOMENT"
+        // card open right on top of the position you just dragged to.
+        dragMovedRef.current = true;
+      }
       const dx = ((moveEvent.clientX - startClientX) / frameRect.width) * 100;
       const dy = ((moveEvent.clientY - startClientY) / frameRect.height) * 100;
       const next = { x: Math.min(100, Math.max(0, startX + dx)), y: Math.min(100, Math.max(0, startY + dy)) };
@@ -503,8 +528,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      setDragPreview(null);
+      // dragPreview is deliberately left set (not reverted to null here) so
+      // the box stays exactly where it was dropped while the this/all scope
+      // prompt is open - applyScope/cancelScopePrompt below are what finally
+      // clear it, once the user has actually chosen what to do with it.
       if (liveRef.current) setScopePrompt({ kind: "position", x: liveRef.current.x, y: liveRef.current.y });
+      else setDragPreview(null);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -546,9 +575,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      setResizePreview(null);
-      setBoxSizePreview(null);
+      // Same reasoning as startMove's onUp: leave resizePreview/
+      // boxSizePreview set so the box doesn't visually snap back to its
+      // pre-resize size the instant the mouse is released, before the
+      // this/all scope prompt has even been answered.
       if (liveRef.current) setScopePrompt({ kind: "box", fontSize: liveRef.current.fontSize, ...liveRef.current.size });
+      else { setResizePreview(null); setBoxSizePreview(null); }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -570,7 +602,34 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       setWords((current) => current.map((word) => ({ ...word, ...changes })));
     }
     setScopePrompt(null);
+    // The words themselves now carry the committed values, so the preview
+    // overrides that held the box in place while this prompt was open can
+    // finally be released.
+    setDragPreview(null);
+    setResizePreview(null);
+    setBoxSizePreview(null);
   };
+
+  // Dismissing the this/all prompt without choosing either (click elsewhere,
+  // Escape) cancels the pending move/resize - the box reverts to whatever
+  // it was before the drag, same as if the drag had never happened.
+  const cancelScopePrompt = () => {
+    setScopePrompt(null);
+    setDragPreview(null);
+    setResizePreview(null);
+    setBoxSizePreview(null);
+  };
+  useEffect(() => {
+    if (!scopePrompt) return undefined;
+    const onKeyDown = (e) => { if (e.key === "Escape") cancelScopePrompt(); };
+    const onMouseDown = (e) => {
+      if (!e.target.closest(".position-scope-prompt") && !e.target.closest(".caption-overlay")) cancelScopePrompt();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onMouseDown);
+    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("mousedown", onMouseDown); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopePrompt]);
 
   // Elements are standalone stickers (not word-synced cues), so a drag or
   // resize applies straight to that one element - no "this/all" scope
@@ -692,7 +751,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     isActiveWord && word.emphasize ? "emphasize-accent" : "",
                   ].filter(Boolean).join(" ");
                   return <span key={word.index} className={className} style={style}
-                    onClick={(e) => { e.stopPropagation(); openMoment(word.index); }}
+                    onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
                     data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>;
                 })}
               </div>)}
@@ -733,7 +792,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         <ThemePanel theme={theme} onTheme={chooseTheme} fontId={fontId} onFont={setFontId}
           wordsPerCaption={wordsPerCaption} onWordsPerCaption={setWordsPerCaption}
           captionLines={captionLines} onCaptionLines={setCaptionLines}
-          captionPosition={captionPosition} onCaptionPosition={setCaptionPosition}
+          captionPosition={captionPosition} onCaptionPosition={choosePosition}
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
           tab={themeTab} onTab={setThemeTab} variant={variant} onVariant={setVariant}
           captionStyle={captionStyle} onCaptionStyle={setCaptionStyle}
