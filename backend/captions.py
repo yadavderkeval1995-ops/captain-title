@@ -552,20 +552,37 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
 
 # Alignment (ASS \an numpad values) and vertical margin for each position
 # preset. "middle" ignores MarginV (ASS vertically centers regardless).
-POSITION_PRESETS = {"top": (8, 150), "middle": (5, 0), "bottom": (2, 210)}
+# Mirrors CaptionStudio.jsx's POSITION_DEFAULTS exactly (percentages of the
+# 1080x1920 canvas) - the point the whole caption block (every row of it) is
+# centered on, same as the preview's `top:${boxY}%; transform:translate(-50%,-50%)`.
+POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 86)}
+# Matches .caption-overlay's CSS line-height:1.08 and gap:2px - used to stack
+# a multi-row caption's lines tightly, growing evenly in both directions
+# from the block's own center, instead of libass's own (much taller) default
+# inter-line spacing for a `\N` break, which is what produced the oversized
+# gap between lines that the single-Dialogue-with-\N approach had.
+LINE_HEIGHT = 1.08
+ROW_GAP_PX = 4
 
 
-def _group_position(group, caption_position):
+def _group_center(group, caption_position):
     """A group carries a manual pos_x/pos_y (dragged in the editor) on its
     first word if the user has placed this exact caption - otherwise fall
     back to the project's position preset."""
     anchor = group[0]
     pos_x, pos_y = anchor.get("pos_x"), anchor.get("pos_y")
-    if pos_x is not None and pos_y is not None:
-        x_px, y_px = round(pos_x / 100 * 1080), round(pos_y / 100 * 1920)
-        return f"\\an5\\pos({x_px},{y_px})", 0
-    align, margin_v = POSITION_PRESETS.get(caption_position, POSITION_PRESETS["bottom"])
-    return f"\\an{align}", margin_v
+    if pos_x is None or pos_y is None:
+        pos_x, pos_y = POSITION_DEFAULTS.get(caption_position, POSITION_DEFAULTS["bottom"])
+    return round(pos_x / 100 * 1080), round(pos_y / 100 * 1920)
+
+
+def _split_rows(group, breaks):
+    rows = [[]]
+    for index, word in enumerate(group):
+        if index > 0 and breaks[index]:
+            rows.append([])
+        rows[-1].append(word)
+    return rows
 
 
 def _auto_line_breaks(group, tiers, caption_lines):
@@ -607,7 +624,11 @@ def _write_element_dialogue(element):
     safe = (element.get("char") or "").replace("{", "").replace("}", "")
     x_px = round(element.get("pos_x", 50) / 100 * 1080)
     y_px = round(element.get("pos_y", 30) / 100 * 1920)
-    tags = f"\\an5\\pos({x_px},{y_px})\\fs{element.get('font_size', 120)}\\c{_ass_color(element.get('color', '#FFFFFF'))}"
+    # Matches .element-overlay's CSS text-shadow (0 2px 6px rgba(0,0,0,.7))
+    # rather than inheriting the Style line's own Outline/Shadow - elements
+    # have no per-theme/variant border of their own, so without this they'd
+    # pick up whatever the Style line happens to default to.
+    tags = f"\\an5\\pos({x_px},{y_px})\\fs{element.get('font_size', 120)}\\c{_ass_color(element.get('color', '#FFFFFF'))}\\bord0\\shad2\\blur3"
     if element.get("kind") == "text":
         family = FONTS.get(element.get("font_id", "poppins"), FONTS["poppins"])["family"]
         tags = f"\\fn{family}" + tags
@@ -624,22 +645,24 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     tiers = palette.get("tiers")
     accent_family = palette.get("accent_font") or primary_family
     variant_config = VARIANTS.get(variant)
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
+    # Outline/Shadow are 0 here deliberately - the live editor preview
+    # (CaptionStudio.jsx's .caption-overlay) never shows a hard border by
+    # default, only a soft text-shadow glow. Baking a global Outline/Shadow
+    # into the Style line would apply a heavy black border to every word
+    # that doesn't explicitly override it, which doesn't match the preview
+    # at all. Each word below gets its own explicit \\bord/\\shad/\\blur
+    # tag instead, so the export can replicate that same soft-glow look
+    # (or a variant's own distinct outline) exactly, word by word.
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,0,0,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
     groups = _group_words_for_display(words, max_words=words_per_caption or 3,
                                       strict_count=words_per_caption is not None)
     for group in groups:
-        position_tag, margin_v = _group_position(group, caption_position)
+        center_x, center_y = _group_center(group, caption_position)
         breaks = _resolve_line_breaks(group, tiers, caption_lines)
-        word_parts = []
-        for index, word in enumerate(group):
-            display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
-            safe = display_text.replace("{", "").replace("}", "")
-            # Color/size always come from the word itself (editable per word
-            # in the UI, defaulted from the theme at generation/theme-switch
-            # time) - a tiered theme only still decides the font family,
-            # unless a style variant is active, which overrides the font for
-            # every word regardless of theme/tier (matching the editor).
+        rows = _split_rows(group, breaks)
+
+        def word_tags(word, display_text):
             if variant_config:
                 family = variant_config["font"]
             elif tiers:
@@ -667,13 +690,46 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 outline_hex = variant_config["outline"] or color
                 tags += (f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
                          f"\\shad{variant_config['shad']}\\blur{variant_config['blur']}")
-            if index == 0:
-                tags = position_tag + tags
-            separator = r"\N" if (index > 0 and breaks[index]) else (" " if index > 0 else "")
-            word_parts.append(f"{separator}{{{tags}}}{safe}")
-        styled = "".join(word_parts)
-        lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
-                     f"Default,,0,0,{margin_v},,{styled}\n")
+            else:
+                # No variant selected: match the editor preview's default
+                # look exactly - a soft black glow around the text (CSS
+                # text-shadow), never a hard outline. A small \bord blurred
+                # into a halo (rather than a directional \shad) is the ASS
+                # equivalent of a soft shadow that surrounds the glyph on
+                # every side, same as the CSS.
+                tags += "\\3c&H000000&\\bord2\\shad0\\blur4"
+            return tags, font_size
+
+        # Each row's height is driven by its own tallest word (after any
+        # emphasize size bump), scaled by the same line-height the preview
+        # uses - so a multi-row caption's rows stack tightly and grow evenly
+        # from the block's own center, the same way the preview's flex
+        # column layout does, instead of libass's own (much taller) default
+        # spacing for a `\N`-joined line.
+        row_heights = []
+        for row in rows:
+            sizes = [word_tags(word, (word.get("original") or word["text"])
+                                if script_mode == "native" else word["text"])[1] for word in row]
+            row_heights.append(max(sizes, default=52) * LINE_HEIGHT)
+        total_height = sum(row_heights) + ROW_GAP_PX * (len(rows) - 1)
+        row_top = center_y - total_height / 2
+
+        cumulative = 0.0
+        for row_index, row in enumerate(rows):
+            row_center_y = round(row_top + cumulative + row_heights[row_index] / 2)
+            cumulative += row_heights[row_index] + ROW_GAP_PX
+            word_parts = []
+            for index, word in enumerate(row):
+                display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+                safe = display_text.replace("{", "").replace("}", "")
+                tags, _ = word_tags(word, display_text)
+                if index == 0:
+                    tags = f"\\an5\\pos({center_x},{row_center_y})" + tags
+                separator = " " if index > 0 else ""
+                word_parts.append(f"{separator}{{{tags}}}{safe}")
+            styled = "".join(word_parts)
+            lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
+                         f"Default,,0,0,0,,{styled}\n")
     for element in (elements or []):
         if element["end"] > element["start"]:
             lines.append(_write_element_dialogue(element))
