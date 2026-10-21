@@ -563,6 +563,13 @@ POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 86)}
 # gap between lines that the single-Dialogue-with-\N approach had.
 LINE_HEIGHT = 1.08
 ROW_GAP_PX = 4
+# "Active word" pop timing/scale - mirrors .caption-overlay span.active's
+# transform:scale(1.1) plus its brighter glow, animated in and back out
+# over the word's own speaking window via ASS \t() transform tags.
+POP_IN_MS = 120
+POP_OUT_MS = 150
+POP_SCALE = 112
+POP_BLUR_BOOST = 3
 
 
 def _group_center(group, caption_position):
@@ -685,11 +692,17 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             if word.get("emphasize"):
                 color = (variant_config or {}).get("accent", DEFAULT_EMPHASIZE_ACCENT)
                 font_size = round(font_size * 1.18)
-            tags = f"\\fn{family}\\c{_ass_color(color)}\\fs{font_size}"
+            # \fscx100\fscy100 is set explicitly (not just as a \t() target)
+            # so each word starts its own animation from a clean baseline -
+            # override tags otherwise carry forward onto the next word's
+            # text run within the same Dialogue line, which would let one
+            # word's still-finishing pop bleed into the next word's.
+            tags = f"\\fn{family}\\c{_ass_color(color)}\\fs{font_size}\\fscx100\\fscy100"
             if variant_config:
                 outline_hex = variant_config["outline"] or color
+                base_blur = variant_config["blur"]
                 tags += (f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
-                         f"\\shad{variant_config['shad']}\\blur{variant_config['blur']}")
+                         f"\\shad{variant_config['shad']}\\blur{base_blur}")
             else:
                 # No variant selected: match the editor preview's default
                 # look exactly - a soft black glow around the text (CSS
@@ -697,7 +710,22 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 # into a halo (rather than a directional \shad) is the ASS
                 # equivalent of a soft shadow that surrounds the glyph on
                 # every side, same as the CSS.
-                tags += "\\3c&H000000&\\bord2\\shad0\\blur4"
+                base_blur = 4
+                tags += f"\\3c&H000000&\\bord2\\shad0\\blur{base_blur}"
+            # "Active word" pop: CaptionStudio.jsx's .caption-overlay
+            # span.active scales the word up 1.1x and brightens its glow
+            # for exactly as long as it's the word currently being spoken.
+            # The export has no live playhead to key off of, but each word
+            # already carries its own [start,end] - animate the same pop in
+            # and back out over that word's own window, relative to this
+            # Dialogue line's own start time (libass \t() transform tags are
+            # always relative, not absolute clip time).
+            rel_on = max(0, round((word["start"] - group[0]["start"]) * 1000))
+            rel_off = max(rel_on + 1, round((word["end"] - group[0]["start"]) * 1000))
+            pop_in_end = min(rel_off, rel_on + POP_IN_MS)
+            pop_out_start = max(pop_in_end, rel_off - POP_OUT_MS)
+            tags += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{base_blur + POP_BLUR_BOOST})"
+                     f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{base_blur})")
             return tags, font_size
 
         # Each row's height is driven by its own tallest word (after any
