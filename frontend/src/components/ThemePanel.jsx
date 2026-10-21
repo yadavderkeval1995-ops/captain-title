@@ -106,7 +106,7 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
   <aside className="tool-panel" data-testid="caption-tools-panel">
     <div className="panel-tabs" data-testid="caption-tool-tabs">
       {tabs.map(({ id, label, icon: Icon }) => <button key={id} className={tab === id ? "active" : ""} onClick={() => onTab(id)} data-testid={`caption-tab-${id}-button`}>
-        <Icon size={17} /> {label}
+        <Icon size={14} /> {label}
       </button>)}
     </div>
 
@@ -183,7 +183,7 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
     {tab === "text" && <>
       <div className="panel-heading"><TextT size={18} /><div><span>SELECTED WORD</span><h2 data-testid="selected-word-heading">{selectedWord?.text || "Select a word"}</h2></div></div>
       <label className="control-label" data-testid="font-size-control-label">Font size <b data-testid="selected-word-font-size">{selectedWord?.font_size || 52}px</b></label>
-      <Slider min={24} max={92} step={1} value={[selectedWord?.font_size || 52]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ font_size: value })} data-testid="font-size-slider" />
+      <Slider min={16} max={120} step={1} value={[selectedWord?.font_size || 52]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ font_size: value })} data-testid="font-size-slider" />
       <label className="control-label" data-testid="word-color-control-label"><span><Palette size={16} /> Word colour</span>
         <input type="color" value={selectedWord?.color || "#FFFFFF"} disabled={!selectedWord} onChange={(e) => onWordStyle({ color: e.target.value })} data-testid="word-color-input" />
       </label>
@@ -201,6 +201,9 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
         <button className={selectedWord?.new_line === false ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: false })} data-testid="line-break-merge-button">Merge up</button>
         <button className={selectedWord?.new_line === true ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: true })} data-testid="line-break-split-button">Split here</button>
       </div>
+      <label className="control-label" data-testid="gap-before-label">Gap above this word's line <b data-testid="gap-before-value">{selectedWord?.gap_before ?? 2}px</b></label>
+      <Slider min={0} max={60} step={1} value={[selectedWord?.gap_before ?? 2]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ gap_before: value })} data-testid="gap-before-slider" />
+      <p className="panel-note" data-testid="gap-before-note">Only visible when this word actually starts a new line - lets each line boundary in a multi-line caption have its own spacing.</p>
       <label className="control-label" data-testid="caption-break-label">Caption split before this word</label>
       <div className="layout-grid three" data-testid="caption-break-selector">
         <button className={(selectedWord?.new_caption ?? null) === null ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_caption: null })} data-testid="caption-break-auto-button">Auto</button>

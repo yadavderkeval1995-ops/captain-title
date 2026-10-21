@@ -99,7 +99,12 @@ class WordEdit(BaseModel):
     emphasis: str = "support"
     uncertain: bool = False
     color: str = "#FFFFFF"
-    font_size: int = Field(default=66, ge=24, le=92)
+    # Bounds mirror the Transform panel's Scale slider (CaptionStudio.jsx's
+    # setCaptionScale clamps to [16, 120]) - they MUST match, or scaling a
+    # caption past the old 92 ceiling fails this validation on save/export
+    # for every word at once (Apply to All Captions broadcasts one size to
+    # every word, so a single out-of-range scale fails the whole project).
+    font_size: int = Field(default=66, ge=16, le=120)
     # None means "no manual placement" - inherit the project's caption_position
     # preset. A concrete value is a percentage (0-100) of canvas width/height
     # for where the caption box's center should sit, set by dragging it in
@@ -110,6 +115,13 @@ class WordEdit(BaseModel):
     # template, or the midpoint for a plain two-line template) - True/False
     # is an explicit manual override from a merge/split edit.
     new_line: bool | None = None
+    # The vertical gap (px, at the 1080x1920 canvas scale ROW_GAP_PX uses)
+    # ABOVE this word's row, when it starts one - None means "use the
+    # project default" (ROW_GAP_PX). Lets each line boundary in a multi-line
+    # caption get its own spacing instead of one uniform gap for the whole
+    # block (e.g. a tighter gap between the bottom two lines than between
+    # the top two).
+    gap_before: float | None = Field(default=None, ge=0, le=60)
     # None means "auto" (size to content, as before). A concrete value is a
     # percentage of canvas width/height for an explicit box size set by
     # dragging a resize handle in the editor. Editor-side only for now - the
@@ -813,13 +825,18 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             sizes = [word_tags(word, (word.get("original") or word["text"])
                                 if script_mode == "native" else word["text"])[1] for word in row]
             row_heights.append(max(sizes, default=52) * line_height)
-        total_height = sum(row_heights) + ROW_GAP_PX * (len(rows) - 1)
+        # Each row boundary can carry its own gap (the word starting row i+1's
+        # own gap_before) instead of one uniform ROW_GAP_PX for the whole
+        # block - lets e.g. the gap between the bottom two lines differ from
+        # the gap between the top two.
+        row_gaps = [rows[i + 1][0].get("gap_before") or ROW_GAP_PX for i in range(len(rows) - 1)]
+        total_height = sum(row_heights) + sum(row_gaps)
         row_top = center_y - total_height / 2
 
         cumulative = 0.0
         for row_index, row in enumerate(rows):
             row_center_y = round(row_top + cumulative + row_heights[row_index] / 2)
-            cumulative += row_heights[row_index] + ROW_GAP_PX
+            cumulative += row_heights[row_index] + (row_gaps[row_index] if row_index < len(row_gaps) else 0)
             word_parts = []
             for index, word in enumerate(row):
                 display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]

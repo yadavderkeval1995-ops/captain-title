@@ -202,6 +202,12 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const videoRef = useRef(null);
   const videoFrameRef = useRef(null);
   const stageRef = useRef(null);
+  // Set true mid-drag by startCaptionDrag once the cursor has actually
+  // moved - read (and reset) by a word span's onClick to swallow the
+  // spurious click a drag-release fires on whatever word happens to still
+  // be under the cursor (the caption box follows the mouse, so that's
+  // always the word you started dragging from).
+  const dragMovedRef = useRef(false);
 
   // The 9:16 video box should be sized to the largest rectangle that fits
   // the actual available area (not a flat vh guess, which left a lot of
@@ -518,6 +524,42 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
   const setCaptionRotation = (deg) => transformThisCaption({ rotation: deg });
   const setCaptionLineHeight = (value) => transformThisCaption({ line_height: value });
+  // Direct drag-to-move on the caption box itself, alongside the Transform
+  // panel's Position sliders - commits straight to this caption's pos_x/
+  // pos_y on every move (no separate preview/commit step or this/all scope
+  // popup needed, since "Apply to All Captions" is its own explicit button
+  // in the Transform panel now).
+  const startCaptionDrag = (e) => {
+    if (!visibleWords.length) return;
+    e.preventDefault();
+    const frameRect = videoFrameRef.current.getBoundingClientRect();
+    const startClientX = e.clientX, startClientY = e.clientY;
+    const startX = boxX, startY = boxY;
+    const indices = new Set(visibleWords.map((word) => word.index));
+    dragMovedRef.current = false;
+    const onMove = (moveEvent) => {
+      if (Math.abs(moveEvent.clientX - startClientX) > 3 || Math.abs(moveEvent.clientY - startClientY) > 3) {
+        // The box visually follows the cursor as it's dragged, so the word
+        // span under the pointer at mousedown is still under it at mouseup
+        // - the browser fires a native click on it same as any other click.
+        // Flagging a real drag here lets the word's onClick below swallow
+        // that one spurious click instead of popping its "FOR THIS MOMENT"
+        // card open right on top of the position you just dragged to.
+        dragMovedRef.current = true;
+      }
+      const dx = ((moveEvent.clientX - startClientX) / frameRect.width) * 100;
+      const dy = ((moveEvent.clientY - startClientY) / frameRect.height) * 100;
+      const nextX = Math.min(100, Math.max(0, startX + dx));
+      const nextY = Math.min(95, Math.max(5, startY + dy));
+      setWords((current) => current.map((word) => indices.has(word.index) ? { ...word, pos_x: nextX, pos_y: nextY } : word));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   // Broadcasts THIS caption's current position/rotation/line-height/size to
   // every caption in the project - same "every word, uniformly" semantics
   // the old resize-handle's "All captions" scope button already used for
@@ -637,8 +679,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                       // active, mirroring _write_ass's own priority.
                       ...(!activeVariant && captionStyle === "outlined" ? { WebkitTextStroke: "2px #000", textShadow: "2px 2px 0 #000" } : {}),
                       ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
-              data-testid="live-caption-preview">
-              {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
+              onMouseDown={startCaptionDrag} data-testid="live-caption-preview">
+              {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}
+                style={rowIndex > 0 ? { marginTop: `${row[0].gap_before ?? 2}px` } : undefined}>
                 {row.map((word) => {
                   // Color/size always come from the word itself (editable,
                   // defaulted from the theme at generation/theme-switch
@@ -654,7 +697,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     isActiveWord && word.emphasize ? "emphasize-accent" : "",
                   ].filter(Boolean).join(" ");
                   return <span key={word.index} className={className} style={style}
-                    onClick={(e) => { e.stopPropagation(); openMoment(word.index); }}
+                    onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
                     data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>;
                 })}
               </div>)}

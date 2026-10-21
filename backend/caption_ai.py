@@ -190,15 +190,27 @@ def _build_whisper_candidate(response, skip_before: float = 0.0):
     data = _as_dict(response)
     response_segments = getattr(response, "segments", None) or data.get("segments") or []
     accepted_segments = []
-    for index, raw_segment in enumerate(response_segments):
+    for raw_segment in response_segments:
         segment = _as_dict(raw_segment)
         text = str(segment.get("text", "")).strip()
         if not text:
             continue
-        # Whisper's very first segment of a request often gets an inflated
-        # no_speech_prob (it has no preceding audio to calibrate against),
-        # so don't let that one false-positive drop real opening speech.
-        if index > 0 and float(segment.get("no_speech_prob", 0)) >= 0.65:
+        # Whisper's very first stretch of ANY audio buffer it's handed often
+        # gets an inflated no_speech_prob (no preceding context to calibrate
+        # against yet) - so don't let that false-positive drop real opening
+        # speech. This used to only exempt literal segment index 0, which
+        # broke for the first chunk specifically: that chunk gets a 0.5s
+        # silence lead-in prepended (see _split_wav) so Whisper has
+        # something to "warm up" on before the real content starts, which
+        # can push the genuine opening-speech segment to index 1 instead of
+        # 0 - leaving it unprotected and liable to get dropped, which took
+        # most/all of that chunk's real words with it (the first ~20-23s of
+        # the video). Keying the exemption off actual elapsed time relative
+        # to skip_before (how far into the buffer real content starts for
+        # THIS chunk - the lead-in for chunk 0, the overlap priming audio
+        # for every chunk after it) protects whichever segment that
+        # actually is, not just whichever index it happens to land on.
+        if float(segment.get("start", 0)) >= skip_before + 1.0 and float(segment.get("no_speech_prob", 0)) >= 0.65:
             continue
         accepted_segments.append(segment)
     accepted_ranges = [(float(item.get("start", 0)), float(item.get("end", 0))) for item in accepted_segments]
