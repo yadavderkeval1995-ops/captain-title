@@ -2,32 +2,30 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowClockwise, ListBullets, Scissors, TextAa, X } from "@phosphor-icons/react";
 
 const SENTENCE_END_CHARS = ".!?।॥"; // includes Devanagari danda/double danda
-const MAX_SENTENCE_WORDS = 22; // safety cap for a transcript with no punctuation at all
-const DEVANAGARI_RE = /[ऀ-ॿ]/;
-const hasDevanagari = (text) => DEVANAGARI_RE.test(text || "");
-
+const CHUNK_SIZE = 4; // short, scannable cards instead of one tall sentence block
 function endsSentence(word) {
   const original = (word.original || word.text || "").trim();
   return !!original && SENTENCE_END_CHARS.includes(original[original.length - 1]);
 }
 
-// Captik's left panel reads like a script - full sentences, not the short
-// 1-3 word cue groups the on-screen caption/timeline views use - so this
-// groups independently from those, straight off the flat words array using
-// real array position as the index (same addressing every other editor
-// control already relies on).
-function groupIntoSentences(words) {
-  const sentences = [];
+// Captik's left panel reads like a script, but in short, scannable chunks -
+// a card breaks every CHUNK_SIZE words, or earlier at a sentence end (so a
+// short sentence still gets its own clean card instead of bleeding into the
+// next one). Groups independently from the on-screen caption/timeline cue
+// groups, straight off the flat words array using real array position as
+// the index (same addressing every other editor control already relies on).
+function groupIntoChunks(words) {
+  const chunks = [];
   let current = [];
   words.forEach((word, index) => {
     current.push({ word, index });
-    if (endsSentence(word) || current.length >= MAX_SENTENCE_WORDS) {
-      sentences.push(current);
+    if (endsSentence(word) || current.length >= CHUNK_SIZE) {
+      chunks.push(current);
       current = [];
     }
   });
-  if (current.length) sentences.push(current);
-  return sentences;
+  if (current.length) chunks.push(current);
+  return chunks;
 }
 
 const EMPHASIS_TIERS = [
@@ -103,7 +101,7 @@ const WordPopover = ({ word, index, anchor, onClose, onText, onNewLine, onSplitW
 export const TranscriptPanel = ({ words, originalTranscript, transcriptionMode, activeIndex, selectedIndex,
                                   onSelect, onText, onNewLine, onSplitWord, onEmphasis, onRelisten, relistening,
                                   scriptMode = "roman", onScriptMode }) => {
-  const sentences = useMemo(() => groupIntoSentences(words), [words]);
+  const sentences = useMemo(() => groupIntoChunks(words), [words]);
   const [popover, setPopover] = useState(null); // { index, x, y }
   const cardRefs = useRef({});
 
@@ -149,7 +147,7 @@ export const TranscriptPanel = ({ words, originalTranscript, transcriptionMode, 
             </div>
             <div className="flex flex-wrap items-baseline gap-y-1">
               {sentence.map(({ word, index }) => <button key={index} type="button"
-                onClick={() => onSelect(index)}
+                onClick={(e) => onSelect(index, e.currentTarget)}
                 onDoubleClick={(e) => { e.preventDefault(); openPopover(index, e.currentTarget); }}
                 onContextMenu={(e) => { e.preventDefault(); openPopover(index, e.currentTarget); }}
                 className={`mr-1 flex flex-col items-start rounded px-2 py-1 leading-none transition-colors ${
@@ -159,12 +157,10 @@ export const TranscriptPanel = ({ words, originalTranscript, transcriptionMode, 
                 } ${word.uncertain ? "italic" : ""} ${word.important || word.emphasis === "key" ? "font-bold" : ""}`}
                 title="Click to seek · double-click or right-click to edit"
                 data-testid={`script-word-${index}`}>
-                <span className="text-[13px]" data-testid={`script-word-roman-${index}`}>
-                  {word.text}
+                <span className="text-[13px]" data-testid={`script-word-text-${index}`}>
+                  {scriptMode === "native" ? (word.original || word.text) : word.text}
                   {word.uncertain && <sup className="ml-0.5 text-amber-400" data-testid={`uncertain-word-indicator-${index}`}>?</sup>}
                 </span>
-                {hasDevanagari(word.original) && word.original !== word.text &&
-                  <span className="text-[10px] opacity-70" data-testid={`script-word-native-${index}`}>{word.original}</span>}
               </button>)}
             </div>
           </div>;

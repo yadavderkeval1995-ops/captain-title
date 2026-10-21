@@ -17,9 +17,12 @@ const KINETIC_STYLES = [
 
 // The floating "FOR THIS MOMENT" action card - opened from a single click on
 // a word, wherever that click came from (Script Panel, Timeline, or the
-// canvas itself). Always anchored beside the video frame rather than the
-// clicked element, so it behaves the same regardless of trigger source.
-export const MomentPopover = ({ word, index, frameRect, onClose, onText, onNewLine, onMerge, onKinetic, onEmphasize, onAddSfx, canMergePrevious, canMergeNext }) => {
+// canvas itself). When the caller knows exactly which chip/element was
+// clicked (anchorRect), the card opens right next to it - a Script Panel
+// click shouldn't pop this open clear across the screen next to the video.
+// Falls back to anchoring beside the video frame when no anchorRect is
+// given (Timeline clicks, where the frame is already the relevant context).
+export const MomentPopover = ({ word, index, frameRect, anchorRect, onClose, onText, onNewLine, onMerge, onKinetic, onEmphasize, onAddSfx, canMergePrevious, canMergeNext }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(word.text);
   const popoverRef = useRef(null);
@@ -39,8 +42,20 @@ export const MomentPopover = ({ word, index, frameRect, onClose, onText, onNewLi
   const commitText = () => { if (draft.trim() && draft !== word.text) onText(index, draft.trim()); };
 
   const POPOVER_WIDTH = 272;
-  const left = frameRect ? Math.min(frameRect.right + 16, window.innerWidth - POPOVER_WIDTH - 12) : 12;
-  const top = frameRect ? Math.min(Math.max(12, frameRect.top), window.innerHeight - 440) : 12;
+  const POPOVER_HEIGHT = 420;
+  let left, top;
+  if (anchorRect) {
+    // Open to the right of the clicked chip; flip to the left of it if
+    // there isn't room on the right, so it never runs off-screen.
+    const fitsRight = anchorRect.right + 10 + POPOVER_WIDTH <= window.innerWidth - 12;
+    left = fitsRight ? anchorRect.right + 10 : Math.max(12, anchorRect.left - POPOVER_WIDTH - 10);
+    top = Math.min(Math.max(12, anchorRect.top), window.innerHeight - POPOVER_HEIGHT - 12);
+  } else if (frameRect) {
+    left = Math.min(frameRect.right + 16, window.innerWidth - POPOVER_WIDTH - 12);
+    top = Math.min(Math.max(12, frameRect.top), window.innerHeight - 440);
+  } else {
+    left = 12; top = 12;
+  }
 
   return (
     <AnimatePresence>

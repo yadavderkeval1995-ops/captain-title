@@ -163,10 +163,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   };
   // "FOR THIS MOMENT": a single click on a word - from the Script Panel, the
   // Timeline, or directly on the canvas - seeks/selects it exactly as
-  // before, and additionally opens the moment popover for it.
-  const openMoment = (index) => {
+  // before, and additionally opens the moment popover for it. anchorEl, when
+  // given, is the clicked chip/span itself - the popover opens right next
+  // to IT instead of always next to the video frame, so clicking a word in
+  // the far-left Script Panel doesn't pop the card open across the screen
+  // next to the canvas.
+  const openMoment = (index, anchorEl) => {
     selectWord(index);
     setMomentPopover(index);
+    setMomentAnchor(anchorEl ? anchorEl.getBoundingClientRect() : null);
   };
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -191,6 +196,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [renderQuality, setRenderQuality] = useState(initialProject.render_quality ?? "high");
   const [sfxMarkers, setSfxMarkers] = useState(initialProject.sfx_markers || []);
   const [momentPopover, setMomentPopover] = useState(null); // word index, or null when closed
+  const [momentAnchor, setMomentAnchor] = useState(null); // clicked chip/span's DOMRect, or null to anchor by the video frame
   const [variant, setVariant] = useState(initialProject.variant || null); // null = template default
   // Dual-Script Toggle: which text shows on canvas/Timeline/exports -
   // the Romanized Hinglish word.text, or the native-script word.original
@@ -436,7 +442,11 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     setRendering(true);
     try {
       await api.put(`/projects/${project.project_id}`, payload());
-      const { data } = await api.post(`/projects/${project.project_id}/render`);
+      // Longer than the backend's own render timeout (captions.py's
+      // RENDER_TIMEOUT_SECONDS) so the server's own timeout error always
+      // surfaces first - without this, a stalled request had no client-side
+      // bound at all and "Exporting..." could spin forever.
+      const { data } = await api.post(`/projects/${project.project_id}/render`, null, { timeout: 330000 });
       setProject({ ...project, status: "rendered", download_url: data.download_url });
       toast.success("Your captioned video is ready");
     } catch (error) { toast.error(errorMessage(error)); }
@@ -732,6 +742,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       {momentPopover != null && words[momentPopover] && <MomentPopover
         word={words[momentPopover]} index={momentPopover}
         frameRect={videoFrameRef.current?.getBoundingClientRect() ?? null}
+        anchorRect={momentAnchor}
         onClose={() => setMomentPopover(null)}
         onText={(index, text) => updateWord(index, { text })}
         onNewLine={toggleWordNewLine}

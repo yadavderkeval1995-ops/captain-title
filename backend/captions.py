@@ -568,12 +568,14 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
 # 1080x1920 canvas) - the point the whole caption block (every row of it) is
 # centered on, same as the preview's `top:${boxY}%; transform:translate(-50%,-50%)`.
 POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 86)}
-# Matches .caption-overlay's CSS line-height:1.08 and gap:2px - used to stack
+# Matches .caption-overlay's CSS line-height:1.25 and gap:2px - used to stack
 # a multi-row caption's lines tightly, growing evenly in both directions
 # from the block's own center, instead of libass's own (much taller) default
 # inter-line spacing for a `\N` break, which is what produced the oversized
-# gap between lines that the single-Dialogue-with-\N approach had.
-LINE_HEIGHT = 1.08
+# gap between lines that the single-Dialogue-with-\N approach had. 1.25 (not
+# a tighter 1.08) leaves enough headroom for Devanagari matras (ि, े, ै, ं),
+# which extend further above/below the glyph than Latin diacritics do.
+LINE_HEIGHT = 1.25
 ROW_GAP_PX = 4
 # "Active word" pop timing/scale - mirrors .caption-overlay span.active's
 # transform:scale(1.1) plus its brighter glow, animated in and back out
@@ -808,12 +810,21 @@ def _escape_filter_path(path):
 
 
 RENDER_QUALITY_PRESETS = {
-    # "high" is close to visually lossless; "draft" trades quality for a
-    # much faster encode when you just want to sanity-check timing/styling
-    # before spending the time on a full-quality export.
-    "high": {"preset": "slow", "crf": "17"},
+    # "high" is close to visually lossless; "medium" (not libx264's "slow")
+    # keeps that same CRF - so still very high quality - while encoding
+    # meaningfully faster, since "slow" could make a real-length export
+    # take long enough to feel hung with no progress indicator in the UI.
+    # "draft" trades quality for a much faster encode when you just want to
+    # sanity-check timing/styling before spending the time on a full export.
+    "high": {"preset": "medium", "crf": "17"},
     "draft": {"preset": "veryfast", "crf": "26"},
 }
+# Hard ceiling on how long a single ffmpeg render may run. Without this, a
+# genuinely stuck/runaway ffmpeg process (a corrupt source file, a pathological
+# filter graph, a platform-specific encoder quirk) hangs the render request
+# forever - the backend never responds, so the editor's "Exporting..." button
+# never recovers either. A clear timeout error beats an infinite spinner.
+RENDER_TIMEOUT_SECONDS = 300
 
 # Mirrors frontend/src/lib/sfx.js's placeholder tones - there's no licensed
 # SFX audio bundled, so the export gets the same synthesized stand-in tone
@@ -898,9 +909,17 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
     else:
         args = [FFMPEG, "-y", "-i", source, "-vf", video_filter, "-af", f"volume={volume}", *common_args]
 
-    result = subprocess.run(args, capture_output=True, text=True, cwd=work_dir)
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, cwd=work_dir,
+                                timeout=RENDER_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        logger.error("FFmpeg render timed out after %ss: %s", RENDER_TIMEOUT_SECONDS, " ".join(args))
+        raise RuntimeError(
+            f"Rendering took longer than {RENDER_TIMEOUT_SECONDS}s and was stopped. "
+            "Try a shorter clip, or Draft quality for a faster export."
+        ) from exc
     if result.returncode:
-        logger.error("FFmpeg render failed: %s", result.stderr[-2000:])
+        logger.error("FFmpeg render failed (exit %s): %s", result.returncode, result.stderr[-2000:])
         raise RuntimeError("FFmpeg could not render this video")
 
 
@@ -928,6 +947,13 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
                                     project.get("brightness", 0), project.get("contrast", 100),
                                     project.get("saturation", 100), project.get("render_quality", "high"),
                                     sfx_markers=project.get("sfx_markers", []))
+        except RuntimeError as exc:
+            # Our own _render() raises RuntimeError with a message that's
+            # already safe and useful to show the user directly (a timeout,
+            # or "FFmpeg could not render this video") - surface it instead
+            # of a generic message, so a stuck export is distinguishable
+            # from any other failure.
+            raise HTTPException(500, str(exc)) from exc
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()
