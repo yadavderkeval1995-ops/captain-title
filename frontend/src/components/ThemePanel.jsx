@@ -50,6 +50,37 @@ export const templates = [
     feature: { font: "'Permanent Marker', cursive", color: "#FFFFFF", size: 54 },
     key: { font: "'Anton', sans-serif", color: "#FF4D00", size: 84 },
   }, card: { stroke: "1px #000", shadow: "0 3px 0 #000", glow: "0 0 12px rgba(255,77,0,.55)", highlight: true } },
+  // "Hormozi style": the single most common pattern across today's top
+  // caption apps (Kapwing/CapCut) - plain bold white text, punchline word
+  // in bright yellow, in an even heavier font.
+  { id: "bold_impact", name: "Bold Impact", baseColor: "#FFFFFF", color: "#FFD60A", accentFont: "Archivo Black",
+    card: { stroke: "1px #000", shadow: "0 2px 0 #000", glow: null, highlight: false } },
+  { id: "tech_editorial", name: "Tech Editorial", baseColor: "#E4E4E7", color: "#5EEAD4", accentFont: "Space Grotesk",
+    card: { stroke: null, shadow: "0 2px 8px rgba(0,0,0,.55)", glow: "0 0 10px rgba(94,234,212,.5)", highlight: false } },
+  // Hindi-first tiered templates - same layered design as the three above,
+  // built entirely on fonts with real Devanagari coverage (see backend/
+  // captions.py's DEVANAGARI_CAPABLE_FONTS) so a Hindi creator gets the
+  // same designed look switching to Native Script, not a fallback font.
+  { id: "hindi_bold", name: "Hindi Bold", color: "#FFD60A", tiers: {
+    support: { font: "'Hind', sans-serif", color: "#FFFFFF", size: 40 },
+    feature: { font: "'Mukta', sans-serif", color: "#FFFFFF", size: 58 },
+    key: { font: "'Baloo 2', sans-serif", color: "#FFD60A", size: 84 },
+  }, card: { stroke: null, shadow: "0 2px 6px rgba(0,0,0,.6)", glow: null, highlight: true } },
+  { id: "hindi_editorial", name: "Hindi Editorial", color: "#FFB800", tiers: {
+    support: { font: "'Hind', sans-serif", color: "#E4E4E7", size: 38 },
+    feature: { font: "'Tiro Devanagari Hindi', serif", color: "#FFFFFF", size: 56 },
+    key: { font: "'Rozha One', serif", color: "#FFB800", size: 82 },
+  }, card: { stroke: null, shadow: "0 2px 10px rgba(0,0,0,.6)", glow: "0 0 14px rgba(255,184,0,.5)", highlight: false } },
+  { id: "hindi_street", name: "Hindi Street", color: "#FF4D9E", tiers: {
+    support: { font: "'Mukta', sans-serif", color: "#FFFFFF", size: 40 },
+    feature: { font: "'Yatra One', cursive", color: "#FFFFFF", size: 54 },
+    key: { font: "'Baloo 2', sans-serif", color: "#FF4D9E", size: 84 },
+  }, card: { stroke: "1px #000", shadow: "0 3px 0 #000", glow: "0 0 12px rgba(255,77,158,.5)", highlight: true } },
+  { id: "hindi_minimal", name: "Hindi Minimal", color: "#38BDF8", tiers: {
+    support: { font: "'Hind', sans-serif", color: "#E4E4E7", size: 38 },
+    feature: { font: "'Mukta', sans-serif", color: "#FFFFFF", size: 54 },
+    key: { font: "'Noto Sans Devanagari', sans-serif", color: "#38BDF8", size: 78 },
+  }, card: { stroke: null, shadow: "0 1px 4px rgba(0,0,0,.5)", glow: "0 0 8px rgba(56,189,248,.4)", highlight: false } },
 ];
 
 // Two or three sample words rendered at card scale, reusing each template's
@@ -87,6 +118,12 @@ export const fonts = [
   { id: "anton", name: "Anton", family: "'Anton', sans-serif" },
   { id: "bebas", name: "Bebas Neue", family: "'Bebas Neue', sans-serif" },
   { id: "classic", name: "Classic", family: "'DejaVu Sans', sans-serif" },
+  { id: "archivo", name: "Archivo Black", family: "'Archivo Black', sans-serif" },
+  { id: "space_grotesk", name: "Space Grotesk", family: "'Space Grotesk', sans-serif" },
+  { id: "baloo2", name: "Baloo 2", family: "'Baloo 2', sans-serif" },
+  { id: "hind", name: "Hind", family: "'Hind', sans-serif" },
+  { id: "mukta", name: "Mukta", family: "'Mukta', sans-serif" },
+  { id: "kalam", name: "Kalam", family: "'Kalam', cursive" },
 ];
 
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
@@ -170,9 +207,10 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
         {wordsPerCaptionOptions.map((n) => <button key={n ?? "auto"} className={wordsPerCaption === n ? "active" : ""} onClick={() => onWordsPerCaption(n)} data-testid={`words-per-caption-${n ?? "auto"}-button`}>{n ?? "Auto"}</button>)}
       </div>
       <label className="control-label" data-testid="caption-lines-label">Lines</label>
+      {isTiered && <p className="panel-note" data-testid="tiered-lines-note">This template breaks lines at each tier change, not a fixed line count - the picker below doesn't apply.</p>}
       <div className="layout-grid two" data-testid="caption-lines-selector">
-        <button className={captionLines === 1 ? "active" : ""} onClick={() => onCaptionLines(1)} data-testid="caption-lines-1-button">One line</button>
-        <button className={captionLines === 2 ? "active" : ""} onClick={() => onCaptionLines(2)} data-testid="caption-lines-2-button">Two lines</button>
+        <button className={captionLines === 1 ? "active" : ""} disabled={isTiered} onClick={() => onCaptionLines(1)} data-testid="caption-lines-1-button">One line</button>
+        <button className={captionLines === 2 ? "active" : ""} disabled={isTiered} onClick={() => onCaptionLines(2)} data-testid="caption-lines-2-button">Two lines</button>
       </div>
       <label className="control-label" data-testid="caption-position-label">Position</label>
       <div className="layout-grid three" data-testid="caption-position-selector">

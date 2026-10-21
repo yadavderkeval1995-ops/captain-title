@@ -53,12 +53,51 @@ THEMES = {
         "feature": {"font": "Permanent Marker", "color": "#FFFFFF", "size": 54},
         "key": {"font": "Anton", "color": "#FF4D00", "size": 84},
     }},
+    # "Hormozi style": plain bold white text with the punchline word in
+    # bright yellow and a noticeably heavier font - the single most common
+    # pattern across today's top caption/editing apps (Kapwing, CapCut).
+    "bold_impact": {"base": "#FFFFFF", "accent": "#FFD60A", "accent_font": "Archivo Black"},
+    # A calmer, modern alternative for explainer/SaaS-style talking-head
+    # content - geometric sans, a cool accent instead of a loud one.
+    "tech_editorial": {"base": "#E4E4E7", "accent": "#5EEAD4", "accent_font": "Space Grotesk"},
+    # Hindi-first tiered templates: same layered support/feature/key design
+    # as the three above, built entirely on bundled fonts with real
+    # Devanagari coverage (see DEVANAGARI_CAPABLE_FONTS) instead of a Latin
+    # font that would otherwise get silently swapped out the moment native
+    # script displays - a Hindi creator gets the same designed look in
+    # either script, not a fallback font switch.
+    "hindi_bold": {"tiers": {
+        "support": {"font": "Hind", "color": "#FFFFFF", "size": 40},
+        "feature": {"font": "Mukta ExtraBold", "color": "#FFFFFF", "size": 58},
+        "key": {"font": "Baloo 2 ExtraBold", "color": "#FFD60A", "size": 84},
+    }},
+    "hindi_editorial": {"tiers": {
+        "support": {"font": "Hind", "color": "#E4E4E7", "size": 38},
+        "feature": {"font": "Tiro Devanagari Hindi", "color": "#FFFFFF", "size": 56},
+        "key": {"font": "Rozha One", "color": "#FFB800", "size": 82},
+    }},
+    "hindi_street": {"tiers": {
+        "support": {"font": "Mukta ExtraBold", "color": "#FFFFFF", "size": 40},
+        "feature": {"font": "Yatra One", "color": "#FFFFFF", "size": 54},
+        "key": {"font": "Baloo 2 ExtraBold", "color": "#FF4D9E", "size": 84},
+    }},
+    "hindi_minimal": {"tiers": {
+        "support": {"font": "Hind", "color": "#E4E4E7", "size": 38},
+        "feature": {"font": "Mukta ExtraBold", "color": "#FFFFFF", "size": 54},
+        "key": {"font": "Noto Sans Devanagari Black", "color": "#38BDF8", "size": 78},
+    }},
 }
 FONTS = {
     "poppins": {"label": "Poppins", "family": "Poppins"},
     "anton": {"label": "Anton", "family": "Anton"},
     "bebas": {"label": "Bebas Neue", "family": "Bebas Neue"},
     "classic": {"label": "Classic", "family": "DejaVu Sans"},
+    "archivo": {"label": "Archivo Black", "family": "Archivo Black"},
+    "space_grotesk": {"label": "Space Grotesk", "family": "Space Grotesk"},
+    "baloo2": {"label": "Baloo 2", "family": "Baloo 2 ExtraBold"},
+    "hind": {"label": "Hind", "family": "Hind"},
+    "mukta": {"label": "Mukta", "family": "Mukta ExtraBold"},
+    "kalam": {"label": "Kalam", "family": "Kalam"},
 }
 # Template style variants (Captik-style "VARIANTS" row) - mirrors the
 # `variants` export in frontend/src/components/ThemePanel.jsx exactly:
@@ -79,6 +118,14 @@ DEFAULT_EMPHASIZE_ACCENT = "#EAB308"
 # when script_mode="native" surfaces a word's native-script text we force
 # this font regardless of theme/variant, purely for glyph coverage.
 DEVANAGARI_FONT = "Noto Sans Devanagari"
+# Every bundled font (backend/fonts/) whose own glyph set actually covers
+# Devanagari - a Hindi template built on one of these keeps its own font
+# in native-script mode instead of word_tags() silently swapping it out
+# for the DEVANAGARI_FONT fallback above (see word_tags's own comment).
+DEVANAGARI_CAPABLE_FONTS = {
+    DEVANAGARI_FONT, "Noto Sans Devanagari Black", "Baloo 2 ExtraBold", "Hind",
+    "Mukta ExtraBold", "Rozha One", "Yatra One", "Tiro Devanagari Hindi", "Kalam",
+}
 _DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
 
 
@@ -757,11 +804,17 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 family = tiers[tier]["font"]
             else:
                 family = accent_family if word.get("important") else primary_family
-            # Glyph coverage overrides style choice: none of the Latin
-            # display fonts above can render Devanagari, so when the native
-            # script is actually showing (word.original, not a Romanized
-            # fallback), force the one bundled font that covers it.
-            if _has_devanagari(display_text):
+            # Glyph coverage overrides style choice - but only when it has
+            # to: most of the Latin display fonts above can't render
+            # Devanagari at all, so when the native script is actually
+            # showing (word.original, not a Romanized fallback), force the
+            # fallback font that covers it UNLESS the family already chosen
+            # (a Hindi template's own font, e.g. Baloo 2/Hind/Mukta/Rozha
+            # One/Yatra One/Tiro Devanagari Hindi) already has real
+            # Devanagari glyphs of its own - forcing the fallback on top of
+            # those would silently throw away the whole point of a
+            # dedicated Hindi template the moment native script is shown.
+            if _has_devanagari(display_text) and family not in DEVANAGARI_CAPABLE_FONTS:
                 family = DEVANAGARI_FONT
             color = word.get("color", "#FFFFFF")
             font_size = word.get("font_size", 52)
@@ -829,7 +882,12 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         # own gap_before) instead of one uniform ROW_GAP_PX for the whole
         # block - lets e.g. the gap between the bottom two lines differ from
         # the gap between the top two.
-        row_gaps = [rows[i + 1][0].get("gap_before") or ROW_GAP_PX for i in range(len(rows) - 1)]
+        # `or` would silently discard an explicit gap_before=0 (0 is falsy
+        # in Python) and fall back to ROW_GAP_PX anyway - an "is not None"
+        # check is what pos_x/pos_y already correctly use one function up
+        # (_group_center) for the same "None means unset" convention.
+        row_gaps = [rows[i + 1][0].get("gap_before") if rows[i + 1][0].get("gap_before") is not None else ROW_GAP_PX
+                    for i in range(len(rows) - 1)]
         total_height = sum(row_heights) + sum(row_gaps)
         row_top = center_y - total_height / 2
 
@@ -900,32 +958,75 @@ RENDER_QUALITY_PRESETS = {
 # never recovers either. A clear timeout error beats an infinite spinner.
 RENDER_TIMEOUT_SECONDS = 300
 
-# Mirrors frontend/src/lib/sfx.js's placeholder tones - there's no licensed
-# SFX audio bundled, so the export gets the same synthesized stand-in tone
-# the editor previews (frequency sweep + short envelope) rather than the
-# marker having no audible effect at all in the final video.
-SFX_TONE_PARAMS = {
-    "whoosh": {"freq": 180, "sweep_to": 540, "duration": 0.2},
-    "bass_drop": {"freq": 90, "sweep_to": 27, "duration": 0.4},
-    "pop": {"freq": 880, "sweep_to": 880, "duration": 0.2},
-    "cash": {"freq": 660, "sweep_to": 990, "duration": 0.2},
-    "shutter": {"freq": 1400, "sweep_to": 1400, "duration": 0.08},
-}
+# Mirrors frontend/src/lib/sfx.js's placeholder sounds - there's no
+# licensed SFX audio bundled (every free/CC0 sample host tried from this
+# sandbox - Freesound, Pixabay, Mixkit, Zapsplat, SoundBible, OpenGameArt -
+# is blocked by the outbound proxy policy here), so the export gets a
+# synthesized stand-in for each type instead of the marker having no
+# audible effect at all in the final video. whoosh/pop/shutter are
+# fundamentally noisy, transient sounds (air movement, a sharp impact) -
+# synthesizing them as a pure tone sweep (the original approach) reads as
+# a generic "beep" no matter the frequency, so those three are built from
+# filtered white noise instead; bass_drop (a real pitch-dropping sine, same
+# technique real trailer bass drops use) and cash (two short bell tones,
+# like a cash register's two-note "cha-ching") stay tone-based since that
+# genuinely is the right synthesis technique for what they're imitating.
+def _tone_burst(freq, duration, attack=0.01, decay=6):
+    """A single sine tone with a fast attack + exponential decay envelope -
+    the building block for bass_drop's sweep and cash's two chime notes."""
+    phase = f"2*PI*{freq}*t"
+    envelope = f"if(lt(t,{attack}),t/{attack},exp(-{decay}*(t-{attack})/{duration}))"
+    return f"({envelope})*sin({phase})"
 
 
 def _sfx_source_filter(sfx_type, label):
-    """A standalone ffmpeg lavfi source filter (no -i input needed) that
-    synthesizes one SFX marker's placeholder tone: a linear frequency sweep
-    with a quick attack and an exponential decay envelope, matching the
-    shape (if not the exact oscillator waveform) of the Web Audio preview."""
-    params = SFX_TONE_PARAMS.get(sfx_type, SFX_TONE_PARAMS["pop"])
-    freq, sweep_to, duration = params["freq"], params["sweep_to"], params["duration"]
-    phase = f"2*PI*({freq}+({sweep_to}-{freq})*min(t/{duration},1))*t"
-    attack = min(0.015, duration / 4)
-    release = duration * 0.6
-    envelope = f"if(lt(t,{attack}),t/{attack},exp(-5*(t-{attack})/{release}))"
-    expr = f"({envelope})*sin({phase})"
-    return f"aevalsrc=exprs='{expr}':s=44100:d={duration}[{label}]"
+    """A standalone ffmpeg lavfi filter chain (no -i input needed) that
+    synthesizes one SFX marker's placeholder sound, ending in output pad
+    [{label}] so the caller (_sfx_mix_filters) can pipe it into its own
+    pan/delay/volume stage same as before. Any internal sub-labels are
+    namespaced off `label` so multiple markers of the same type in one
+    project never collide on a shared pad name."""
+    if sfx_type == "whoosh":
+        # Band-limited noise instead of a tone sweep - air-movement texture,
+        # not a pitch. A moderate, fairly wide band gives it an "airy"
+        # broadband character; the long-ish decay is what reads as "whoosh"
+        # rather than a short "swish".
+        return (f"anoisesrc=d=0.3:c=white:r=44100:a=0.6,"
+                f"bandpass=f=1100:width_type=h:w=900,"
+                f"afade=t=in:d=0.02,afade=t=out:st=0.08:d=0.22:curve=exp,"
+                f"volume=1.3[{label}]")
+    if sfx_type == "pop":
+        # A quick noise burst through a higher band - a sharp transient
+        # "pop"/bubble sound, not a held note.
+        return (f"anoisesrc=d=0.08:c=white:r=44100:a=0.5,"
+                f"bandpass=f=2200:width_type=h:w=1800,"
+                f"afade=t=in:d=0.002,afade=t=out:st=0.012:d=0.068:curve=exp,"
+                f"volume=1.6[{label}]")
+    if sfx_type == "shutter":
+        # A very short, bright noise click - a camera shutter's mechanical
+        # snap reads as broadband high-frequency energy, not a tone at all.
+        return (f"anoisesrc=d=0.05:c=white:r=44100:a=0.5,"
+                f"highpass=f=3500,"
+                f"afade=t=in:d=0.001,afade=t=out:st=0.006:d=0.044:curve=exp,"
+                f"volume=1.3[{label}]")
+    if sfx_type == "cash":
+        # Two short bell-like notes a fifth apart, the second landing ~70ms
+        # after the first - the classic two-note "cha-ching" shape, instead
+        # of one continuous ascending sweep.
+        note_a, note_b = f"{label}_a", f"{label}_b"
+        return (f"aevalsrc=exprs='{_tone_burst(880, 0.15)}':s=44100:d=0.15[{note_a}];"
+                f"aevalsrc=exprs='{_tone_burst(1320, 0.15)}':s=44100:d=0.15[{note_b}];"
+                f"[{note_b}]adelay=70|70[{note_b}d];"
+                f"[{note_a}][{note_b}d]amix=inputs=2:duration=longest:normalize=0,"
+                f"volume=0.6[{label}]")
+    # bass_drop (and any unrecognized type, as the previous default was):
+    # a sine dropping from 90Hz to 27Hz, the same technique real trailer/
+    # EDM bass drops use - asoftclip adds a bit of harmonic saturation so
+    # it has some weight instead of sounding like a thin, clean sine.
+    phase = "2*PI*(90+(27-90)*min(t/0.4,1))*t"
+    envelope = "if(lt(t,0.015),t/0.015,exp(-5*(t-0.015)/0.24))"
+    return (f"aevalsrc=exprs='({envelope})*sin({phase})':s=44100:d=0.4,"
+            f"asoftclip=type=tanh:param=0.7,volume=1.3[{label}]")
 
 
 def _sfx_mix_filters(sfx_markers):
