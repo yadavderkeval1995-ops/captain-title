@@ -11,11 +11,30 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import imageio_ffmpeg
+from indic_transliteration import sanscript
+from indic_transliteration.sanscript import transliterate
 from openai import AsyncOpenAI
 from sarvamai import AsyncSarvamAI
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 logger = logging.getLogger("captain-title.caption_ai")
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+
+
+def _romanize_fallback(text):
+    """Best-effort algorithmic Devanagari->Roman transliteration, used ONLY
+    when GPT drops a word's index or returns no usable text for it (see
+    convert_to_hinglish below). Without this, that fallback used to be the
+    word's own raw `original` text verbatim - which is genuine Devanagari
+    for Hindi/mixed speech - silently leaking native script into word.text,
+    the field "Roman Hinglish" mode renders everywhere (editor, Timeline,
+    export). Algorithmic transliteration reads rougher than GPT's own
+    natural Hinglish spelling, but it guarantees word.text is never
+    Devanagari, which GPT dropping an index must never compromise."""
+    if not text or not _DEVANAGARI_RE.search(text):
+        return text
+    cleaned = text.replace("।", ".").replace("॥", ".")
+    return transliterate(cleaned, sanscript.DEVANAGARI, sanscript.OPTITRANS).lower()
 
 
 def _as_dict(value):
@@ -434,7 +453,7 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         logger.warning("Hinglish conversion dropped %d/%d word indices", len(missing), len(words))
     for word in words:
         item = converted.get(word["index"], {})
-        word["text"] = str(item.get("text") or word["original"]).strip()
+        word["text"] = str(item.get("text") or _romanize_fallback(word["original"])).strip()
         emphasis = item.get("emphasis")
         if emphasis not in {"support", "feature", "key"}:
             emphasis = "support"

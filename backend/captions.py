@@ -572,11 +572,15 @@ POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 80)}
 # a multi-row caption's lines tightly, growing evenly in both directions
 # from the block's own center, instead of libass's own (much taller) default
 # inter-line spacing for a `\N` break, which is what produced the oversized
-# gap between lines that the single-Dialogue-with-\N approach had. 1.25 (not
-# a tighter 1.08) leaves enough headroom for Devanagari matras (ि, े, ै, ं),
-# which extend further above/below the glyph than Latin diacritics do.
-LINE_HEIGHT = 1.25
-ROW_GAP_PX = 4
+# gap between lines that the single-Dialogue-with-\N approach had. Kept
+# tight (not the 1.25 this briefly was) because row height already scales
+# with each row's own tallest word - a row holding an emphasized/bigger
+# word was getting a proportionally huge extra margin on top of its own
+# bigger font, which is what actually produced the "massive gap" between
+# lines of very different sizes. 1.1 still leaves a little headroom for
+# Devanagari matras (ि, े, ै, ं) without that compounding effect.
+LINE_HEIGHT = 1.1
+ROW_GAP_PX = 2
 # "Active word" pop timing/scale - mirrors .caption-overlay span.active's
 # transform:scale(1.1) plus its brighter glow, animated in and back out
 # over the word's own speaking window via ASS \t() transform tags.
