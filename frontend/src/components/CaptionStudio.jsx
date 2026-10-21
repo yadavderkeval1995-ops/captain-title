@@ -196,6 +196,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   // the Romanized Hinglish word.text, or the native-script word.original
   // Sarvam's codemix transcription already produced for Hindi/mixed speech.
   const [scriptMode, setScriptMode] = useState(initialProject.script_mode || "roman");
+  // Independent of theme/variant: a project-wide text-style toggle (Clean
+  // soft-glow vs a bold Outlined black border+shadow) and plain Bold/Italic
+  // font-weight toggles - mirrors backend/captions.py's ProjectEdit fields
+  // and _write_ass's caption_style/bold/italic handling exactly.
+  const [captionStyle, setCaptionStyle] = useState(initialProject.caption_style || "clean");
+  const [bold, setBold] = useState(initialProject.bold ?? true);
+  const [italic, setItalic] = useState(initialProject.italic ?? false);
   const [reassigning, setReassigning] = useState(false);
   const [safeZone, setSafeZone] = useState(false);
   const [frameWidth, setFrameWidth] = useState(0);
@@ -380,7 +387,8 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                            caption_lines: captionLines, caption_position: captionPosition, words,
                            audio_volume: audioVolume, audio_muted: audioMuted,
                            brightness, contrast, saturation, render_quality: renderQuality, elements,
-                           sfx_markers: sfxMarkers, variant, script_mode: scriptMode });
+                           sfx_markers: sfxMarkers, variant, script_mode: scriptMode,
+                           caption_style: captionStyle, bold, italic });
   // Dual-Script Toggle: what a word's canvas/Timeline label actually shows -
   // falls back to the Romanized text when scriptMode is "native" but this
   // word has no native-script transcription (e.g. a user-typed edit).
@@ -648,8 +656,14 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
             </div>}
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%`,
+                      fontWeight: bold ? 800 : 400, fontStyle: italic ? "italic" : "normal",
                       ...(boxWidthPct != null ? { width: `${boxWidthPct}%`, maxWidth: "none" } : {}),
                       ...(boxHeightPct != null ? { height: `${boxHeightPct}%`, overflow: "hidden" } : {}),
+                      // "Outlined" text style: a bold black stroke + offset
+                      // shadow, independent of theme/variant - a variant's
+                      // own stroke/shadow design always wins when one is
+                      // active, mirroring _write_ass's own priority.
+                      ...(!activeVariant && captionStyle === "outlined" ? { WebkitTextStroke: "2px #000", textShadow: "2px 2px 0 #000" } : {}),
                       ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
               onMouseDown={startMove} data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}>
@@ -711,7 +725,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           captionLines={captionLines} onCaptionLines={setCaptionLines}
           captionPosition={captionPosition} onCaptionPosition={setCaptionPosition}
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
-          tab={themeTab} onTab={setThemeTab} variant={variant} onVariant={setVariant} />
+          tab={themeTab} onTab={setThemeTab} variant={variant} onVariant={setVariant}
+          captionStyle={captionStyle} onCaptionStyle={setCaptionStyle}
+          bold={bold} onBold={setBold} italic={italic} onItalic={setItalic} />
       </div>
       {momentPopover != null && words[momentPopover] && <MomentPopover
         word={words[momentPopover]} index={momentPopover}

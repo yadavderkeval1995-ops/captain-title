@@ -189,6 +189,16 @@ class ProjectEdit(BaseModel):
     # see caption_ai.py's convert_to_hinglish). Affects the editor canvas,
     # the Timeline labels, and both exports (_write_ass/_write_srt).
     script_mode: Literal["roman", "native"] = "roman"
+    # Two independent, project-wide typography controls, separate from
+    # theme/variant: "clean" is the default soft text-shadow glow with no
+    # hard border (matches the editor preview); "outlined" is a bold black
+    # outline + offset shadow, no blur (the look most caption apps default
+    # to). Only affects captions with no variant selected - a variant's own
+    # outline/shadow design (e.g. Rock's hard outline) always takes
+    # priority, since that's a more specific, deliberate choice.
+    caption_style: Literal["clean", "outlined"] = "clean"
+    bold: bool = True
+    italic: bool = False
 
 
 class RetranscribeRequest(BaseModel):
@@ -389,6 +399,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
                    "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None, "script_mode": "roman",
+                   "caption_style": "clean", "bold": True, "italic": False,
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -431,6 +442,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "elements": [element.model_dump() for element in payload.elements],
                   "sfx_markers": [marker.model_dump() for marker in payload.sfx_markers],
                   "variant": payload.variant, "script_mode": payload.script_mode,
+                  "caption_style": payload.caption_style, "bold": payload.bold, "italic": payload.italic,
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
@@ -646,7 +658,7 @@ def _write_element_dialogue(element):
 
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                caption_lines=1, caption_position="bottom", elements=None, variant=None,
-               script_mode="roman"):
+               script_mode="roman", caption_style="clean", bold=True, italic=False):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
@@ -660,7 +672,9 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     # at all. Each word below gets its own explicit \\bord/\\shad/\\blur
     # tag instead, so the export can replicate that same soft-glow look
     # (or a variant's own distinct outline) exactly, word by word.
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,0,0,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
+    bold_field = -1 if bold else 0
+    italic_field = -1 if italic else 0
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,{bold_field},{italic_field},0,0,100,100,0,0,1,0,0,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
     groups = _group_words_for_display(words, max_words=words_per_caption or 3,
                                       strict_count=words_per_caption is not None)
@@ -703,13 +717,19 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 base_blur = variant_config["blur"]
                 tags += (f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
                          f"\\shad{variant_config['shad']}\\blur{base_blur}")
+            elif caption_style == "outlined":
+                # User-chosen "Outlined" text style: a bold black outline +
+                # offset shadow, no blur - the classic hard-bordered caption
+                # look, independent of theme/variant.
+                base_blur = 0
+                tags += f"\\3c&H000000&\\bord3\\shad2\\blur{base_blur}"
             else:
-                # No variant selected: match the editor preview's default
-                # look exactly - a soft black glow around the text (CSS
-                # text-shadow), never a hard outline. A small \bord blurred
-                # into a halo (rather than a directional \shad) is the ASS
-                # equivalent of a soft shadow that surrounds the glyph on
-                # every side, same as the CSS.
+                # Default "Clean" text style: match the editor preview's
+                # default look exactly - a soft black glow around the text
+                # (CSS text-shadow), never a hard outline. A small \bord
+                # blurred into a halo (rather than a directional \shad) is
+                # the ASS equivalent of a soft shadow that surrounds the
+                # glyph on every side, same as the CSS.
                 base_blur = 4
                 tags += f"\\3c&H000000&\\bord2\\shad0\\blur{base_blur}"
             # "Active word" pop: CaptionStudio.jsx's .caption-overlay
@@ -899,7 +919,9 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
                   project.get("words_per_caption"), project.get("caption_lines", 1),
                   project.get("caption_position", "bottom"), project.get("elements"),
-                  variant=project.get("variant"), script_mode=project.get("script_mode", "roman"))
+                  variant=project.get("variant"), script_mode=project.get("script_mode", "roman"),
+                  caption_style=project.get("caption_style", "clean"), bold=project.get("bold", True),
+                  italic=project.get("italic", False))
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
                                     project.get("audio_volume", 100), project.get("audio_muted", False),

@@ -85,7 +85,8 @@ export const fonts = [
 
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
-                             selectedWord, onWordStyle, tab, onTab, variant, onVariant }) => {
+                             selectedWord, onWordStyle, tab, onTab, variant, onVariant,
+                             captionStyle, onCaptionStyle, bold, onBold, italic, onItalic }) => {
   const activeTiers = templates.find((item) => item.id === theme)?.tiers;
   const isTiered = !!activeTiers;
   const setEmphasis = (tier) => {
@@ -139,6 +140,20 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
           {item.name}
         </button>)}
       </div>
+      <label className="control-label" data-testid="font-weight-style-label">Weight &amp; style</label>
+      <div className="layout-grid two" data-testid="font-weight-style-selector">
+        <button className={bold ? "active" : ""} onClick={() => onBold(!bold)} data-testid="bold-toggle-button" style={{ fontWeight: 800 }}>Bold</button>
+        <button className={italic ? "active" : ""} onClick={() => onItalic(!italic)} data-testid="italic-toggle-button" style={{ fontStyle: "italic" }}>Italic</button>
+      </div>
+      <label className="control-label" data-testid="caption-style-label">Text style</label>
+      <div className="layout-grid two" data-testid="caption-style-selector">
+        <button className={captionStyle === "clean" ? "active" : ""} onClick={() => onCaptionStyle("clean")} data-testid="caption-style-clean-button">Clean</button>
+        <button className={captionStyle === "outlined" ? "active" : ""} onClick={() => onCaptionStyle("outlined")} data-testid="caption-style-outlined-button">Outlined</button>
+      </div>
+      <p className="panel-note" data-testid="caption-style-note">{captionStyle === "outlined"
+        ? "A bold black outline and shadow around every caption."
+        : "A soft glow, no hard border - the default look."}
+        {variant && " A selected Variant's own outline always takes priority over this."}</p>
       <div className="tool-divider" />
       <div className="panel-heading compact"><Rows size={18} /><div><span>LAYOUT</span><h2 data-testid="layout-panel-heading">Caption layout</h2></div></div>
       <label className="control-label" data-testid="words-per-caption-label">Words per caption</label>
