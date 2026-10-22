@@ -366,6 +366,18 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const dropShadow = textStyle.shadow_enabled && !textStyle.background_enabled
     ? `${(shadowOffsetX * previewScale).toFixed(2)}px ${(shadowOffsetY * previewScale).toFixed(2)}px ${(textStyle.shadow_blur * previewScale).toFixed(2)}px ${hexToRgba(textStyle.shadow_color, textStyle.shadow_opacity)}`
     : "none";
+  // The "active word" pop (the word currently being spoken, scaled up
+  // briefly) used to carry its own hardcoded text-shadow - a fixed black
+  // shadow plus a "0 0 16px currentColor" neon glow - completely ignoring
+  // whatever Outline/Shadow the project actually has configured, including
+  // when Shadow is off or Background is on. _write_ass's own pop animation
+  // (POP_BLUR_BOOST=3 in captions.py) instead just briefly blurs the SAME
+  // configured shadow a little more - this mirrors that exactly, so the
+  // moment a word is "active" doesn't visually diverge from the rest of
+  // the caption's own styling, in preview or export.
+  const dropShadowActive = textStyle.shadow_enabled && !textStyle.background_enabled
+    ? `${(shadowOffsetX * previewScale).toFixed(2)}px ${(shadowOffsetY * previewScale).toFixed(2)}px ${((textStyle.shadow_blur + 3) * previewScale).toFixed(2)}px ${hexToRgba(textStyle.shadow_color, textStyle.shadow_opacity)}`
+    : "none";
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
   const boxX = anchorWord?.pos_x ?? basePos.x;
   const boxY = anchorWord?.pos_y ?? basePos.y;
@@ -811,9 +823,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   const fontFamily = activeVariant ? activeVariant.fontFamily : tiers
                     ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
                     : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
-                  const style = { color: word.color, fontSize: `${Math.max(20, word.font_size * previewScale)}px`, fontFamily,
-                                  fontWeight: bold && isBoldCapableFont(fontFamily) ? 800 : 400 };
                   const isActiveWord = activeIndex === word.index;
+                  const style = { color: word.color, fontSize: `${Math.max(20, word.font_size * previewScale)}px`, fontFamily,
+                                  fontWeight: bold && isBoldCapableFont(fontFamily) ? 800 : 400,
+                                  // Only the active word's shadow needs an explicit override (the
+                                  // blur-boosted "pop" version) - every other word just inherits the
+                                  // overlay's own textShadow via normal CSS inheritance.
+                                  ...(isActiveWord && !activeVariant ? { textShadow: dropShadowActive } : {}) };
                   const className = [
                     isActiveWord ? "active" : "",
                     isActiveWord && word.kinetic ? `kinetic-${word.kinetic}` : "",
