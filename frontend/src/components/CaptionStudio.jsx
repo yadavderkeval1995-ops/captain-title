@@ -137,8 +137,19 @@ function endsSentence(word) {
 // previous group (a manual "Merge up" edit) even past maxWords/the gap/a
 // sentence end - same tri-state pattern new_line already uses one level
 // down, for caption boundaries instead of line wraps.
-function groupWordsForDisplay(words, wordsPerCaption) {
-  const maxWords = wordsPerCaption || MAX_WORDS_PER_LINE;
+function groupWordsForDisplay(words, wordsPerCaption, theme) {
+  // Both fixed templates need multiple words flowing together per cue -
+  // Street Glow's two lines (a multi-word headline + a multi-word
+  // subline, e.g. "guard fence" / "sakte hain") and Doodle Marker's
+  // single flowing line (e.g. "lagatar consistent") both fall apart at
+  // the generic cap/min-display, tuned for the old rapid-fire single/
+  // double-word caption chips - MIN_DISPLAY_SECONDS in particular would
+  // cut most cues off at 1 word well before a realistic phrase finishes
+  // being spoken. Mirrors backend/captions.py's own per-theme override
+  // exactly - explicit wordsPerCaption still overrides both via strict.
+  const isFixedTemplate = theme === "street_glow" || theme === "doodle_marker";
+  const maxWords = wordsPerCaption || (isFixedTemplate ? 6 : MAX_WORDS_PER_LINE);
+  const minDisplay = isFixedTemplate ? 1.5 : MIN_DISPLAY_SECONDS;
   const strict = wordsPerCaption != null;
   const groups = [];
   let index = 0;
@@ -153,7 +164,7 @@ function groupWordsForDisplay(words, wordsPerCaption) {
       if (forcedSplit) break;
       if (!forcedMerge && !(group.length < maxWords && !endsSentence(group[group.length - 1])
             && nextWord.start - groupEnd < MAX_GROUP_GAP
-            && (strict || groupEnd - words[index].start < MIN_DISPLAY_SECONDS))) break;
+            && (strict || groupEnd - words[index].start < minDisplay))) break;
       group.push(nextWord);
       groupEnd = nextWord.end;
       next += 1;
@@ -380,7 +391,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   }, [currentTime, playing, sfxMarkers]);
 
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
-  const wordGroups = useMemo(() => groupWordsForDisplay(words, wordsPerCaption), [words, wordsPerCaption]);
+  const wordGroups = useMemo(() => groupWordsForDisplay(words, wordsPerCaption, theme), [words, wordsPerCaption, theme]);
   // The Captions list and the Timeline's "Lines" view both show the same
   // cue grouping the live preview and the final render use, each word
   // paired with its real position in `words` (not reconstructed by identity
@@ -880,7 +891,19 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   browser do what it already does natively is what actually
                   keeps this matching the export, not a closer-but-still-
                   custom approximation of it. */}
-              {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <Fragment key={rowIndex}>
+              {/* Doodle Marker uses ONE uniform font size for every tier -
+                  only colour/decoration differ (see THEMES in captions.py) -
+                  so unlike the old multi-size tiered templates this auto-
+                  break-per-tier-change rule was built for, there's no size
+                  collision to avoid by breaking the line every time a
+                  word's tier differs from the last one. Words should flow
+                  on one line, decorated in place, like the reference
+                  design - passing null here (not `tiers`) keeps
+                  autoLineBreaks in its "only break at an explicit
+                  captionLines=2 midpoint, or a word's own manual new_line
+                  override" mode instead. Mirrors _resolve_line_breaks's
+                  own break_tiers override in captions.py exactly. */}
+              {splitIntoRows(visibleWords, theme === "doodle_marker" ? null : tiers, captionLines).map((row, rowIndex) => <Fragment key={rowIndex}>
                 {rowIndex > 0 && <br />}
                 {/* BorderStyle=3's opaque box in libass draws around each
                     \N-separated VISUAL LINE on its own, not one box around

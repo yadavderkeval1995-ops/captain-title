@@ -1069,7 +1069,21 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     lines = [header]
     shadow_alpha_lines, shadow_color_lines = [], []
     glow_alpha_lines, glow_color_lines = [], []
-    groups = _group_words_for_display(words, max_words=words_per_caption or 3,
+    # Both fixed templates need multiple words flowing together per cue -
+    # Street Glow's two lines (a multi-word headline + a multi-word
+    # subline, e.g. "guard fence" / "sakte hain") and Doodle Marker's
+    # single flowing line (e.g. "lagatar consistent", a pill-highlighted
+    # word sitting next to a plain one) both fall apart at the generic
+    # 3-word cap and 0.35s min-display, which are tuned for the old rapid-
+    # fire single/double-word caption chips - either cap would cut most
+    # cues off at 1 word well before a realistic phrase finishes being
+    # spoken. Both get the same more generous thresholds; explicit
+    # words_per_caption still overrides both via strict_count.
+    is_fixed_template = theme in ("street_glow", "doodle_marker")
+    default_max_words = 6 if is_fixed_template else 3
+    min_display = 1.5 if is_fixed_template else 0.35
+    groups = _group_words_for_display(words, min_display=min_display,
+                                      max_words=words_per_caption or default_max_words,
                                       strict_count=words_per_caption is not None)
     for group in groups:
         center_x, center_y = _group_center(group, caption_position)
@@ -1085,7 +1099,17 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                                      group, center_x, center_y, script_mode)
             continue
         rotation = _group_rotation(group)
-        breaks = _resolve_line_breaks(group, tiers, caption_lines)
+        # Doodle Marker uses ONE uniform font size for every tier - only
+        # colour/decoration differ (see THEMES) - so, unlike the old
+        # multi-size tiered templates this auto-break-per-tier-change rule
+        # was built for, there's no size collision to avoid by breaking
+        # the line every time a word's tier differs from the last one.
+        # Words should flow on one line, decorated in place, like the
+        # reference design - passing tiers=None here keeps _auto_line_breaks
+        # in its "only break at an explicit caption_lines=2 midpoint, or a
+        # word's own manual new_line override" mode instead.
+        break_tiers = None if theme == "doodle_marker" else tiers
+        breaks = _resolve_line_breaks(group, break_tiers, caption_lines)
         rows = _split_rows(group, breaks)
 
         def word_tags(word, display_text):
