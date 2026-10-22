@@ -831,7 +831,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                       ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
               onMouseDown={startCaptionDrag} data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}
-                style={{ ...(rowIndex > 0 ? { marginTop: `${row[0].gap_before ?? 2}px` } : {}),
+                style={{ ...(rowIndex > 0 ? { marginTop: `${(row[0].gap_before ?? 2) * previewScale}px` } : {}),
                         // The export's background box (BorderStyle=3) is
                         // drawn per ASS Dialogue line, and each row IS its
                         // own Dialogue line (_write_ass emits one per row) -

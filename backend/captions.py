@@ -1301,7 +1301,16 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
     # canvas scale (same scale as outline width/shadow distance) - gblur's
     # sigma is real output pixels, so it has to scale by how much bigger or
     # smaller the actual export resolution is than that authoring canvas.
-    canvas_scale = width / 1080
+    # SIGMA_TO_CSS_BLUR_RADIUS corrects for gblur's sigma and a browser's
+    # text-shadow blur-radius not being quite the same unit - measured
+    # empirically (not from any spec, which is vague on the exact
+    # conversion) by blurring an identical solid shape with both: a 20px
+    # CSS blur-radius and a sigma=22 gblur pass produced matching edge
+    # spread (measured via the 10%-90% intensity transition width), so a
+    # sigma about 1.1x the authored blur value reproduces the same visual
+    # amount of blur the live preview's CSS already shows for that value.
+    SIGMA_TO_CSS_BLUR_RADIUS = 1.1
+    canvas_scale = (width / 1080) * SIGMA_TO_CSS_BLUR_RADIUS
     video_steps = [f"[0:v]{eq_arg}[graded]"]
     current = "graded"
     if glow_alpha_path and os.path.exists(glow_alpha_path):
