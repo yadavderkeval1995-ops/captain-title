@@ -129,7 +129,7 @@ export const fonts = [
 export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, onWordsPerCaption,
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
                              selectedWord, onWordStyle, tab, onTab, variant, onVariant,
-                             captionStyle, onCaptionStyle, bold, onBold, italic, onItalic,
+                             textStyle, onTextStyle, bold, onBold, italic, onItalic,
                              hasActiveCaption, boxX, boxY, boxFontSize, boxRotation, boxLineHeight,
                              onCaptionPos, onCaptionScale, onCaptionRotation, onCaptionLineHeight,
                              onApplyTransformToAll, onResetTransform }) => {
@@ -191,15 +191,51 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
         <button className={bold ? "active" : ""} onClick={() => onBold(!bold)} data-testid="bold-toggle-button" style={{ fontWeight: 800 }}>Bold</button>
         <button className={italic ? "active" : ""} onClick={() => onItalic(!italic)} data-testid="italic-toggle-button" style={{ fontStyle: "italic" }}>Italic</button>
       </div>
-      <label className="control-label" data-testid="caption-style-label">Text style</label>
-      <div className="layout-grid two" data-testid="caption-style-selector">
-        <button className={captionStyle === "clean" ? "active" : ""} onClick={() => onCaptionStyle("clean")} data-testid="caption-style-clean-button">Clean</button>
-        <button className={captionStyle === "outlined" ? "active" : ""} onClick={() => onCaptionStyle("outlined")} data-testid="caption-style-outlined-button">Outlined</button>
+      <label className="control-label" data-testid="background-toggle-label">Background box</label>
+      <div className="layout-grid two" data-testid="background-toggle-selector">
+        <button className={!textStyle.background_enabled ? "active" : ""} onClick={() => onTextStyle({ background_enabled: false })} data-testid="background-off-button">Off</button>
+        <button className={textStyle.background_enabled ? "active" : ""} onClick={() => onTextStyle({ background_enabled: true })} data-testid="background-on-button">On</button>
       </div>
-      <p className="panel-note" data-testid="caption-style-note">{captionStyle === "outlined"
-        ? "A bold black outline and shadow around every caption."
-        : "A soft glow, no hard border - the default look."}
-        {variant && " A selected Variant's own outline always takes priority over this."}</p>
+      {textStyle.background_enabled ? <>
+        <label className="control-label" data-testid="background-color-label"><span><Palette size={16} /> Box colour</span>
+          <input type="color" value={textStyle.background_color} onChange={(e) => onTextStyle({ background_color: e.target.value })} data-testid="background-color-input" />
+        </label>
+        <label className="control-label" data-testid="background-opacity-label">Box opacity <b>{Math.round(textStyle.background_opacity * 100)}%</b></label>
+        <Slider min={0.1} max={1} step={0.05} value={[textStyle.background_opacity]} onValueChange={([v]) => onTextStyle({ background_opacity: v })} data-testid="background-opacity-slider" />
+        <p className="panel-note" data-testid="background-note">A solid box behind each caption line. Outline and Shadow turn off while a Background is on - an ASS export can't combine both.</p>
+      </> : <>
+        <label className="control-label" data-testid="outline-toggle-label">Outline</label>
+        <div className="layout-grid two" data-testid="outline-toggle-selector">
+          <button className={!textStyle.outline_enabled ? "active" : ""} onClick={() => onTextStyle({ outline_enabled: false })} data-testid="outline-off-button">Off</button>
+          <button className={textStyle.outline_enabled ? "active" : ""} onClick={() => onTextStyle({ outline_enabled: true })} data-testid="outline-on-button">On</button>
+        </div>
+        {textStyle.outline_enabled && <>
+          <label className="control-label" data-testid="outline-width-label">Outline width <b>{textStyle.outline_width}px</b></label>
+          <Slider min={0.5} max={8} step={0.5} value={[textStyle.outline_width]} onValueChange={([v]) => onTextStyle({ outline_width: v })} data-testid="outline-width-slider" />
+          <label className="control-label" data-testid="outline-color-label"><span><Palette size={16} /> Outline colour</span>
+            <input type="color" value={textStyle.outline_color} onChange={(e) => onTextStyle({ outline_color: e.target.value })} data-testid="outline-color-input" />
+          </label>
+        </>}
+        <label className="control-label" data-testid="shadow-toggle-label">Shadow</label>
+        <div className="layout-grid two" data-testid="shadow-toggle-selector">
+          <button className={!textStyle.shadow_enabled ? "active" : ""} onClick={() => onTextStyle({ shadow_enabled: false })} data-testid="shadow-off-button">Off</button>
+          <button className={textStyle.shadow_enabled ? "active" : ""} onClick={() => onTextStyle({ shadow_enabled: true })} data-testid="shadow-on-button">On</button>
+        </div>
+        {textStyle.shadow_enabled && <>
+          <label className="control-label" data-testid="shadow-angle-label">Direction <b>{textStyle.shadow_angle}°</b></label>
+          <Slider min={0} max={360} step={15} value={[textStyle.shadow_angle]} onValueChange={([v]) => onTextStyle({ shadow_angle: v })} data-testid="shadow-angle-slider" />
+          <label className="control-label" data-testid="shadow-distance-label">Distance <b>{textStyle.shadow_distance}px</b></label>
+          <Slider min={0} max={15} step={1} value={[textStyle.shadow_distance]} onValueChange={([v]) => onTextStyle({ shadow_distance: v })} data-testid="shadow-distance-slider" />
+          <label className="control-label" data-testid="shadow-blur-label">Smoothness <b>{textStyle.shadow_blur}</b></label>
+          <Slider min={0} max={15} step={1} value={[textStyle.shadow_blur]} onValueChange={([v]) => onTextStyle({ shadow_blur: v })} data-testid="shadow-blur-slider" />
+          <label className="control-label" data-testid="shadow-opacity-label">Opacity <b>{Math.round(textStyle.shadow_opacity * 100)}%</b></label>
+          <Slider min={0.1} max={1} step={0.05} value={[textStyle.shadow_opacity]} onValueChange={([v]) => onTextStyle({ shadow_opacity: v })} data-testid="shadow-opacity-slider" />
+          <label className="control-label" data-testid="shadow-color-label"><span><Palette size={16} /> Shadow colour</span>
+            <input type="color" value={textStyle.shadow_color} onChange={(e) => onTextStyle({ shadow_color: e.target.value })} data-testid="shadow-color-input" />
+          </label>
+        </>}
+        {variant && <p className="panel-note" data-testid="caption-style-note">A selected Variant's own outline/shadow always takes priority over these.</p>}
+      </>}
       <div className="tool-divider" />
       <div className="panel-heading compact"><Rows size={18} /><div><span>LAYOUT</span><h2 data-testid="layout-panel-heading">Caption layout</h2></div></div>
       <label className="control-label" data-testid="words-per-caption-label">Words per caption</label>

@@ -88,6 +88,22 @@ function isBoldCapableFont(family) {
   return family.includes("Poppins") || family.includes("Caveat");
 }
 
+function hexToRgba(hex, opacity) {
+  const value = (hex || "#000000").replace("#", "");
+  const r = parseInt(value.slice(0, 2), 16) || 0;
+  const g = parseInt(value.slice(2, 4), 16) || 0;
+  const b = parseInt(value.slice(4, 6), 16) || 0;
+  return `rgba(${r},${g},${b},${opacity})`;
+}
+
+// Mirrors backend/captions.py's _shadow_offset exactly: clockwise degrees
+// from straight down (0=down, 90=left, 180=up, 270=right), same sign
+// convention since CSS's y-axis also increases downward.
+function shadowOffset(angleDeg, distance) {
+  const radians = (angleDeg * Math.PI) / 180;
+  return [distance * Math.sin(radians), distance * Math.cos(radians)];
+}
+
 function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
 function aspectLabel(width, height) {
   const divisor = gcd(width, height) || 1;
@@ -207,11 +223,26 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   // the Romanized Hinglish word.text, or the native-script word.original
   // Sarvam's codemix transcription already produced for Hindi/mixed speech.
   const [scriptMode, setScriptMode] = useState(initialProject.script_mode || "roman");
-  // Independent of theme/variant: a project-wide text-style toggle (Clean
-  // soft-glow vs a bold Outlined black border+shadow) and plain Bold/Italic
-  // font-weight toggles - mirrors backend/captions.py's ProjectEdit fields
-  // and _write_ass's caption_style/bold/italic handling exactly.
-  const [captionStyle, setCaptionStyle] = useState(initialProject.caption_style || "clean");
+  // Independent of theme/variant: granular project-wide Outline/Shadow/
+  // Background controls, plus plain Bold/Italic font-weight toggles -
+  // mirrors backend/captions.py's ProjectEdit fields and _write_ass's
+  // two-layer outline+shadow/background-box handling exactly (field names
+  // match 1:1 so the payload can spread this object straight through).
+  const [textStyle, setTextStyle] = useState({
+    outline_enabled: initialProject.outline_enabled ?? true,
+    outline_width: initialProject.outline_width ?? 2,
+    outline_color: initialProject.outline_color || "#000000",
+    shadow_enabled: initialProject.shadow_enabled ?? true,
+    shadow_angle: initialProject.shadow_angle ?? 0,
+    shadow_distance: initialProject.shadow_distance ?? 3,
+    shadow_blur: initialProject.shadow_blur ?? 3,
+    shadow_opacity: initialProject.shadow_opacity ?? 0.75,
+    shadow_color: initialProject.shadow_color || "#000000",
+    background_enabled: initialProject.background_enabled ?? false,
+    background_color: initialProject.background_color || "#000000",
+    background_opacity: initialProject.background_opacity ?? 0.6,
+  });
+  const updateTextStyle = (change) => setTextStyle((current) => ({ ...current, ...change }));
   const [bold, setBold] = useState(initialProject.bold ?? true);
   const [italic, setItalic] = useState(initialProject.italic ?? false);
   const [reassigning, setReassigning] = useState(false);
@@ -323,6 +354,18 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const anchorWord = visibleWords[0];
   const tiers = tiersById[theme];
   const activeVariant = variants.find((item) => item.id === variant) || null;
+  // Mirrors _write_ass's own two-layer approach: a real browser already
+  // blurs text-shadow independently of the glyph fill (unlike libass's
+  // single \blur tag), so the preview doesn't need the backend's two-
+  // Dialogue-line trick - one WebkitTextStroke (crisp) + one text-shadow
+  // (independently blurred) gets the same crisp-text-plus-soft-shadow look
+  // in a single CSS declaration.
+  const [shadowOffsetX, shadowOffsetY] = shadowOffset(textStyle.shadow_angle, textStyle.shadow_distance);
+  const outlineStroke = textStyle.outline_enabled && !textStyle.background_enabled
+    ? `${Math.max(0.5, textStyle.outline_width * previewScale)}px ${textStyle.outline_color}` : "0px transparent";
+  const dropShadow = textStyle.shadow_enabled && !textStyle.background_enabled
+    ? `${(shadowOffsetX * previewScale).toFixed(2)}px ${(shadowOffsetY * previewScale).toFixed(2)}px ${(textStyle.shadow_blur * previewScale).toFixed(2)}px ${hexToRgba(textStyle.shadow_color, textStyle.shadow_opacity)}`
+    : "none";
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
   const boxX = anchorWord?.pos_x ?? basePos.x;
   const boxY = anchorWord?.pos_y ?? basePos.y;
@@ -420,7 +463,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                            audio_volume: audioVolume, audio_muted: audioMuted,
                            brightness, contrast, saturation, render_quality: renderQuality, elements,
                            sfx_markers: sfxMarkers, variant, script_mode: scriptMode,
-                           caption_style: captionStyle, bold, italic });
+                           ...textStyle, bold, italic });
   // Dual-Script Toggle: what a word's canvas/Timeline label actually shows -
   // falls back to the Romanized text when scriptMode is "native" but this
   // word has no native-script transcription (e.g. a user-typed edit).
@@ -740,15 +783,27 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               style={{ left: `${boxX}%`, top: `${boxY}%`,
                       transform: `translate(-50%,-50%) rotate(${boxRotation}deg)`, lineHeight: boxLineHeight,
                       fontStyle: italic ? "italic" : "normal",
-                      // "Outlined" text style: a bold black stroke + offset
-                      // shadow, independent of theme/variant - a variant's
-                      // own stroke/shadow design always wins when one is
-                      // active, mirroring _write_ass's own priority.
-                      ...(!activeVariant && captionStyle === "outlined" ? { WebkitTextStroke: "2px #000", textShadow: "2px 2px 0 #000" } : {}),
+                      // Granular Outline/Shadow/Background, independent of
+                      // theme/variant - a variant's own stroke/shadow design
+                      // always wins when one is active, mirroring
+                      // _write_ass's own priority. WebkitTextStroke and
+                      // textShadow are always set explicitly here (never
+                      // left to App.css's own default rule) so every
+                      // combination - including both off - renders exactly
+                      // what the controls say, matching the export 1:1.
+                      ...(!activeVariant ? { WebkitTextStroke: outlineStroke, textShadow: dropShadow } : {}),
                       ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
               onMouseDown={startCaptionDrag} data-testid="live-caption-preview">
               {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}
-                style={rowIndex > 0 ? { marginTop: `${row[0].gap_before ?? 2}px` } : undefined}>
+                style={{ ...(rowIndex > 0 ? { marginTop: `${row[0].gap_before ?? 2}px` } : {}),
+                        // The export's background box (BorderStyle=3) is
+                        // drawn per ASS Dialogue line, and each row IS its
+                        // own Dialogue line (_write_ass emits one per row) -
+                        // so a per-row box here matches it exactly, rather
+                        // than one box wrapping the whole multi-line block.
+                        ...(!activeVariant && textStyle.background_enabled
+                          ? { backgroundColor: hexToRgba(textStyle.background_color, textStyle.background_opacity),
+                              padding: "4px 14px", borderRadius: "4px" } : {}) }}>
                 {row.map((word) => {
                   // Color/size always come from the word itself (editable,
                   // defaulted from the theme at generation/theme-switch
@@ -809,7 +864,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           captionPosition={captionPosition} onCaptionPosition={choosePosition}
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
           tab={themeTab} onTab={setThemeTab} variant={variant} onVariant={setVariant}
-          captionStyle={captionStyle} onCaptionStyle={setCaptionStyle}
+          textStyle={textStyle} onTextStyle={updateTextStyle}
           bold={bold} onBold={setBold} italic={italic} onItalic={setItalic}
           hasActiveCaption={visibleWords.length > 0}
           boxX={boxX} boxY={boxY} boxFontSize={boxFontSize} boxRotation={boxRotation} boxLineHeight={boxLineHeight}

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import os
 import re
 import subprocess
@@ -277,14 +278,40 @@ class ProjectEdit(BaseModel):
     # see caption_ai.py's convert_to_hinglish). Affects the editor canvas,
     # the Timeline labels, and both exports (_write_ass/_write_srt).
     script_mode: Literal["roman", "native"] = "roman"
-    # Two independent, project-wide typography controls, separate from
-    # theme/variant: "clean" is the default soft text-shadow glow with no
-    # hard border (matches the editor preview); "outlined" is a bold black
-    # outline + offset shadow, no blur (the look most caption apps default
-    # to). Only affects captions with no variant selected - a variant's own
-    # outline/shadow design (e.g. Rock's hard outline) always takes
-    # priority, since that's a more specific, deliberate choice.
-    caption_style: Literal["clean", "outlined"] = "clean"
+    # Granular, project-wide typography controls, separate from theme/
+    # variant - only apply to captions with no variant selected (a variant's
+    # own outline/shadow design, e.g. Rock's hard outline, always takes
+    # priority, since that's a more specific, deliberate choice). Outline and
+    # Shadow are genuinely independent layers in the export (see _write_ass's
+    # word_tags/shadow_tags): libass's \blur tag blurs an entire Dialogue
+    # line's composited bitmap at once (fill+outline together), so the only
+    # way to get crisp primary text with a smoothly-blurred shadow behind it
+    # - what every browser's CSS text-shadow does, and what users expect - is
+    # to draw the shadow as its own separate, lower-layer Dialogue line (fully
+    # blurrable) underneath a second, always-unblurred Dialogue line for the
+    # outline+fill. Background instead uses BorderStyle=3 (ASS's own "opaque
+    # box" mode), since libass auto-sizes that box from each line's real text
+    # metrics - guessing a box width/height ourselves would drift from the
+    # actual glyphs. Background is mutually exclusive with Outline/Shadow
+    # (BorderStyle is a Style-level, not per-word, property) - when it's on,
+    # the editor hides the Outline/Shadow controls rather than silently
+    # ignoring them.
+    outline_enabled: bool = True
+    outline_width: float = Field(default=2, ge=0, le=8)
+    outline_color: str = "#000000"
+    shadow_enabled: bool = True
+    # Clockwise degrees from straight down (CSS text-shadow's own default
+    # direction) - 0=down, 90=left, 180=up, 270=right. See _shadow_offset.
+    shadow_angle: float = Field(default=0, ge=0, le=360)
+    shadow_distance: float = Field(default=3, ge=0, le=15)
+    # "Smoothness"/feather - directly the shadow layer's own \blur strength.
+    # 0 is a crisp, hard-edged offset copy; higher values feather it out.
+    shadow_blur: float = Field(default=3, ge=0, le=15)
+    shadow_opacity: float = Field(default=0.75, ge=0, le=1)
+    shadow_color: str = "#000000"
+    background_enabled: bool = False
+    background_color: str = "#000000"
+    background_opacity: float = Field(default=0.6, ge=0, le=1)
     bold: bool = True
     italic: bool = False
 
@@ -487,7 +514,11 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
                    "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None, "script_mode": "roman",
-                   "caption_style": "clean", "bold": True, "italic": False,
+                   "outline_enabled": True, "outline_width": 2, "outline_color": "#000000",
+                   "shadow_enabled": True, "shadow_angle": 0, "shadow_distance": 3, "shadow_blur": 3,
+                   "shadow_opacity": 0.75, "shadow_color": "#000000",
+                   "background_enabled": False, "background_color": "#000000", "background_opacity": 0.6,
+                   "bold": True, "italic": False,
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -530,7 +561,14 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "elements": [element.model_dump() for element in payload.elements],
                   "sfx_markers": [marker.model_dump() for marker in payload.sfx_markers],
                   "variant": payload.variant, "script_mode": payload.script_mode,
-                  "caption_style": payload.caption_style, "bold": payload.bold, "italic": payload.italic,
+                  "outline_enabled": payload.outline_enabled, "outline_width": payload.outline_width,
+                  "outline_color": payload.outline_color,
+                  "shadow_enabled": payload.shadow_enabled, "shadow_angle": payload.shadow_angle,
+                  "shadow_distance": payload.shadow_distance, "shadow_blur": payload.shadow_blur,
+                  "shadow_opacity": payload.shadow_opacity, "shadow_color": payload.shadow_color,
+                  "background_enabled": payload.background_enabled,
+                  "background_color": payload.background_color, "background_opacity": payload.background_opacity,
+                  "bold": payload.bold, "italic": payload.italic,
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
@@ -608,6 +646,25 @@ def _ass_time(seconds):
 def _ass_color(hex_color):
     value = hex_color.lstrip("#").ljust(6, "F")[:6]
     return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}&"
+
+
+def _ass_color_alpha(hex_color, opacity=1.0):
+    """Same as _ass_color, but with an explicit alpha channel - ASS alpha is
+    inverted from the usual convention (00 = fully opaque, FF = fully
+    transparent), so opacity (0-1, normal convention) has to be flipped."""
+    value = hex_color.lstrip("#").ljust(6, "F")[:6]
+    alpha = round((1 - max(0.0, min(1.0, opacity))) * 255)
+    return f"&H{alpha:02X}{value[4:6]}{value[2:4]}{value[0:2]}&"
+
+
+def _shadow_offset(angle_deg, distance):
+    """Converts a clockwise-from-straight-down angle + distance into ASS's
+    \\xshad/\\yshad pixel offsets (x right-positive, y DOWN-positive, same as
+    screen/video coordinates). angle=0 points straight down, matching CSS
+    text-shadow's own default direction, so the Shadow panel's dial reads the
+    same way a designer already expects from CSS."""
+    radians = math.radians(angle_deg)
+    return distance * math.sin(radians), distance * math.cos(radians)
 
 
 SENTENCE_END_CHARS = ".!?।॥"  # includes Devanagari danda/double danda
@@ -780,25 +837,54 @@ def _write_element_dialogue(element):
 
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                caption_lines=1, caption_position="bottom", elements=None, variant=None,
-               script_mode="roman", caption_style="clean", bold=True, italic=False):
+               script_mode="roman", bold=True, italic=False,
+               outline_enabled=True, outline_width=2, outline_color="#000000",
+               shadow_enabled=True, shadow_angle=0, shadow_distance=3, shadow_blur=3,
+               shadow_opacity=0.75, shadow_color="#000000",
+               background_enabled=False, background_color="#000000", background_opacity=0.6):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
     accent_family = palette.get("accent_font") or primary_family
     variant_config = VARIANTS.get(variant)
-    # Outline/Shadow are 0 here deliberately - the live editor preview
-    # (CaptionStudio.jsx's .caption-overlay) never shows a hard border by
-    # default, only a soft text-shadow glow. Baking a global Outline/Shadow
-    # into the Style line would apply a heavy black border to every word
-    # that doesn't explicitly override it, which doesn't match the preview
-    # at all. Each word below gets its own explicit \\bord/\\shad/\\blur
-    # tag instead, so the export can replicate that same soft-glow look
-    # (or a variant's own distinct outline) exactly, word by word.
-    # Bold is NOT forced here at the Style level any more - see
-    # BOLD_CAPABLE_FONTS above. word_tags() below applies \b1 per word,
-    # only for a family that can actually back it up with a real face.
+    # A selected Variant always takes priority (its own outline/shadow design
+    # is a deliberate, more specific choice - see VARIANTS above). Otherwise
+    # Background and Outline/Shadow are mutually exclusive: BorderStyle (ASS's
+    # box-vs-outline switch) is a Style-level property, not per-word, so a
+    # project can't mix a background box with a per-word outline/shadow in
+    # one ASS file. The editor's Text panel enforces the same choice.
+    use_background = not variant_config and background_enabled
+    # libass's \blur blurs an entire Dialogue line's composited bitmap at
+    # once (fill + outline together) - there's no way to ask it to blur only
+    # a shadow while leaving the glyph fill crisp, the way CSS text-shadow
+    # does. The old single-layer "\bord + \blur" approximation of a soft
+    # glow blurred the OUTLINE RING itself, which is a thin, often uneven
+    # shape (worse on thin/italic strokes like Playfair Display) - blurring
+    # a thin ring reads as a rough, grainy halo rather than a smooth glow.
+    # The fix: draw the shadow as its own, separate, lower Dialogue line - a
+    # solid silhouette (fill and outline both painted in the shadow colour)
+    # offset by shadow_angle/shadow_distance and blurred on its own - with a
+    # second, always-unblurred Dialogue line for the real outline+fill on
+    # top. Each layer only ever touches what it's actually supposed to blur.
+    use_shadow_layer = not variant_config and not use_background and shadow_enabled
+    shadow_x, shadow_y = _shadow_offset(shadow_angle, shadow_distance) if use_shadow_layer else (0, 0)
+    # Bold is NOT forced here at the Style level - see BOLD_CAPABLE_FONTS
+    # above. word_tags() below applies \b1 per word, only for a family that
+    # can actually back it up with a real face.
     italic_field = -1 if italic else 0
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,0,{italic_field},0,0,100,100,0,0,1,0,0,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
+    if use_background:
+        # BorderStyle=3 ("opaque box"): libass auto-sizes the box from each
+        # line's own real text metrics, which a hand-rolled \p vector
+        # rectangle could never match without re-implementing font shaping -
+        # Outline becomes the box's padding, Shadow a flat box drop offset
+        # (kept at 0 - a flat box reads cleanest), BackColour the box fill.
+        border_style_field, outline_field, shadow_field = 3, 14, 0
+        box_fill = _ass_color_alpha(background_color, background_opacity).rstrip("&")
+        outline_colour_field, back_colour_field = box_fill, box_fill
+    else:
+        border_style_field, outline_field, shadow_field = 1, 0, 0
+        outline_colour_field, back_colour_field = "&H00000000", "&H80000000"
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,{outline_colour_field},{back_colour_field},0,{italic_field},0,0,100,100,0,0,{border_style_field},{outline_field},{shadow_field},2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
     groups = _group_words_for_display(words, max_words=words_per_caption or 3,
                                       strict_count=words_per_caption is not None)
@@ -843,29 +929,8 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             # override tags otherwise carry forward onto the next word's
             # text run within the same Dialogue line, which would let one
             # word's still-finishing pop bleed into the next word's.
-            tags = f"\\fn{family}\\c{_ass_color(color)}\\fs{font_size}\\fscx100\\fscy100"
-            if bold and family in BOLD_CAPABLE_FONTS:
-                tags += "\\b1"
-            if variant_config:
-                outline_hex = variant_config["outline"] or color
-                base_blur = variant_config["blur"]
-                tags += (f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
-                         f"\\shad{variant_config['shad']}\\blur{base_blur}")
-            elif caption_style == "outlined":
-                # User-chosen "Outlined" text style: a bold black outline +
-                # offset shadow, no blur - the classic hard-bordered caption
-                # look, independent of theme/variant.
-                base_blur = 0
-                tags += f"\\3c&H000000&\\bord3\\shad2\\blur{base_blur}"
-            else:
-                # Default "Clean" text style: match the editor preview's
-                # default look exactly - a soft black glow around the text
-                # (CSS text-shadow), never a hard outline. A small \bord
-                # blurred into a halo (rather than a directional \shad) is
-                # the ASS equivalent of a soft shadow that surrounds the
-                # glyph on every side, same as the CSS.
-                base_blur = 4
-                tags += f"\\3c&H000000&\\bord2\\shad0\\blur{base_blur}"
+            base = f"\\fn{family}\\fs{font_size}\\fscx100\\fscy100"
+            bold_tag = "\\b1" if bold and family in BOLD_CAPABLE_FONTS else ""
             # "Active word" pop: CaptionStudio.jsx's .caption-overlay
             # span.active scales the word up 1.1x and brightens its glow
             # for exactly as long as it's the word currently being spoken.
@@ -878,9 +943,48 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             rel_off = max(rel_on + 1, round((word["end"] - group[0]["start"]) * 1000))
             pop_in_end = min(rel_off, rel_on + POP_IN_MS)
             pop_out_start = max(pop_in_end, rel_off - POP_OUT_MS)
-            tags += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{base_blur + POP_BLUR_BOOST})"
-                     f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{base_blur})")
-            return tags, font_size
+
+            if variant_config:
+                outline_hex = variant_config["outline"] or color
+                base_blur = variant_config["blur"]
+                primary = (f"{base}\\c{_ass_color(color)}{bold_tag}"
+                           f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
+                           f"\\shad{variant_config['shad']}\\blur{base_blur}")
+                primary += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{base_blur + POP_BLUR_BOOST})"
+                            f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{base_blur})")
+                return primary, None, font_size
+
+            pop_scale_only = (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE})"
+                              f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100)")
+            if use_background:
+                # Style line's BorderStyle=3 already draws the box - no
+                # per-word \bord/\shad/\blur override needed (or wanted: an
+                # override here would resize the box per-word instead of
+                # drawing one consistent box per line).
+                primary = f"{base}\\c{_ass_color(color)}{bold_tag}" + pop_scale_only
+                return primary, None, font_size
+
+            # Granular Outline (crisp, never blurred) + Shadow (its own,
+            # independently blurred layer) system.
+            outline_tags = (f"\\3c{_ass_color(outline_color)}\\bord{outline_width}" if outline_enabled
+                            else "\\bord0")
+            primary = f"{base}\\c{_ass_color(color)}{bold_tag}{outline_tags}\\shad0\\blur0" + pop_scale_only
+
+            shadow_tags = None
+            if use_shadow_layer:
+                shadow_fill = _ass_color_alpha(shadow_color, shadow_opacity)
+                # The shadow's own \bord gives it the same solid silhouette
+                # the primary glyph has (fill and outline painted the same
+                # colour) so blurring it produces one smooth blob, not a
+                # hollow/ringed shape - falls back to a small fixed value
+                # when Outline itself is off, so there's still a shape to
+                # blur rather than just the bare glyph fill.
+                shadow_bord = outline_width if outline_enabled else 1.2
+                shadow_tags = (f"{base}\\c{shadow_fill}{bold_tag}\\3c{shadow_fill}\\bord{shadow_bord}"
+                               f"\\shad0\\blur{shadow_blur}")
+                shadow_tags += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{shadow_blur + POP_BLUR_BOOST})"
+                                f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{shadow_blur})")
+            return primary, shadow_tags, font_size
 
         # Each row's height is driven by its own tallest word (after any
         # emphasize size bump), scaled by the same line-height the preview
@@ -891,7 +995,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         row_heights = []
         for row in rows:
             sizes = [word_tags(word, (word.get("original") or word["text"])
-                                if script_mode == "native" else word["text"])[1] for word in row]
+                                if script_mode == "native" else word["text"])[2] for word in row]
             row_heights.append(max(sizes, default=52) * line_height)
         # Each row boundary can carry its own gap (the word starting row i+1's
         # own gap_before) instead of one uniform ROW_GAP_PX for the whole
@@ -911,20 +1015,36 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             row_center_y = round(row_top + cumulative + row_heights[row_index] / 2)
             cumulative += row_heights[row_index] + (row_gaps[row_index] if row_index < len(row_gaps) else 0)
             word_parts = []
+            shadow_parts = []
             for index, word in enumerate(row):
                 display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
                 safe = display_text.replace("{", "").replace("}", "")
-                tags, _ = word_tags(word, display_text)
+                primary_tags, shadow_tags, _ = word_tags(word, display_text)
                 if index == 0:
                     # \org pins the rotation pivot to the whole caption
                     # block's own center (not this row's own \pos) so a
                     # multi-row caption rotates as one rigid block instead
                     # of each row spinning independently around itself.
                     frz = f"\\org({center_x},{center_y})\\frz{rotation:g}" if rotation else ""
-                    tags = f"\\an5\\pos({center_x},{row_center_y}){frz}" + tags
+                    primary_tags = f"\\an5\\pos({center_x},{row_center_y}){frz}" + primary_tags
+                    if shadow_tags is not None:
+                        shadow_cx, shadow_cy = round(center_x + shadow_x), round(row_center_y + shadow_y)
+                        shadow_frz = (f"\\org({round(center_x + shadow_x)},{round(center_y + shadow_y)})\\frz{rotation:g}"
+                                     if rotation else "")
+                        shadow_tags = f"\\an5\\pos({shadow_cx},{shadow_cy}){shadow_frz}" + shadow_tags
                 separator = " " if index > 0 else ""
-                word_parts.append(f"{separator}{{{tags}}}{safe}")
+                word_parts.append(f"{separator}{{{primary_tags}}}{safe}")
+                if shadow_tags is not None:
+                    shadow_parts.append(f"{separator}{{{shadow_tags}}}{safe}")
             styled = "".join(word_parts)
+            # The shadow Dialogue line is emitted first, at a lower Layer
+            # (-1) than the primary caption text (Layer 0) - same "lower
+            # Layer number draws behind" convention _write_element_dialogue
+            # already uses for layer="behind" elements - so it composites
+            # underneath the crisp text it's meant to sit behind.
+            if shadow_parts:
+                lines.append(f"Dialogue: -1,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
+                             f"Default,,0,0,0,,{''.join(shadow_parts)}\n")
             lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
                          f"Default,,0,0,0,,{styled}\n")
     for element in (elements or []):
@@ -1129,8 +1249,19 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
                   project.get("words_per_caption"), project.get("caption_lines", 1),
                   project.get("caption_position", "bottom"), project.get("elements"),
                   variant=project.get("variant"), script_mode=project.get("script_mode", "roman"),
-                  caption_style=project.get("caption_style", "clean"), bold=project.get("bold", True),
-                  italic=project.get("italic", False))
+                  bold=project.get("bold", True), italic=project.get("italic", False),
+                  outline_enabled=project.get("outline_enabled", True),
+                  outline_width=project.get("outline_width", 2),
+                  outline_color=project.get("outline_color", "#000000"),
+                  shadow_enabled=project.get("shadow_enabled", True),
+                  shadow_angle=project.get("shadow_angle", 0),
+                  shadow_distance=project.get("shadow_distance", 3),
+                  shadow_blur=project.get("shadow_blur", 3),
+                  shadow_opacity=project.get("shadow_opacity", 0.75),
+                  shadow_color=project.get("shadow_color", "#000000"),
+                  background_enabled=project.get("background_enabled", False),
+                  background_color=project.get("background_color", "#000000"),
+                  background_opacity=project.get("background_opacity", 0.6))
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
                                     project.get("audio_volume", 100), project.get("audio_muted", False),
