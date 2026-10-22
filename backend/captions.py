@@ -860,7 +860,9 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                shadow_enabled=True, shadow_angle=0, shadow_distance=2, shadow_blur=2,
                shadow_opacity=0.5, shadow_color="#000000",
                glow_enabled=False, glow_color=None, glow_blur=8, glow_opacity=0.6,
-               background_enabled=False, background_color="#000000", background_opacity=0.6):
+               background_enabled=False, background_color="#000000", background_opacity=0.6,
+               shadow_alpha_path=None, shadow_color_path=None,
+               glow_alpha_path=None, glow_color_path=None):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
@@ -873,25 +875,26 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     # project can't mix a background box with a per-word outline/shadow in
     # one ASS file. The editor's Text panel enforces the same choice.
     use_background = not variant_config and background_enabled
-    # libass's \blur blurs an entire Dialogue line's composited bitmap at
-    # once (fill + outline together) - there's no way to ask it to blur only
-    # a shadow while leaving the glyph fill crisp, the way CSS text-shadow
-    # does. The old single-layer "\bord + \blur" approximation of a soft
-    # glow blurred the OUTLINE RING itself, which is a thin, often uneven
-    # shape (worse on thin/italic strokes like Playfair Display) - blurring
-    # a thin ring reads as a rough, grainy halo rather than a smooth glow.
-    # The fix: draw the shadow as its own, separate, lower Dialogue line - a
-    # solid silhouette (fill and outline both painted in the shadow colour)
-    # offset by shadow_angle/shadow_distance and blurred on its own - with a
-    # second, always-unblurred Dialogue line for the real outline+fill on
-    # top. Each layer only ever touches what it's actually supposed to blur.
+    # libass's own \blur is a cruder approximation of Gaussian blur than a
+    # browser's native CSS text-shadow blur - visibly coarser/more "stepped"
+    # even when it's blurring the right shape (a solid silhouette, not a
+    # hollow outline ring - see the two-layer-Dialogue history this
+    # replaced). Shadow and Glow are instead rendered as two tiny MASK .ass
+    # files each (an "alpha" mask - a plain grey whose brightness encodes
+    # opacity - and a "colour" mask - the real colour at full brightness),
+    # burned onto solid black canvases and blurred with ffmpeg's own gblur
+    # (genuinely smooth, same quality tier as a browser), then the colour
+    # mask's RGB + the blurred alpha mask's luma are combined with
+    # `alphamerge` into one proper RGBA layer and composited under the
+    # crisp primary text in _render. See _write_blur_mask_files below for
+    # the four small per-word functions that build these masks' tags.
     use_shadow_layer = not variant_config and not use_background and shadow_enabled
     shadow_x, shadow_y = _shadow_offset(shadow_angle, shadow_distance) if use_shadow_layer else (0, 0)
-    # Glow is the same two-layer trick as Shadow (its own, independently
-    # blurred Dialogue line) but with no offset - a soft, even light around
-    # the glyph rather than a directional drop shadow - and drawn even
-    # further back, so a caption can combine both (a tight shadow for
-    # grounding + a wide glow for pop) without either washing the other out.
+    # Glow is the same mask-based blur as Shadow but with no offset - a
+    # soft, even light around the glyph rather than a directional drop
+    # shadow - composited even further back, so a caption can combine both
+    # (a tight shadow for grounding + a wide glow for pop) without either
+    # washing the other out.
     use_glow_layer = not variant_config and not use_background and glow_enabled
     # Bold is NOT forced here at the Style level - see BOLD_CAPABLE_FONTS
     # above. word_tags() below applies \b1 per word, only for a family that
@@ -911,6 +914,8 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         outline_colour_field, back_colour_field = "&H00000000", "&H80000000"
     header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,{outline_colour_field},{back_colour_field},0,{italic_field},0,0,100,100,0,0,{border_style_field},{outline_field},{shadow_field},2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
+    shadow_alpha_lines, shadow_color_lines = [], []
+    glow_alpha_lines, glow_color_lines = [], []
     groups = _group_words_for_display(words, max_words=words_per_caption or 3,
                                       strict_count=words_per_caption is not None)
     for group in groups:
@@ -977,7 +982,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                            f"\\shad{variant_config['shad']}\\blur{base_blur}")
                 primary += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{base_blur + POP_BLUR_BOOST})"
                             f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{base_blur})")
-                return primary, None, None, font_size
+                return primary, None, None, None, None, font_size
 
             pop_scale_only = (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE})"
                               f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100)")
@@ -987,42 +992,38 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 # override here would resize the box per-word instead of
                 # drawing one consistent box per line).
                 primary = f"{base}\\c{_ass_color(color)}{bold_tag}" + pop_scale_only
-                return primary, None, None, font_size
+                return primary, None, None, None, None, font_size
 
-            # Granular Outline (crisp, never blurred) + Shadow (its own,
-            # independently blurred layer) system.
+            # Granular Outline - crisp, never blurred (Shadow/Glow are built
+            # as separate blur-mask files below, not as ASS override tags).
             outline_tags = (f"\\3c{_ass_color(outline_color)}\\bord{outline_width}" if outline_enabled
                             else "\\bord0")
             primary = f"{base}\\c{_ass_color(color)}{bold_tag}{outline_tags}\\shad0\\blur0" + pop_scale_only
 
-            shadow_tags = None
-            if use_shadow_layer:
-                shadow_fill = _ass_color_alpha(shadow_color, shadow_opacity)
-                # The shadow's own \bord gives it the same solid silhouette
-                # the primary glyph has (fill and outline painted the same
-                # colour) so blurring it produces one smooth blob, not a
-                # hollow/ringed shape - falls back to a small fixed value
-                # when Outline itself is off, so there's still a shape to
-                # blur rather than just the bare glyph fill.
-                shadow_bord = outline_width if outline_enabled else 1.2
-                shadow_tags = (f"{base}\\c{shadow_fill}{bold_tag}\\3c{shadow_fill}\\bord{shadow_bord}"
-                               f"\\shad0\\blur{shadow_blur}")
-                shadow_tags += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{shadow_blur + POP_BLUR_BOOST})"
-                                f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{shadow_blur})")
+            # Mask tags carry no colour of their own (the alpha mask is a
+            # plain grey, the colour mask the real hue) - just the shared
+            # geometry (font/size/position/pop-scale) every mask needs, with
+            # \bord0\blur0\shad0 since the "solid silhouette to blur"
+            # concern that drove \bord on the old single-layer approach
+            # doesn't apply to a real alpha-channel gblur.
+            mask_base = f"{base}{bold_tag}\\bord0\\shad0\\blur0" + pop_scale_only
 
-            glow_tags = None
+            shadow_alpha_tags = shadow_color_tags = None
+            if use_shadow_layer:
+                opacity_grey = round(max(0.0, min(1.0, shadow_opacity)) * 255)
+                shadow_alpha_tags = f"\\c&H{opacity_grey:02X}{opacity_grey:02X}{opacity_grey:02X}&{mask_base}"
+                shadow_color_tags = f"\\c{_ass_color(shadow_color)}{mask_base}"
+
+            glow_alpha_tags = glow_color_tags = None
             if use_glow_layer:
+                opacity_grey = round(max(0.0, min(1.0, glow_opacity)) * 255)
+                glow_alpha_tags = f"\\c&H{opacity_grey:02X}{opacity_grey:02X}{opacity_grey:02X}&{mask_base}"
                 # glow_color=None means "use this word's own colour" (a
                 # self-coloured neon glow) - resolved per word here, same
                 # convention as VARIANTS' outline=None above, since
                 # different words in one caption can have different colours.
-                glow_fill = _ass_color_alpha(glow_color or color, glow_opacity)
-                glow_bord = outline_width if outline_enabled else 1.2
-                glow_tags = (f"{base}\\c{glow_fill}{bold_tag}\\3c{glow_fill}\\bord{glow_bord}"
-                             f"\\shad0\\blur{glow_blur}")
-                glow_tags += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{glow_blur + POP_BLUR_BOOST})"
-                              f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{glow_blur})")
-            return primary, shadow_tags, glow_tags, font_size
+                glow_color_tags = f"\\c{_ass_color(glow_color or color)}{mask_base}"
+            return primary, shadow_alpha_tags, shadow_color_tags, glow_alpha_tags, glow_color_tags, font_size
 
         # Each row's height is driven by its own tallest word (after any
         # emphasize size bump), scaled by the same line-height the preview
@@ -1033,7 +1034,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         row_heights = []
         for row in rows:
             sizes = [word_tags(word, (word.get("original") or word["text"])
-                                if script_mode == "native" else word["text"])[3] for word in row]
+                                if script_mode == "native" else word["text"])[5] for word in row]
             row_heights.append(max(sizes, default=52) * line_height)
         # Each row boundary can carry its own gap (the word starting row i+1's
         # own gap_before) instead of one uniform ROW_GAP_PX for the whole
@@ -1053,12 +1054,13 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             row_center_y = round(row_top + cumulative + row_heights[row_index] / 2)
             cumulative += row_heights[row_index] + (row_gaps[row_index] if row_index < len(row_gaps) else 0)
             word_parts = []
-            shadow_parts = []
-            glow_parts = []
+            shadow_alpha_parts, shadow_color_parts = [], []
+            glow_alpha_parts, glow_color_parts = [], []
             for index, word in enumerate(row):
                 display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
                 safe = display_text.replace("{", "").replace("}", "")
-                primary_tags, shadow_tags, glow_tags, _ = word_tags(word, display_text)
+                primary_tags, shadow_alpha_tags, shadow_color_tags, glow_alpha_tags, glow_color_tags, _ = \
+                    word_tags(word, display_text)
                 if index == 0:
                     # \org pins the rotation pivot to the whole caption
                     # block's own center (not this row's own \pos) so a
@@ -1066,40 +1068,55 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                     # of each row spinning independently around itself.
                     frz = f"\\org({center_x},{center_y})\\frz{rotation:g}" if rotation else ""
                     primary_tags = f"\\an5\\pos({center_x},{row_center_y}){frz}" + primary_tags
-                    if shadow_tags is not None:
+                    if shadow_alpha_tags is not None:
                         shadow_cx, shadow_cy = round(center_x + shadow_x), round(row_center_y + shadow_y)
                         shadow_frz = (f"\\org({round(center_x + shadow_x)},{round(center_y + shadow_y)})\\frz{rotation:g}"
                                      if rotation else "")
-                        shadow_tags = f"\\an5\\pos({shadow_cx},{shadow_cy}){shadow_frz}" + shadow_tags
-                    if glow_tags is not None:
+                        shadow_pos = f"\\an5\\pos({shadow_cx},{shadow_cy}){shadow_frz}"
+                        shadow_alpha_tags = shadow_pos + shadow_alpha_tags
+                        shadow_color_tags = shadow_pos + shadow_color_tags
+                    if glow_alpha_tags is not None:
                         # No offset - glow sits directly behind the primary
                         # glyph, same \pos/\org as the primary layer.
-                        glow_tags = f"\\an5\\pos({center_x},{row_center_y}){frz}" + glow_tags
+                        glow_pos = f"\\an5\\pos({center_x},{row_center_y}){frz}"
+                        glow_alpha_tags = glow_pos + glow_alpha_tags
+                        glow_color_tags = glow_pos + glow_color_tags
                 separator = " " if index > 0 else ""
                 word_parts.append(f"{separator}{{{primary_tags}}}{safe}")
-                if shadow_tags is not None:
-                    shadow_parts.append(f"{separator}{{{shadow_tags}}}{safe}")
-                if glow_tags is not None:
-                    glow_parts.append(f"{separator}{{{glow_tags}}}{safe}")
-            styled = "".join(word_parts)
-            # Glow (Layer -2) draws first/furthest back, then Shadow
-            # (Layer -1), then the primary caption text (Layer 0) - same
-            # "lower Layer number draws behind" convention
-            # _write_element_dialogue already uses for layer="behind"
-            # elements - so each composites underneath what it's meant to
-            # sit behind.
-            if glow_parts:
-                lines.append(f"Dialogue: -2,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
-                             f"Default,,0,0,0,,{''.join(glow_parts)}\n")
-            if shadow_parts:
-                lines.append(f"Dialogue: -1,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
-                             f"Default,,0,0,0,,{''.join(shadow_parts)}\n")
+                if shadow_alpha_tags is not None:
+                    shadow_alpha_parts.append(f"{separator}{{{shadow_alpha_tags}}}{safe}")
+                    shadow_color_parts.append(f"{separator}{{{shadow_color_tags}}}{safe}")
+                if glow_alpha_tags is not None:
+                    glow_alpha_parts.append(f"{separator}{{{glow_alpha_tags}}}{safe}")
+                    glow_color_parts.append(f"{separator}{{{glow_color_tags}}}{safe}")
             lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
-                         f"Default,,0,0,0,,{styled}\n")
+                         f"Default,,0,0,0,,{''.join(word_parts)}\n")
+            dialogue_time = f"{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])}"
+            if shadow_alpha_parts:
+                shadow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_alpha_parts)}\n")
+                shadow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_color_parts)}\n")
+            if glow_alpha_parts:
+                glow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_alpha_parts)}\n")
+                glow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_color_parts)}\n")
     for element in (elements or []):
         if element["end"] > element["start"]:
             lines.append(_write_element_dialogue(element))
     Path(path).write_text("".join(lines), encoding="utf-8")
+    # Mask files are only written when their layer actually produced content -
+    # _render checks which of these paths exist to decide which extra
+    # blur-mask ffmpeg stages to build, so a disabled/inactive layer simply
+    # leaves no file behind rather than an empty, pointless one.
+    mask_header = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\n"
+                   f"Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,"
+                   f"Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
+                   f"Alignment,MarginL,MarginR,MarginV,Encoding\n"
+                   f"Style: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H00000000,0,"
+                   f"{italic_field},0,0,100,100,0,0,1,0,0,2,70,70,210,1\n"
+                   f"[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n")
+    for mask_path, mask_lines in ((shadow_alpha_path, shadow_alpha_lines), (shadow_color_path, shadow_color_lines),
+                                  (glow_alpha_path, glow_alpha_lines), (glow_color_path, glow_color_lines)):
+        if mask_path and mask_lines:
+            Path(mask_path).write_text(mask_header + "".join(mask_lines), encoding="utf-8")
 
 
 def _srt_time(seconds):
@@ -1228,8 +1245,37 @@ def _sfx_mix_filters(sfx_markers):
     return lines, labels
 
 
+def _blur_mask_steps(prefix, alpha_rel, color_rel, blur_px, width, height, fonts_rel):
+    """ffmpeg filter_complex steps for one genuinely-smooth-blurred Shadow/
+    Glow layer. libass's own \\blur is a cruder approximation of Gaussian
+    blur than ffmpeg's gblur (the same quality tier a browser's CSS blur
+    uses) - but gblur needs a real alpha channel to blur into, and burning
+    an .ass file directly onto an already-transparent canvas doesn't
+    reliably produce one (tested empirically against this ffmpeg build -
+    the ass filter left the destination's alpha plane untouched, so
+    nothing composited). The workaround: burn a plain GREY copy of the
+    glyphs (brightness = this layer's configured opacity) onto an opaque
+    black canvas - an ordinary, fully-supported opaque render - blur THAT
+    with gblur, then use its luma as the alpha channel (via alphamerge) for
+    a second, unblurred, full-brightness colour pass. alphamerge only reads
+    colour where the blurred alpha is nonzero, so the colour pass itself
+    never needs blurring - only the shape gating it does."""
+    sigma = max(0.1, blur_px)
+    return [
+        f"color=c=black:s={width}x{height}:r=25[{prefix}_abg]",
+        f"[{prefix}_abg]ass={_escape_filter_path(alpha_rel)}:fontsdir={_escape_filter_path(fonts_rel)},"
+        f"gblur=sigma={sigma}[{prefix}_amask]",
+        f"color=c=black:s={width}x{height}:r=25[{prefix}_cbg]",
+        f"[{prefix}_cbg]ass={_escape_filter_path(color_rel)}:fontsdir={_escape_filter_path(fonts_rel)}[{prefix}_cmask]",
+        f"[{prefix}_cmask][{prefix}_amask]alphamerge[{prefix}_layer]",
+    ], f"{prefix}_layer"
+
+
 def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=False,
-           brightness=0, contrast=100, saturation=100, quality="high", sfx_markers=None):
+           brightness=0, contrast=100, saturation=100, quality="high", sfx_markers=None,
+           shadow_alpha_path=None, shadow_color_path=None, shadow_blur=0,
+           glow_alpha_path=None, glow_color_path=None, glow_blur=0,
+           video_width=None, video_height=None):
     # Escaping a Windows drive-letter colon with '\:' only works for the
     # subtitles filter's own filename argument - ffmpeg's generic option
     # parser (used for fontsdir=...) doesn't honor that escape the same way
@@ -1246,10 +1292,38 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
     # stay their own full-strength color regardless of how the footage is
     # graded - matches how caption apps treat text as a separate layer.
     eq_arg = f"eq=brightness={brightness / 100}:contrast={contrast / 100}:saturation={saturation / 100}"
-    video_filter = f"{eq_arg},{subtitles_arg}"
     render_preset = RENDER_QUALITY_PRESETS.get(quality, RENDER_QUALITY_PRESETS["high"])
     common_args = ["-c:v", "libx264", "-preset", render_preset["preset"], "-crf", render_preset["crf"],
                    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output]
+
+    width, height = video_width or 1080, video_height or 1920
+    # Shadow/Glow blur strengths are authored at the ASS script's 1080-wide
+    # canvas scale (same scale as outline width/shadow distance) - gblur's
+    # sigma is real output pixels, so it has to scale by how much bigger or
+    # smaller the actual export resolution is than that authoring canvas.
+    canvas_scale = width / 1080
+    video_steps = [f"[0:v]{eq_arg}[graded]"]
+    current = "graded"
+    if glow_alpha_path and os.path.exists(glow_alpha_path):
+        steps, label = _blur_mask_steps(
+            "glow", os.path.relpath(glow_alpha_path, work_dir), os.path.relpath(glow_color_path, work_dir),
+            glow_blur * canvas_scale, width, height, fonts_rel)
+        video_steps += steps
+        # shortest=1: the mask layers are built from an unbounded `color`
+        # source (no fixed duration), so without this `overlay` follows
+        # ffmpeg's default of running for the LONGER of its two inputs -
+        # the "infinite" mask layer - instead of the real (finite) video,
+        # and the render never finishes.
+        video_steps.append(f"[{current}][{label}]overlay=0:0:shortest=1[with_glow]")
+        current = "with_glow"
+    if shadow_alpha_path and os.path.exists(shadow_alpha_path):
+        steps, label = _blur_mask_steps(
+            "shadow", os.path.relpath(shadow_alpha_path, work_dir), os.path.relpath(shadow_color_path, work_dir),
+            shadow_blur * canvas_scale, width, height, fonts_rel)
+        video_steps += steps
+        video_steps.append(f"[{current}][{label}]overlay=0:0:shortest=1[with_shadow]")
+        current = "with_shadow"
+    video_steps.append(f"[{current}]{subtitles_arg}[vout]")
 
     sfx_lines, sfx_labels = _sfx_mix_filters(sfx_markers or [])
     if sfx_labels:
@@ -1258,15 +1332,16 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
         # input by 1/N, so the main audio stays at its own authored volume
         # and only the SFX branches carry their own (lower) mix volume.
         mix_inputs = "".join(f"[{label}]" for label in ["main_a", *sfx_labels])
-        filter_complex = (
-            f"[0:v]{video_filter}[vout];[0:a]volume={volume}[main_a];"
-            + ";".join(sfx_lines) + ";"
-            + f"{mix_inputs}amix=inputs={1 + len(sfx_labels)}:duration=first:dropout_transition=0:normalize=0[aout]"
+        audio_steps = (
+            [f"[0:a]volume={volume}[main_a]"] + sfx_lines
+            + [f"{mix_inputs}amix=inputs={1 + len(sfx_labels)}:duration=first:dropout_transition=0:normalize=0[aout]"]
         )
-        args = [FFMPEG, "-y", "-i", source, "-filter_complex", filter_complex,
-                "-map", "[vout]", "-map", "[aout]", *common_args]
     else:
-        args = [FFMPEG, "-y", "-i", source, "-vf", video_filter, "-af", f"volume={volume}", *common_args]
+        audio_steps = [f"[0:a]volume={volume}[aout]"]
+
+    filter_complex = ";".join(video_steps + audio_steps)
+    args = [FFMPEG, "-y", "-i", source, "-filter_complex", filter_complex,
+            "-map", "[vout]", "-map", "[aout]", *common_args]
 
     try:
         result = subprocess.run(args, capture_output=True, text=True, cwd=work_dir,
@@ -1292,8 +1367,14 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
     with tempfile.TemporaryDirectory() as temp:
         source = os.path.join(temp, "source.mp4")
         ass = os.path.join(temp, "captions.ass")
+        shadow_alpha = os.path.join(temp, "shadow_alpha.ass")
+        shadow_color_ass = os.path.join(temp, "shadow_color.ass")
+        glow_alpha = os.path.join(temp, "glow_alpha.ass")
+        glow_color_ass = os.path.join(temp, "glow_color.ass")
         output = os.path.join(temp, "captain-title.mp4")
         Path(source).write_bytes(data)
+        shadow_blur = project.get("shadow_blur", 2)
+        glow_blur = project.get("glow_blur", 8)
         _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
                   project.get("words_per_caption"), project.get("caption_lines", 1),
                   project.get("caption_position", "bottom"), project.get("elements"),
@@ -1305,22 +1386,29 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
                   shadow_enabled=project.get("shadow_enabled", True),
                   shadow_angle=project.get("shadow_angle", 0),
                   shadow_distance=project.get("shadow_distance", 2),
-                  shadow_blur=project.get("shadow_blur", 2),
+                  shadow_blur=shadow_blur,
                   shadow_opacity=project.get("shadow_opacity", 0.5),
                   shadow_color=project.get("shadow_color", "#000000"),
                   glow_enabled=project.get("glow_enabled", False),
                   glow_color=project.get("glow_color"),
-                  glow_blur=project.get("glow_blur", 8),
+                  glow_blur=glow_blur,
                   glow_opacity=project.get("glow_opacity", 0.6),
                   background_enabled=project.get("background_enabled", False),
                   background_color=project.get("background_color", "#000000"),
-                  background_opacity=project.get("background_opacity", 0.6))
+                  background_opacity=project.get("background_opacity", 0.6),
+                  shadow_alpha_path=shadow_alpha, shadow_color_path=shadow_color_ass,
+                  glow_alpha_path=glow_alpha, glow_color_path=glow_color_ass)
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
                                     project.get("audio_volume", 100), project.get("audio_muted", False),
                                     project.get("brightness", 0), project.get("contrast", 100),
                                     project.get("saturation", 100), project.get("render_quality", "high"),
-                                    sfx_markers=project.get("sfx_markers", []))
+                                    sfx_markers=project.get("sfx_markers", []),
+                                    shadow_alpha_path=shadow_alpha, shadow_color_path=shadow_color_ass,
+                                    shadow_blur=shadow_blur,
+                                    glow_alpha_path=glow_alpha, glow_color_path=glow_color_ass,
+                                    glow_blur=glow_blur,
+                                    video_width=project.get("width"), video_height=project.get("height"))
         except RuntimeError as exc:
             # Our own _render() raises RuntimeError with a message that's
             # already safe and useful to show the user directly (a timeout,
