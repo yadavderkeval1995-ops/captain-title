@@ -296,18 +296,23 @@ class ProjectEdit(BaseModel):
     # (BorderStyle is a Style-level, not per-word, property) - when it's on,
     # the editor hides the Outline/Shadow controls rather than silently
     # ignoring them.
-    outline_enabled: bool = True
+    # Defaults (outline off, a barely-there shadow) match the understated
+    # look competitor caption apps default to - a crisp flat glyph lifted
+    # just enough off a busy background, with contrast coming from font
+    # weight/colour rather than a visible border. Outline stays available
+    # and fully configurable for whoever wants the harder-edged look.
+    outline_enabled: bool = False
     outline_width: float = Field(default=2, ge=0, le=8)
     outline_color: str = "#000000"
     shadow_enabled: bool = True
     # Clockwise degrees from straight down (CSS text-shadow's own default
     # direction) - 0=down, 90=left, 180=up, 270=right. See _shadow_offset.
     shadow_angle: float = Field(default=0, ge=0, le=360)
-    shadow_distance: float = Field(default=3, ge=0, le=15)
+    shadow_distance: float = Field(default=2, ge=0, le=15)
     # "Smoothness"/feather - directly the shadow layer's own \blur strength.
     # 0 is a crisp, hard-edged offset copy; higher values feather it out.
-    shadow_blur: float = Field(default=3, ge=0, le=15)
-    shadow_opacity: float = Field(default=0.75, ge=0, le=1)
+    shadow_blur: float = Field(default=2, ge=0, le=15)
+    shadow_opacity: float = Field(default=0.5, ge=0, le=1)
     shadow_color: str = "#000000"
     # A non-directional soft light around the glyph (no offset), distinct
     # from Shadow - same two-layer-Dialogue mechanism, just drawn with
@@ -524,9 +529,9 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
                    "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None, "script_mode": "roman",
-                   "outline_enabled": True, "outline_width": 2, "outline_color": "#000000",
-                   "shadow_enabled": True, "shadow_angle": 0, "shadow_distance": 3, "shadow_blur": 3,
-                   "shadow_opacity": 0.75, "shadow_color": "#000000",
+                   "outline_enabled": False, "outline_width": 2, "outline_color": "#000000",
+                   "shadow_enabled": True, "shadow_angle": 0, "shadow_distance": 2, "shadow_blur": 2,
+                   "shadow_opacity": 0.5, "shadow_color": "#000000",
                    "glow_enabled": False, "glow_color": None, "glow_blur": 8, "glow_opacity": 0.6,
                    "background_enabled": False, "background_color": "#000000", "background_opacity": 0.6,
                    "bold": True, "italic": False,
@@ -851,9 +856,9 @@ def _write_element_dialogue(element):
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                caption_lines=1, caption_position="bottom", elements=None, variant=None,
                script_mode="roman", bold=True, italic=False,
-               outline_enabled=True, outline_width=2, outline_color="#000000",
-               shadow_enabled=True, shadow_angle=0, shadow_distance=3, shadow_blur=3,
-               shadow_opacity=0.75, shadow_color="#000000",
+               outline_enabled=False, outline_width=2, outline_color="#000000",
+               shadow_enabled=True, shadow_angle=0, shadow_distance=2, shadow_blur=2,
+               shadow_opacity=0.5, shadow_color="#000000",
                glow_enabled=False, glow_color=None, glow_blur=8, glow_opacity=0.6,
                background_enabled=False, background_color="#000000", background_opacity=0.6):
     palette = THEMES.get(theme, THEMES["viral"])
@@ -1294,14 +1299,14 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
                   project.get("caption_position", "bottom"), project.get("elements"),
                   variant=project.get("variant"), script_mode=project.get("script_mode", "roman"),
                   bold=project.get("bold", True), italic=project.get("italic", False),
-                  outline_enabled=project.get("outline_enabled", True),
+                  outline_enabled=project.get("outline_enabled", False),
                   outline_width=project.get("outline_width", 2),
                   outline_color=project.get("outline_color", "#000000"),
                   shadow_enabled=project.get("shadow_enabled", True),
                   shadow_angle=project.get("shadow_angle", 0),
-                  shadow_distance=project.get("shadow_distance", 3),
-                  shadow_blur=project.get("shadow_blur", 3),
-                  shadow_opacity=project.get("shadow_opacity", 0.75),
+                  shadow_distance=project.get("shadow_distance", 2),
+                  shadow_blur=project.get("shadow_blur", 2),
+                  shadow_opacity=project.get("shadow_opacity", 0.5),
                   shadow_color=project.get("shadow_color", "#000000"),
                   glow_enabled=project.get("glow_enabled", False),
                   glow_color=project.get("glow_color"),

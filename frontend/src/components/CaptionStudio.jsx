@@ -229,14 +229,14 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   // two-layer outline+shadow/background-box handling exactly (field names
   // match 1:1 so the payload can spread this object straight through).
   const [textStyle, setTextStyle] = useState({
-    outline_enabled: initialProject.outline_enabled ?? true,
+    outline_enabled: initialProject.outline_enabled ?? false,
     outline_width: initialProject.outline_width ?? 2,
     outline_color: initialProject.outline_color || "#000000",
     shadow_enabled: initialProject.shadow_enabled ?? true,
     shadow_angle: initialProject.shadow_angle ?? 0,
-    shadow_distance: initialProject.shadow_distance ?? 3,
-    shadow_blur: initialProject.shadow_blur ?? 3,
-    shadow_opacity: initialProject.shadow_opacity ?? 0.75,
+    shadow_distance: initialProject.shadow_distance ?? 2,
+    shadow_blur: initialProject.shadow_blur ?? 2,
+    shadow_opacity: initialProject.shadow_opacity ?? 0.5,
     shadow_color: initialProject.shadow_color || "#000000",
     glow_enabled: initialProject.glow_enabled ?? false,
     glow_color: initialProject.glow_color ?? null,

@@ -241,7 +241,7 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
         </div>
         {textStyle.glow_enabled && <>
           <label className="control-label" data-testid="glow-blur-label">Intensity <b>{textStyle.glow_blur}</b></label>
-          <Slider min={1} max={24} step={1} value={[textStyle.glow_blur]} onValueChange={([v]) => onTextStyle({ glow_blur: v })} data-testid="glow-blur-slider" />
+          <Slider min={0} max={24} step={1} value={[textStyle.glow_blur]} onValueChange={([v]) => onTextStyle({ glow_blur: v })} data-testid="glow-blur-slider" />
           <label className="control-label" data-testid="glow-opacity-label">Opacity <b>{Math.round(textStyle.glow_opacity * 100)}%</b></label>
           <Slider min={0.1} max={1} step={0.05} value={[textStyle.glow_opacity]} onValueChange={([v]) => onTextStyle({ glow_opacity: v })} data-testid="glow-opacity-slider" />
           <label className="control-label" data-testid="glow-color-mode-label">Glow colour</label>
