@@ -392,7 +392,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const glowShadowFor = (word, active) => {
     if (!textStyle.glow_enabled || textStyle.background_enabled) return null;
     const blur = (active ? textStyle.glow_blur + 3 : textStyle.glow_blur) * previewScale;
-    return `0px 0px ${blur.toFixed(2)}px ${hexToRgba(textStyle.glow_color || word.color, textStyle.glow_opacity)}`;
+    // "Use this word's own colour" has to track the colour actually ON
+    // SCREEN, not just word.color - the "FOR THIS MOMENT" Emphasize accent
+    // (App.css's .emphasize-accent, !important-overriding the fill colour
+    // while this word is active) would otherwise leave the glow showing the
+    // word's base colour while the text itself has visibly swapped to the
+    // accent colour. Mirrors _write_ass's own word_tags, which resolves the
+    // same emphasize override before computing its glow_fill.
+    const displayColor = (active && word.emphasize) ? (activeVariant?.accent || "#EAB308") : word.color;
+    return `0px 0px ${blur.toFixed(2)}px ${hexToRgba(textStyle.glow_color || displayColor, textStyle.glow_opacity)}`;
   };
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
   const boxX = anchorWord?.pos_x ?? basePos.x;
