@@ -69,6 +69,14 @@ _COMMON_HINDI_ROMANIZATIONS = {
     "सब": "sab", "सभी": "sabhi", "कुछ": "kuch", "कोई": "koi", "हर": "har",
     "अपना": "apna", "अपनी": "apni", "अपने": "apne", "खुद": "khud",
     "एक": "ek", "दो": "do", "तीन": "teen",
+    "ऐसा": "aisa", "ऐसी": "aisi", "ऐसे": "aise", "वैसा": "vaisa", "वैसी": "vaisi",
+    "जैसा": "jaisa", "जैसी": "jaisi", "जैसे": "jaise", "कैसा": "kaisa", "कैसी": "kaisi",
+    "थोड़ा": "thoda", "थोड़ी": "thodi", "ज्यादा": "zyada", "ज़्यादा": "zyada",
+    "शायद": "shayad", "ज़रूर": "zaroor", "जरूर": "zaroor", "यार": "yaar",
+    "अभी": "abhi", "फिर": "phir", "सच": "sach", "झूठ": "jhooth", "पता": "pata",
+    "समय": "samay", "वक़्त": "waqt", "वक्त": "waqt", "बात": "baat", "काम": "kaam",
+    "दिन": "din", "रात": "raat", "घर": "ghar", "यहाँ": "yahan", "यहां": "yahan",
+    "वहाँ": "wahan", "वहां": "wahan",
 }
 
 
@@ -92,6 +100,30 @@ def _romanize_fallback(text):
     if natural is not None:
         return natural + cleaned[len(stripped):]
     return transliterate(cleaned, sanscript.DEVANAGARI, sanscript.OPTITRANS).lower()
+
+
+def _common_hindi_spelling(original_text):
+    """Looks _COMMON_HINDI_ROMANIZATIONS up directly against a word's raw
+    ASR source text (word.original, always Devanagari for Hindi speech) -
+    checked BEFORE GPT's own chosen romanization, not just as a fallback for
+    when GPT leaves a word in Devanagari. GPT can just as easily write its
+    OWN wrong spelling directly in Roman script (e.g. "maim" for मैं,
+    "maam"/"isa" and other near-misses) as it can skip romanizing a word
+    entirely - that output never contains Devanagari, so _romanize_fallback
+    above never even sees it to correct it. These are the highest-frequency
+    words in ordinary Hindi speech, so forcing their one unambiguous
+    spelling - regardless of what GPT happened to output - costs nothing
+    and fixes the mistake GPT itself makes most often, without touching how
+    any other, more context-dependent word gets romanized."""
+    if not original_text:
+        return None
+    cleaned = original_text.strip()
+    stripped = cleaned.rstrip(".,!?\"'।॥")
+    natural = _COMMON_HINDI_ROMANIZATIONS.get(stripped)
+    if natural is None:
+        return None
+    trailing = cleaned[len(stripped):].replace("।", ".").replace("॥", ".")
+    return natural + trailing
 
 
 def _as_dict(value):
@@ -522,17 +554,20 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         logger.warning("Hinglish conversion dropped %d/%d word indices", len(missing), len(words))
     for word in words:
         item = converted.get(word["index"], {})
-        # _romanize_fallback was previously only reached when GPT returned
-        # nothing for a word (a dropped index) - but GPT can just as easily
-        # ignore the "Roman only" instruction and hand back a word's text
-        # IN Devanagari instead of leaving it empty, which skipped the
-        # fallback entirely and let native script leak straight into the
-        # field every part of the app (transcript, canvas, Timeline, export)
-        # treats as pure-Roman Hinglish. Routing the chosen text through
-        # _romanize_fallback unconditionally closes that gap - it's a no-op
-        # for text that's already Roman (checked internally), so this is
-        # never lossy for the common case.
-        word["text"] = _romanize_fallback(str(item.get("text") or word["original"]).strip())
+        # Precedence: (1) _common_hindi_spelling checked against the real
+        # ASR source FIRST and, when it matches, wins outright - GPT can
+        # misspell one of these high-frequency words in Roman script just as
+        # easily as it can leave it in Devanagari (e.g. writing "maim" for
+        # मैं directly), and that output never contains Devanagari for
+        # _romanize_fallback below to ever catch and correct. (2) Otherwise,
+        # GPT's own chosen text, or the raw source text if GPT dropped this
+        # index - routed through _romanize_fallback unconditionally (a no-op
+        # for text that's already Roman) so Devanagari GPT hands back
+        # instead of romanizing never leaks into word.text, the field every
+        # part of the app (transcript, canvas, Timeline, export) treats as
+        # pure-Roman Hinglish.
+        word["text"] = (_common_hindi_spelling(word["original"])
+                        or _romanize_fallback(str(item.get("text") or word["original"]).strip()))
         emphasis = item.get("emphasis")
         if emphasis not in {"support", "feature", "key"}:
             emphasis = "support"
