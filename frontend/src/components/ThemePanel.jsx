@@ -202,7 +202,7 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
         </label>
         <label className="control-label" data-testid="background-opacity-label">Box opacity <b>{Math.round(textStyle.background_opacity * 100)}%</b></label>
         <Slider min={0.1} max={1} step={0.05} value={[textStyle.background_opacity]} onValueChange={([v]) => onTextStyle({ background_opacity: v })} data-testid="background-opacity-slider" />
-        <p className="panel-note" data-testid="background-note">A solid box behind each caption line. Outline and Shadow turn off while a Background is on - an ASS export can't combine both.</p>
+        <p className="panel-note" data-testid="background-note">A solid box behind each caption line. Outline, Shadow and Glow turn off while a Background is on - an ASS export can't combine both.</p>
       </> : <>
         <label className="control-label" data-testid="outline-toggle-label">Outline</label>
         <div className="layout-grid two" data-testid="outline-toggle-selector">
@@ -233,6 +233,25 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
           <label className="control-label" data-testid="shadow-color-label"><span><Palette size={16} /> Shadow colour</span>
             <input type="color" value={textStyle.shadow_color} onChange={(e) => onTextStyle({ shadow_color: e.target.value })} data-testid="shadow-color-input" />
           </label>
+        </>}
+        <label className="control-label" data-testid="glow-toggle-label">Glow</label>
+        <div className="layout-grid two" data-testid="glow-toggle-selector">
+          <button className={!textStyle.glow_enabled ? "active" : ""} onClick={() => onTextStyle({ glow_enabled: false })} data-testid="glow-off-button">Off</button>
+          <button className={textStyle.glow_enabled ? "active" : ""} onClick={() => onTextStyle({ glow_enabled: true })} data-testid="glow-on-button">On</button>
+        </div>
+        {textStyle.glow_enabled && <>
+          <label className="control-label" data-testid="glow-blur-label">Intensity <b>{textStyle.glow_blur}</b></label>
+          <Slider min={1} max={24} step={1} value={[textStyle.glow_blur]} onValueChange={([v]) => onTextStyle({ glow_blur: v })} data-testid="glow-blur-slider" />
+          <label className="control-label" data-testid="glow-opacity-label">Opacity <b>{Math.round(textStyle.glow_opacity * 100)}%</b></label>
+          <Slider min={0.1} max={1} step={0.05} value={[textStyle.glow_opacity]} onValueChange={([v]) => onTextStyle({ glow_opacity: v })} data-testid="glow-opacity-slider" />
+          <label className="control-label" data-testid="glow-color-mode-label">Glow colour</label>
+          <div className="layout-grid two" data-testid="glow-color-mode-selector">
+            <button className={textStyle.glow_color === null ? "active" : ""} onClick={() => onTextStyle({ glow_color: null })} data-testid="glow-color-auto-button">Word's own</button>
+            <button className={textStyle.glow_color !== null ? "active" : ""} onClick={() => onTextStyle({ glow_color: textStyle.glow_color || "#FFD400" })} data-testid="glow-color-custom-button">Custom</button>
+          </div>
+          {textStyle.glow_color !== null && <label className="control-label" data-testid="glow-color-label"><span><Palette size={16} /> Glow colour</span>
+            <input type="color" value={textStyle.glow_color} onChange={(e) => onTextStyle({ glow_color: e.target.value })} data-testid="glow-color-input" />
+          </label>}
         </>}
         {variant && <p className="panel-note" data-testid="caption-style-note">A selected Variant's own outline/shadow always takes priority over these.</p>}
       </>}

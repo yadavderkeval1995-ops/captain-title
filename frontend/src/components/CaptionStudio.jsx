@@ -238,6 +238,10 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     shadow_blur: initialProject.shadow_blur ?? 3,
     shadow_opacity: initialProject.shadow_opacity ?? 0.75,
     shadow_color: initialProject.shadow_color || "#000000",
+    glow_enabled: initialProject.glow_enabled ?? false,
+    glow_color: initialProject.glow_color ?? null,
+    glow_blur: initialProject.glow_blur ?? 8,
+    glow_opacity: initialProject.glow_opacity ?? 0.6,
     background_enabled: initialProject.background_enabled ?? false,
     background_color: initialProject.background_color || "#000000",
     background_opacity: initialProject.background_opacity ?? 0.6,
@@ -378,6 +382,18 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const dropShadowActive = textStyle.shadow_enabled && !textStyle.background_enabled
     ? `${(shadowOffsetX * previewScale).toFixed(2)}px ${(shadowOffsetY * previewScale).toFixed(2)}px ${((textStyle.shadow_blur + 3) * previewScale).toFixed(2)}px ${hexToRgba(textStyle.shadow_color, textStyle.shadow_opacity)}`
     : "none";
+  // Glow is a non-directional (0,0-offset) soft light, independent of
+  // Shadow - mirrors _write_ass's own separate glow Dialogue layer.
+  // glow_color=null means "use this word's own colour" (a self-coloured
+  // neon look, same convention variants' outline=null already uses) - that
+  // has to be resolved PER WORD (different words can have different
+  // colours), so unlike dropShadow/dropShadowActive this can't be computed
+  // once for the whole overlay.
+  const glowShadowFor = (word, active) => {
+    if (!textStyle.glow_enabled || textStyle.background_enabled) return null;
+    const blur = (active ? textStyle.glow_blur + 3 : textStyle.glow_blur) * previewScale;
+    return `0px 0px ${blur.toFixed(2)}px ${hexToRgba(textStyle.glow_color || word.color, textStyle.glow_opacity)}`;
+  };
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
   const boxX = anchorWord?.pos_x ?? basePos.x;
   const boxY = anchorWord?.pos_y ?? basePos.y;
@@ -824,12 +840,16 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
                     : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
                   const isActiveWord = activeIndex === word.index;
+                  // Glow can be a different colour per word (glow_color=null
+                  // means "use this word's own colour"), so it's combined
+                  // into an explicit per-word textShadow rather than left to
+                  // inherit from the overlay - Shadow's own entry comes along
+                  // for the ride so the two combine into one CSS value
+                  // instead of one replacing the other.
+                  const glowEntry = glowShadowFor(word, isActiveWord);
                   const style = { color: word.color, fontSize: `${Math.max(20, word.font_size * previewScale)}px`, fontFamily,
                                   fontWeight: bold && isBoldCapableFont(fontFamily) ? 800 : 400,
-                                  // Only the active word's shadow needs an explicit override (the
-                                  // blur-boosted "pop" version) - every other word just inherits the
-                                  // overlay's own textShadow via normal CSS inheritance.
-                                  ...(isActiveWord && !activeVariant ? { textShadow: dropShadowActive } : {}) };
+                                  ...(!activeVariant && (isActiveWord || glowEntry) ? { textShadow: [isActiveWord ? dropShadowActive : dropShadow, glowEntry].filter((v) => v && v !== "none").join(", ") || "none" } : {}) };
                   const className = [
                     isActiveWord ? "active" : "",
                     isActiveWord && word.kinetic ? `kinetic-${word.kinetic}` : "",

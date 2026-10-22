@@ -309,6 +309,16 @@ class ProjectEdit(BaseModel):
     shadow_blur: float = Field(default=3, ge=0, le=15)
     shadow_opacity: float = Field(default=0.75, ge=0, le=1)
     shadow_color: str = "#000000"
+    # A non-directional soft light around the glyph (no offset), distinct
+    # from Shadow - same two-layer-Dialogue mechanism, just drawn with
+    # xshad=yshad=0. glow_color=None means "use each word's own colour" (a
+    # self-coloured neon-style glow, mirroring VARIANTS' "glow" preset and
+    # its outline=None convention above) rather than one fixed colour for
+    # every word.
+    glow_enabled: bool = False
+    glow_color: str | None = None
+    glow_blur: float = Field(default=8, ge=0, le=24)
+    glow_opacity: float = Field(default=0.6, ge=0, le=1)
     background_enabled: bool = False
     background_color: str = "#000000"
     background_opacity: float = Field(default=0.6, ge=0, le=1)
@@ -517,6 +527,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "outline_enabled": True, "outline_width": 2, "outline_color": "#000000",
                    "shadow_enabled": True, "shadow_angle": 0, "shadow_distance": 3, "shadow_blur": 3,
                    "shadow_opacity": 0.75, "shadow_color": "#000000",
+                   "glow_enabled": False, "glow_color": None, "glow_blur": 8, "glow_opacity": 0.6,
                    "background_enabled": False, "background_color": "#000000", "background_opacity": 0.6,
                    "bold": True, "italic": False,
                    "words": [], "source_transcript": "",
@@ -566,6 +577,8 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "shadow_enabled": payload.shadow_enabled, "shadow_angle": payload.shadow_angle,
                   "shadow_distance": payload.shadow_distance, "shadow_blur": payload.shadow_blur,
                   "shadow_opacity": payload.shadow_opacity, "shadow_color": payload.shadow_color,
+                  "glow_enabled": payload.glow_enabled, "glow_color": payload.glow_color,
+                  "glow_blur": payload.glow_blur, "glow_opacity": payload.glow_opacity,
                   "background_enabled": payload.background_enabled,
                   "background_color": payload.background_color, "background_opacity": payload.background_opacity,
                   "bold": payload.bold, "italic": payload.italic,
@@ -841,6 +854,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                outline_enabled=True, outline_width=2, outline_color="#000000",
                shadow_enabled=True, shadow_angle=0, shadow_distance=3, shadow_blur=3,
                shadow_opacity=0.75, shadow_color="#000000",
+               glow_enabled=False, glow_color=None, glow_blur=8, glow_opacity=0.6,
                background_enabled=False, background_color="#000000", background_opacity=0.6):
     palette = THEMES.get(theme, THEMES["viral"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
@@ -868,6 +882,12 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     # top. Each layer only ever touches what it's actually supposed to blur.
     use_shadow_layer = not variant_config and not use_background and shadow_enabled
     shadow_x, shadow_y = _shadow_offset(shadow_angle, shadow_distance) if use_shadow_layer else (0, 0)
+    # Glow is the same two-layer trick as Shadow (its own, independently
+    # blurred Dialogue line) but with no offset - a soft, even light around
+    # the glyph rather than a directional drop shadow - and drawn even
+    # further back, so a caption can combine both (a tight shadow for
+    # grounding + a wide glow for pop) without either washing the other out.
+    use_glow_layer = not variant_config and not use_background and glow_enabled
     # Bold is NOT forced here at the Style level - see BOLD_CAPABLE_FONTS
     # above. word_tags() below applies \b1 per word, only for a family that
     # can actually back it up with a real face.
@@ -952,7 +972,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                            f"\\shad{variant_config['shad']}\\blur{base_blur}")
                 primary += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{base_blur + POP_BLUR_BOOST})"
                             f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{base_blur})")
-                return primary, None, font_size
+                return primary, None, None, font_size
 
             pop_scale_only = (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE})"
                               f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100)")
@@ -962,7 +982,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 # override here would resize the box per-word instead of
                 # drawing one consistent box per line).
                 primary = f"{base}\\c{_ass_color(color)}{bold_tag}" + pop_scale_only
-                return primary, None, font_size
+                return primary, None, None, font_size
 
             # Granular Outline (crisp, never blurred) + Shadow (its own,
             # independently blurred layer) system.
@@ -984,7 +1004,20 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                                f"\\shad0\\blur{shadow_blur}")
                 shadow_tags += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{shadow_blur + POP_BLUR_BOOST})"
                                 f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{shadow_blur})")
-            return primary, shadow_tags, font_size
+
+            glow_tags = None
+            if use_glow_layer:
+                # glow_color=None means "use this word's own colour" (a
+                # self-coloured neon glow) - resolved per word here, same
+                # convention as VARIANTS' outline=None above, since
+                # different words in one caption can have different colours.
+                glow_fill = _ass_color_alpha(glow_color or color, glow_opacity)
+                glow_bord = outline_width if outline_enabled else 1.2
+                glow_tags = (f"{base}\\c{glow_fill}{bold_tag}\\3c{glow_fill}\\bord{glow_bord}"
+                             f"\\shad0\\blur{glow_blur}")
+                glow_tags += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{glow_blur + POP_BLUR_BOOST})"
+                              f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{glow_blur})")
+            return primary, shadow_tags, glow_tags, font_size
 
         # Each row's height is driven by its own tallest word (after any
         # emphasize size bump), scaled by the same line-height the preview
@@ -995,7 +1028,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         row_heights = []
         for row in rows:
             sizes = [word_tags(word, (word.get("original") or word["text"])
-                                if script_mode == "native" else word["text"])[2] for word in row]
+                                if script_mode == "native" else word["text"])[3] for word in row]
             row_heights.append(max(sizes, default=52) * line_height)
         # Each row boundary can carry its own gap (the word starting row i+1's
         # own gap_before) instead of one uniform ROW_GAP_PX for the whole
@@ -1016,10 +1049,11 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             cumulative += row_heights[row_index] + (row_gaps[row_index] if row_index < len(row_gaps) else 0)
             word_parts = []
             shadow_parts = []
+            glow_parts = []
             for index, word in enumerate(row):
                 display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
                 safe = display_text.replace("{", "").replace("}", "")
-                primary_tags, shadow_tags, _ = word_tags(word, display_text)
+                primary_tags, shadow_tags, glow_tags, _ = word_tags(word, display_text)
                 if index == 0:
                     # \org pins the rotation pivot to the whole caption
                     # block's own center (not this row's own \pos) so a
@@ -1032,16 +1066,26 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                         shadow_frz = (f"\\org({round(center_x + shadow_x)},{round(center_y + shadow_y)})\\frz{rotation:g}"
                                      if rotation else "")
                         shadow_tags = f"\\an5\\pos({shadow_cx},{shadow_cy}){shadow_frz}" + shadow_tags
+                    if glow_tags is not None:
+                        # No offset - glow sits directly behind the primary
+                        # glyph, same \pos/\org as the primary layer.
+                        glow_tags = f"\\an5\\pos({center_x},{row_center_y}){frz}" + glow_tags
                 separator = " " if index > 0 else ""
                 word_parts.append(f"{separator}{{{primary_tags}}}{safe}")
                 if shadow_tags is not None:
                     shadow_parts.append(f"{separator}{{{shadow_tags}}}{safe}")
+                if glow_tags is not None:
+                    glow_parts.append(f"{separator}{{{glow_tags}}}{safe}")
             styled = "".join(word_parts)
-            # The shadow Dialogue line is emitted first, at a lower Layer
-            # (-1) than the primary caption text (Layer 0) - same "lower
-            # Layer number draws behind" convention _write_element_dialogue
-            # already uses for layer="behind" elements - so it composites
-            # underneath the crisp text it's meant to sit behind.
+            # Glow (Layer -2) draws first/furthest back, then Shadow
+            # (Layer -1), then the primary caption text (Layer 0) - same
+            # "lower Layer number draws behind" convention
+            # _write_element_dialogue already uses for layer="behind"
+            # elements - so each composites underneath what it's meant to
+            # sit behind.
+            if glow_parts:
+                lines.append(f"Dialogue: -2,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
+                             f"Default,,0,0,0,,{''.join(glow_parts)}\n")
             if shadow_parts:
                 lines.append(f"Dialogue: -1,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
                              f"Default,,0,0,0,,{''.join(shadow_parts)}\n")
@@ -1259,6 +1303,10 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
                   shadow_blur=project.get("shadow_blur", 3),
                   shadow_opacity=project.get("shadow_opacity", 0.75),
                   shadow_color=project.get("shadow_color", "#000000"),
+                  glow_enabled=project.get("glow_enabled", False),
+                  glow_color=project.get("glow_color"),
+                  glow_blur=project.get("glow_blur", 8),
+                  glow_opacity=project.get("glow_opacity", 0.6),
                   background_enabled=project.get("background_enabled", False),
                   background_color=project.get("background_color", "#000000"),
                   background_opacity=project.get("background_opacity", 0.6))
