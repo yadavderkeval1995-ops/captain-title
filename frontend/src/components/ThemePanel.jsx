@@ -130,8 +130,8 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
                              captionLines, onCaptionLines, captionPosition, onCaptionPosition,
                              selectedWord, onWordStyle, tab, onTab, variant, onVariant,
                              textStyle, onTextStyle, bold, onBold, italic, onItalic,
-                             hasActiveCaption, boxX, boxY, boxFontSize, boxRotation, boxLineHeight,
-                             onCaptionPos, onCaptionScale, onCaptionRotation, onCaptionLineHeight,
+                             hasActiveCaption, boxX, boxY, boxFontSize, boxRotation,
+                             onCaptionPos, onCaptionScale, onCaptionRotation,
                              onApplyTransformToAll, onResetTransform }) => {
   const activeTiers = templates.find((item) => item.id === theme)?.tiers;
   const isTiered = !!activeTiers;
@@ -294,9 +294,6 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
         <button className={selectedWord?.new_line === false ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: false })} data-testid="line-break-merge-button">Merge up</button>
         <button className={selectedWord?.new_line === true ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_line: true })} data-testid="line-break-split-button">Split here</button>
       </div>
-      <label className="control-label" data-testid="gap-before-label">Gap above this word's line <b data-testid="gap-before-value">{selectedWord?.gap_before ?? 2}px</b></label>
-      <Slider min={0} max={60} step={1} value={[selectedWord?.gap_before ?? 2]} disabled={!selectedWord} onValueChange={([value]) => onWordStyle({ gap_before: value })} data-testid="gap-before-slider" />
-      <p className="panel-note" data-testid="gap-before-note">Only visible when this word actually starts a new line - lets each line boundary in a multi-line caption have its own spacing.</p>
       <label className="control-label" data-testid="caption-break-label">Caption split before this word</label>
       <div className="layout-grid three" data-testid="caption-break-selector">
         <button className={(selectedWord?.new_caption ?? null) === null ? "active" : ""} disabled={!selectedWord} onClick={() => onWordStyle({ new_caption: null })} data-testid="caption-break-auto-button">Auto</button>
@@ -323,9 +320,6 @@ export const ThemePanel = ({ theme, onTheme, fontId, onFont, wordsPerCaption, on
 
       <label className="control-label" data-testid="transform-rotation-label">Rotation <b data-testid="transform-rotation-value">{Math.round(boxRotation)}&deg;</b></label>
       <Slider min={-45} max={45} step={1} value={[boxRotation]} disabled={!hasActiveCaption} onValueChange={([value]) => onCaptionRotation(value)} data-testid="transform-rotation-slider" />
-
-      <label className="control-label" data-testid="transform-line-height-label">Line height <b data-testid="transform-line-height-value">{boxLineHeight.toFixed(2)}</b></label>
-      <Slider min={0.8} max={2.0} step={0.05} value={[boxLineHeight]} disabled={!hasActiveCaption} onValueChange={([value]) => onCaptionLineHeight(value)} data-testid="transform-line-height-slider" />
 
       <div className="tool-divider" />
       <div className="layout-grid two" data-testid="transform-actions">

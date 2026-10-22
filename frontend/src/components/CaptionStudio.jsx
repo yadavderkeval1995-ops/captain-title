@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { BookmarkSimple, ChatCircle, DotsThreeVertical, DownloadSimple, FileText, FloppyDisk, FrameCorners, Heart, Play, Share, SpinnerGap } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { api, API_ROOT, errorMessage } from "@/lib/api";
@@ -62,6 +62,16 @@ const MAX_WORDS_PER_LINE = 3;
 const MAX_GROUP_GAP = 0.4;
 const SENTENCE_END_CHARS = ".!?।॥"; // includes Devanagari danda/double danda
 const POSITION_DEFAULTS = { top: { x: 50, y: 14 }, middle: { x: 50, y: 50 }, bottom: { x: 50, y: 80 } };
+// Fixed CSS line-height for stacked caption rows - calibrated (not guessed)
+// against the export's own native `\N` line spacing in libass: rendered the
+// same multi-row caption at several font-size pairs through both engines and
+// solved for the multiplier that makes the browser's line-box leading match
+// libass's native \N gap at every size tested (~1.46-1.50 across very
+// different pairs, e.g. 38/56 and 30/70) - not a per-caption editable
+// value, since nothing on the export side reads a line-height multiplier
+// any more (libass's \N spacing is native, not computed) and an editable
+// preview-only number would just drift back out of sync with it.
+const NATIVE_LINE_HEIGHT = 1.47;
 
 // Per-handle resize behaviour: which sign of the mouse delta on each axis
 // grows the box, and whether that axis is touched at all by this handle.
@@ -407,7 +417,6 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const boxY = anchorWord?.pos_y ?? basePos.y;
   const boxFontSize = anchorWord?.font_size ?? 66;
   const boxRotation = anchorWord?.rotation ?? 0;
-  const boxLineHeight = anchorWord?.line_height ?? 1.1;
 
   const updateWord = (index, changes) => setWords((current) => current.map((word, i) => i === index ? { ...word, ...changes } : word));
   // Script panel popover: toggle a manual caption-line break before this word.
@@ -621,7 +630,6 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
       ? { ...word, font_size: Math.min(120, Math.max(16, Math.round(word.font_size * ratio))) } : word));
   };
   const setCaptionRotation = (deg) => transformThisCaption({ rotation: deg });
-  const setCaptionLineHeight = (value) => transformThisCaption({ line_height: value });
   // Direct drag-to-move on the caption box itself, alongside the Transform
   // panel's Position sliders - commits straight to this caption's pos_x/
   // pos_y on every move (no separate preview/commit step or this/all scope
@@ -693,19 +701,19 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
-  // Broadcasts THIS caption's current position/rotation/line-height/size to
-  // every caption in the project - same "every word, uniformly" semantics
-  // the old resize-handle's "All captions" scope button already used for
+  // Broadcasts THIS caption's current position/rotation/size to every
+  // caption in the project - same "every word, uniformly" semantics the
+  // old resize-handle's "All captions" scope button already used for
   // font_size, just extended to the new Transform panel fields too.
   const applyTransformToAll = () => {
-    const changes = { pos_x: boxX, pos_y: boxY, rotation: boxRotation || null, line_height: boxLineHeight, font_size: boxFontSize };
+    const changes = { pos_x: boxX, pos_y: boxY, rotation: boxRotation || null, font_size: boxFontSize };
     setWords((current) => current.map((word) => ({ ...word, ...changes })));
   };
   const resetTransform = () => {
     if (!visibleWords.length) return;
     const indices = new Set(visibleWords.map((word) => word.index));
     setWords((current) => current.map((word) => indices.has(word.index)
-      ? { ...word, pos_x: null, pos_y: null, rotation: null, line_height: null, box_width: null, box_height: null,
+      ? { ...word, pos_x: null, pos_y: null, rotation: null, box_width: null, box_height: null,
           font_size: word.important ? 76 : 66 }
       : word));
   };
@@ -817,7 +825,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
             </div>}
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%`,
-                      transform: `translate(-50%,-50%) rotate(${boxRotation}deg)`, lineHeight: boxLineHeight,
+                      transform: `translate(-50%,-50%) rotate(${boxRotation}deg)`, lineHeight: NATIVE_LINE_HEIGHT,
                       fontStyle: italic ? "italic" : "normal",
                       // Granular Outline/Shadow/Background, independent of
                       // theme/variant - a variant's own stroke/shadow design
@@ -830,17 +838,31 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                       ...(!activeVariant ? { WebkitTextStroke: outlineStroke, textShadow: dropShadow } : {}),
                       ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
               onMouseDown={startCaptionDrag} data-testid="live-caption-preview">
-              {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <div className="caption-row" key={rowIndex}
-                style={{ ...(rowIndex > 0 ? { marginTop: `${(row[0].gap_before ?? 2) * previewScale}px` } : {}),
-                        // The export's background box (BorderStyle=3) is
-                        // drawn per ASS Dialogue line, and each row IS its
-                        // own Dialogue line (_write_ass emits one per row) -
-                        // so a per-row box here matches it exactly, rather
-                        // than one box wrapping the whole multi-line block.
-                        ...(!activeVariant && textStyle.background_enabled
-                          ? { backgroundColor: hexToRgba(textStyle.background_color, textStyle.background_opacity),
-                              padding: "4px 14px", borderRadius: "4px" } : {}) }}>
-                {row.map((word) => {
+              {/* Plain text flow with a literal line break between rows -
+                  no per-row wrapper <div> with hand-computed margins. A
+                  browser lays out stacked lines of text using each line's
+                  own natural metrics (its line-height against its own
+                  tallest inline content), exactly the way libass stacks
+                  \N-separated lines in the export - two different custom
+                  height formulas approximating that (one in JS, one in
+                  Python) were exactly what drifted apart. Letting the
+                  browser do what it already does natively is what actually
+                  keeps this matching the export, not a closer-but-still-
+                  custom approximation of it. */}
+              {splitIntoRows(visibleWords, tiers, captionLines).map((row, rowIndex) => <Fragment key={rowIndex}>
+                {rowIndex > 0 && <br />}
+                {/* BorderStyle=3's opaque box in libass draws around each
+                    \N-separated VISUAL LINE on its own, not one box around
+                    the whole multi-line Dialogue - so the background box
+                    lives on a per-row wrapper (a sibling of the <br/>
+                    above, not nesting it) rather than the whole overlay,
+                    matching that line-by-line behaviour exactly instead of
+                    a single box the export never actually draws. */}
+                <span style={!activeVariant && textStyle.background_enabled
+                  ? { backgroundColor: hexToRgba(textStyle.background_color, textStyle.background_opacity),
+                      padding: "2px 10px", borderRadius: "3px", boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" }
+                  : undefined}>
+                {row.map((word, wordIndex) => {
                   // Color/size always come from the word itself (editable,
                   // defaulted from the theme at generation/theme-switch
                   // time) - a tiered theme only still decides the font.
@@ -863,11 +885,15 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     isActiveWord && word.kinetic ? `kinetic-${word.kinetic}` : "",
                     isActiveWord && word.emphasize ? "emphasize-accent" : "",
                   ].filter(Boolean).join(" ");
-                  return <span key={word.index} className={className} style={style}
-                    onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
-                    data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>;
+                  return <span key={word.index}>
+                    {wordIndex > 0 && " "}
+                    <span className={className} style={style}
+                      onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
+                      data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>
+                  </span>;
                 })}
-              </div>)}
+                </span>
+              </Fragment>)}
               <div className="selection-box">
                 {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResize(pos)} data-testid={`caption-resize-handle-${pos}`} />)}
               </div>
@@ -911,9 +937,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           textStyle={textStyle} onTextStyle={updateTextStyle}
           bold={bold} onBold={setBold} italic={italic} onItalic={setItalic}
           hasActiveCaption={visibleWords.length > 0}
-          boxX={boxX} boxY={boxY} boxFontSize={boxFontSize} boxRotation={boxRotation} boxLineHeight={boxLineHeight}
+          boxX={boxX} boxY={boxY} boxFontSize={boxFontSize} boxRotation={boxRotation}
           onCaptionPos={setCaptionPos} onCaptionScale={setCaptionScale}
-          onCaptionRotation={setCaptionRotation} onCaptionLineHeight={setCaptionLineHeight}
+          onCaptionRotation={setCaptionRotation}
           onApplyTransformToAll={applyTransformToAll} onResetTransform={resetTransform} />
       </div>
       {momentPopover != null && words[momentPopover] && <MomentPopover

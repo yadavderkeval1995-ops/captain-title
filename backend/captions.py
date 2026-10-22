@@ -174,13 +174,6 @@ class WordEdit(BaseModel):
     # template, or the midpoint for a plain two-line template) - True/False
     # is an explicit manual override from a merge/split edit.
     new_line: bool | None = None
-    # The vertical gap (px, at the 1080x1920 canvas scale ROW_GAP_PX uses)
-    # ABOVE this word's row, when it starts one - None means "use the
-    # project default" (ROW_GAP_PX). Lets each line boundary in a multi-line
-    # caption get its own spacing instead of one uniform gap for the whole
-    # block (e.g. a tighter gap between the bottom two lines than between
-    # the top two).
-    gap_before: float | None = Field(default=None, ge=0, le=60)
     # None means "auto" (size to content, as before). A concrete value is a
     # percentage of canvas width/height for an explicit box size set by
     # dragging a resize handle in the editor. Editor-side only for now - the
@@ -191,11 +184,6 @@ class WordEdit(BaseModel):
     # caption's whole box around its own center point (the same point \pos
     # anchors on, via \an5), set by the Transform panel's Rotation slider.
     rotation: float | None = Field(default=None, ge=-45, le=45)
-    # None means "use the project default line spacing" (LINE_HEIGHT in
-    # captions.py / App.css's .caption-overlay). A concrete value is a
-    # multiplier on each row's own tallest word, same role LINE_HEIGHT plays
-    # - set by the Transform panel's Line Height slider.
-    line_height: float | None = Field(default=None, ge=0.8, le=2.0)
     # None means "auto grouping" (the heuristics in _group_words_for_display
     # decide where one caption/display-group ends and the next begins).
     # True forces a new group to start at this word (a manual "Split at
@@ -744,19 +732,6 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
 # 1080x1920 canvas) - the point the whole caption block (every row of it) is
 # centered on, same as the preview's `top:${boxY}%; transform:translate(-50%,-50%)`.
 POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 80)}
-# Matches .caption-overlay's CSS line-height:1.25 and gap:2px - used to stack
-# a multi-row caption's lines tightly, growing evenly in both directions
-# from the block's own center, instead of libass's own (much taller) default
-# inter-line spacing for a `\N` break, which is what produced the oversized
-# gap between lines that the single-Dialogue-with-\N approach had. Kept
-# tight (not the 1.25 this briefly was) because row height already scales
-# with each row's own tallest word - a row holding an emphasized/bigger
-# word was getting a proportionally huge extra margin on top of its own
-# bigger font, which is what actually produced the "massive gap" between
-# lines of very different sizes. 1.1 still leaves a little headroom for
-# Devanagari matras (ि, े, ै, ं) without that compounding effect.
-LINE_HEIGHT = 1.1
-ROW_GAP_PX = 2
 # "Active word" pop timing/scale - mirrors .caption-overlay span.active's
 # transform:scale(1.1) plus its brighter glow, animated in and back out
 # over the word's own speaking window via ASS \t() transform tags.
@@ -782,14 +757,6 @@ def _group_rotation(group):
     """The Transform panel's Rotation slider, set per-caption on the
     group's anchor (first) word - None/0 means no rotation."""
     return group[0].get("rotation") or 0
-
-
-def _group_line_height(group):
-    """The Transform panel's Line Height slider, set per-caption on the
-    group's anchor (first) word - None means "use the project default"
-    (LINE_HEIGHT), same multiplier App.css's .caption-overlay falls back
-    to in the preview."""
-    return group[0].get("line_height") or LINE_HEIGHT
 
 
 def _split_rows(group, breaks):
@@ -912,7 +879,11 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     else:
         border_style_field, outline_field, shadow_field = 1, 0, 0
         outline_colour_field, back_colour_field = "&H00000000", "&H80000000"
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,{outline_colour_field},{back_colour_field},0,{italic_field},0,0,100,100,0,0,{border_style_field},{outline_field},{shadow_field},2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
+    # WrapStyle 2: no automatic word-wrap, only our own explicit \N breaks
+    # (from _resolve_line_breaks/_split_rows below) are ever honoured - we
+    # decide line breaks ourselves and don't want libass silently adding
+    # its own if a line happens to run long.
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,{outline_colour_field},{back_colour_field},0,{italic_field},0,0,100,100,0,0,{border_style_field},{outline_field},{shadow_field},2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
     shadow_alpha_lines, shadow_color_lines = [], []
     glow_alpha_lines, glow_color_lines = [], []
@@ -921,7 +892,6 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     for group in groups:
         center_x, center_y = _group_center(group, caption_position)
         rotation = _group_rotation(group)
-        line_height = _group_line_height(group)
         breaks = _resolve_line_breaks(group, tiers, caption_lines)
         rows = _split_rows(group, breaks)
 
@@ -1025,62 +995,58 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 glow_color_tags = f"\\c{_ass_color(glow_color or color)}{mask_base}"
             return primary, shadow_alpha_tags, shadow_color_tags, glow_alpha_tags, glow_color_tags, font_size
 
-        # Each row's height is driven by its own tallest word (after any
-        # emphasize size bump), scaled by the same line-height the preview
-        # uses - so a multi-row caption's rows stack tightly and grow evenly
-        # from the block's own center, the same way the preview's flex
-        # column layout does, instead of libass's own (much taller) default
-        # spacing for a `\N`-joined line.
-        row_heights = []
-        for row in rows:
-            sizes = [word_tags(word, (word.get("original") or word["text"])
-                                if script_mode == "native" else word["text"])[5] for word in row]
-            row_heights.append(max(sizes, default=52) * line_height)
-        # Each row boundary can carry its own gap (the word starting row i+1's
-        # own gap_before) instead of one uniform ROW_GAP_PX for the whole
-        # block - lets e.g. the gap between the bottom two lines differ from
-        # the gap between the top two.
-        # `or` would silently discard an explicit gap_before=0 (0 is falsy
-        # in Python) and fall back to ROW_GAP_PX anyway - an "is not None"
-        # check is what pos_x/pos_y already correctly use one function up
-        # (_group_center) for the same "None means unset" convention.
-        row_gaps = [rows[i + 1][0].get("gap_before") if rows[i + 1][0].get("gap_before") is not None else ROW_GAP_PX
-                    for i in range(len(rows) - 1)]
-        total_height = sum(row_heights) + sum(row_gaps)
-        row_top = center_y - total_height / 2
-
-        cumulative = 0.0
+        # One Dialogue line per caption group, rows joined by \N instead of
+        # each row getting its own manually-computed \pos - libass stacks
+        # \N-separated lines using the font's own native metrics (each
+        # line's own tallest run, same as a browser's line box), the same
+        # thing CaptionStudio.jsx's CSS line-height now relies on too. That
+        # fixes a real, measured gap: the old per-row "font_size * 1.1,
+        # centered by hand" approximation and a browser's own line-box
+        # layout don't distribute a line's space above/below the glyph ink
+        # the same way, so rows could end up visibly farther apart in the
+        # export even when the TOTAL block height matched the preview's.
+        # Letting libass and the browser each use their own native line
+        # layout (rather than our own two different hand-rolled
+        # approximations of it) is what actually gets them to agree.
+        word_parts = []
+        shadow_alpha_parts, shadow_color_parts = [], []
+        glow_alpha_parts, glow_color_parts = [], []
+        first_word = True
         for row_index, row in enumerate(rows):
-            row_center_y = round(row_top + cumulative + row_heights[row_index] / 2)
-            cumulative += row_heights[row_index] + (row_gaps[row_index] if row_index < len(row_gaps) else 0)
-            word_parts = []
-            shadow_alpha_parts, shadow_color_parts = [], []
-            glow_alpha_parts, glow_color_parts = [], []
+            if row_index > 0:
+                word_parts.append("\\N")
+                if use_shadow_layer:
+                    shadow_alpha_parts.append("\\N")
+                    shadow_color_parts.append("\\N")
+                if use_glow_layer:
+                    glow_alpha_parts.append("\\N")
+                    glow_color_parts.append("\\N")
             for index, word in enumerate(row):
                 display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
                 safe = display_text.replace("{", "").replace("}", "")
                 primary_tags, shadow_alpha_tags, shadow_color_tags, glow_alpha_tags, glow_color_tags, _ = \
                     word_tags(word, display_text)
-                if index == 0:
+                if first_word:
                     # \org pins the rotation pivot to the whole caption
-                    # block's own center (not this row's own \pos) so a
-                    # multi-row caption rotates as one rigid block instead
-                    # of each row spinning independently around itself.
+                    # block's own center so a multi-row caption rotates as
+                    # one rigid block - with everything now anchored by a
+                    # single \pos for the whole \N-joined block, \org and
+                    # \pos are simply the same point.
                     frz = f"\\org({center_x},{center_y})\\frz{rotation:g}" if rotation else ""
-                    primary_tags = f"\\an5\\pos({center_x},{row_center_y}){frz}" + primary_tags
+                    primary_tags = f"\\an5\\pos({center_x},{center_y}){frz}" + primary_tags
                     if shadow_alpha_tags is not None:
-                        shadow_cx, shadow_cy = round(center_x + shadow_x), round(row_center_y + shadow_y)
-                        shadow_frz = (f"\\org({round(center_x + shadow_x)},{round(center_y + shadow_y)})\\frz{rotation:g}"
-                                     if rotation else "")
+                        shadow_cx, shadow_cy = round(center_x + shadow_x), round(center_y + shadow_y)
+                        shadow_frz = f"\\org({shadow_cx},{shadow_cy})\\frz{rotation:g}" if rotation else ""
                         shadow_pos = f"\\an5\\pos({shadow_cx},{shadow_cy}){shadow_frz}"
                         shadow_alpha_tags = shadow_pos + shadow_alpha_tags
                         shadow_color_tags = shadow_pos + shadow_color_tags
                     if glow_alpha_tags is not None:
                         # No offset - glow sits directly behind the primary
                         # glyph, same \pos/\org as the primary layer.
-                        glow_pos = f"\\an5\\pos({center_x},{row_center_y}){frz}"
+                        glow_pos = f"\\an5\\pos({center_x},{center_y}){frz}"
                         glow_alpha_tags = glow_pos + glow_alpha_tags
                         glow_color_tags = glow_pos + glow_color_tags
+                    first_word = False
                 separator = " " if index > 0 else ""
                 word_parts.append(f"{separator}{{{primary_tags}}}{safe}")
                 if shadow_alpha_tags is not None:
@@ -1089,15 +1055,14 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 if glow_alpha_tags is not None:
                     glow_alpha_parts.append(f"{separator}{{{glow_alpha_tags}}}{safe}")
                     glow_color_parts.append(f"{separator}{{{glow_color_tags}}}{safe}")
-            lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
-                         f"Default,,0,0,0,,{''.join(word_parts)}\n")
-            dialogue_time = f"{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])}"
-            if shadow_alpha_parts:
-                shadow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_alpha_parts)}\n")
-                shadow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_color_parts)}\n")
-            if glow_alpha_parts:
-                glow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_alpha_parts)}\n")
-                glow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_color_parts)}\n")
+        dialogue_time = f"{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])}"
+        lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(word_parts)}\n")
+        if shadow_alpha_parts:
+            shadow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_alpha_parts)}\n")
+            shadow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_color_parts)}\n")
+        if glow_alpha_parts:
+            glow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_alpha_parts)}\n")
+            glow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_color_parts)}\n")
     for element in (elements or []):
         if element["end"] > element["start"]:
             lines.append(_write_element_dialogue(element))
