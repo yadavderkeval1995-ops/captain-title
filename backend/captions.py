@@ -126,6 +126,17 @@ DEVANAGARI_CAPABLE_FONTS = {
     DEVANAGARI_FONT, "Noto Sans Devanagari Black", "Baloo 2 ExtraBold", "Hind",
     "Mukta ExtraBold", "Rozha One", "Yatra One", "Tiro Devanagari Hindi", "Kalam",
 }
+# Every bundled font (backend/fonts/) that actually has a second, genuinely
+# bolder weight file of its own - everything else is bundled as a single
+# weight (often already a Bold/ExtraBold/Black cut by name, just not paired
+# with a lighter sibling file). Requesting \b1 on one of those asks
+# fontconfig/libass for a bolder face that doesn't exist, which it answers
+# by synthetically embossing the existing glyphs - a visibly different,
+# slightly outlined look from how a browser's own font-synthesis renders
+# the same request in the live preview. Keying the Bold toggle off this set
+# (checked per-word by the actual chosen family, not a single project-wide
+# Style flag) means a word only ever gets a REAL bold face, or none at all.
+BOLD_CAPABLE_FONTS = {"Poppins", "Caveat"}
 _DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
 
 
@@ -783,9 +794,11 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     # at all. Each word below gets its own explicit \\bord/\\shad/\\blur
     # tag instead, so the export can replicate that same soft-glow look
     # (or a variant's own distinct outline) exactly, word by word.
-    bold_field = -1 if bold else 0
+    # Bold is NOT forced here at the Style level any more - see
+    # BOLD_CAPABLE_FONTS above. word_tags() below applies \b1 per word,
+    # only for a family that can actually back it up with a real face.
     italic_field = -1 if italic else 0
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,{bold_field},{italic_field},0,0,100,100,0,0,1,0,0,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,0,{italic_field},0,0,100,100,0,0,1,0,0,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
     groups = _group_words_for_display(words, max_words=words_per_caption or 3,
                                       strict_count=words_per_caption is not None)
@@ -831,6 +844,8 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             # text run within the same Dialogue line, which would let one
             # word's still-finishing pop bleed into the next word's.
             tags = f"\\fn{family}\\c{_ass_color(color)}\\fs{font_size}\\fscx100\\fscy100"
+            if bold and family in BOLD_CAPABLE_FONTS:
+                tags += "\\b1"
             if variant_config:
                 outline_hex = variant_config["outline"] or color
                 base_blur = variant_config["blur"]

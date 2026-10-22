@@ -76,6 +76,18 @@ const RESIZE_HANDLES = {
   ml: { x: -1, y: 0 }, mr: { x: 1, y: 0 },
   bl: { x: -1, y: 1 }, bc: { x: 0, y: 1 }, br: { x: 1, y: 1 },
 };
+// Mirrors backend/captions.py's BOLD_CAPABLE_FONTS: only Poppins and Caveat
+// are bundled with a real separate bold weight file for export - every
+// other font is a single bundled weight (often already Bold/ExtraBold/Black
+// by name). Requesting font-weight:800 on one of those makes the BROWSER
+// synthesize a bolder face the same way libass/fontconfig would for the
+// export, which looks different from either's take on a genuine bold face -
+// and different from each other, which is exactly the preview/export
+// mismatch this avoids by simply never asking for synthetic bold anywhere.
+function isBoldCapableFont(family) {
+  return family.includes("Poppins") || family.includes("Caveat");
+}
+
 function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
 function aspectLabel(width, height) {
   const divisor = gcd(width, height) || 1;
@@ -172,6 +184,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [relistening, setRelistening] = useState(false);
   const [mediaRetry, setMediaRetry] = useState(0);
   const [leftTab, setLeftTab] = useState("captions");
+  // Shown right after a direct drag/resize on the canvas box releases -
+  // the move/resize has ALREADY been committed to this caption by then
+  // (no preview/commit split needed any more), so this is purely an
+  // optional one-tap shortcut to also broadcast it to every caption,
+  // not a gate gating anything. Dismissing it (Escape/outside click/
+  // "This caption") just closes it - there's nothing to revert.
+  const [scopePrompt, setScopePrompt] = useState(false);
   const [elements, setElements] = useState(initialProject.elements || []);
   const [selectedElementId, setSelectedElementId] = useState(null);
   const [audioVolume, setAudioVolume] = useState(initialProject.audio_volume ?? 100);
@@ -556,6 +575,41 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (dragMovedRef.current) setScopePrompt(true);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+  // Direction-aware resize handles around the caption box - tc/bc only
+  // touch height, ml/mr only touch width, corners touch both. Resizing
+  // scales this caption's font_size (same field + same clamp the Transform
+  // panel's own Scale slider writes to - setCaptionScale), not a separate
+  // box-dimension field, so the two controls always agree on what "size"
+  // means for a caption.
+  const startResize = (handle) => (e) => {
+    if (!visibleWords.length) return;
+    e.preventDefault(); e.stopPropagation();
+    const overlayEl = e.currentTarget.closest(".caption-overlay");
+    const overlayRect = overlayEl.getBoundingClientRect();
+    const startWidthPx = overlayRect.width, startHeightPx = overlayRect.height;
+    const startClientX = e.clientX, startClientY = e.clientY;
+    const startFontSize = boxFontSize;
+    const dir = RESIZE_HANDLES[handle];
+    let moved = false;
+    const onMove = (moveEvent) => {
+      moved = true;
+      const dx = moveEvent.clientX - startClientX;
+      const dy = moveEvent.clientY - startClientY;
+      const widthTouched = dir.x !== 0, heightTouched = dir.y !== 0;
+      const nextWidthPx = widthTouched ? Math.max(40, startWidthPx + dx * dir.x * 2) : startWidthPx;
+      const nextHeightPx = heightTouched ? Math.max(20, startHeightPx + dy * dir.y * 2) : startHeightPx;
+      const scale = Math.sqrt((nextWidthPx * nextHeightPx) / (startWidthPx * startHeightPx));
+      setCaptionScale(Math.round(startFontSize * scale));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (moved) setScopePrompt(true);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -576,6 +630,19 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           font_size: word.important ? 76 : 66 }
       : word));
   };
+  // Escape or a click outside the prompt/box just dismisses it - the
+  // drag/resize it followed already committed to this caption, so there's
+  // nothing to revert, only the optional "also broadcast" offer to close.
+  useEffect(() => {
+    if (!scopePrompt) return undefined;
+    const onKeyDown = (e) => { if (e.key === "Escape") setScopePrompt(false); };
+    const onMouseDown = (e) => {
+      if (!e.target.closest(".position-scope-prompt") && !e.target.closest(".caption-overlay")) setScopePrompt(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onMouseDown);
+    return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("mousedown", onMouseDown); };
+  }, [scopePrompt]);
 
   // Elements are standalone stickers (not word-synced cues), so a drag or
   // resize applies straight to that one element - no "this/all" scope
@@ -672,7 +739,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
             {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%`,
                       transform: `translate(-50%,-50%) rotate(${boxRotation}deg)`, lineHeight: boxLineHeight,
-                      fontWeight: bold ? 800 : 400, fontStyle: italic ? "italic" : "normal",
+                      fontStyle: italic ? "italic" : "normal",
                       // "Outlined" text style: a bold black stroke + offset
                       // shadow, independent of theme/variant - a variant's
                       // own stroke/shadow design always wins when one is
@@ -689,7 +756,8 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   const fontFamily = activeVariant ? activeVariant.fontFamily : tiers
                     ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
                     : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
-                  const style = { color: word.color, fontSize: `${Math.max(20, word.font_size * previewScale)}px`, fontFamily };
+                  const style = { color: word.color, fontSize: `${Math.max(20, word.font_size * previewScale)}px`, fontFamily,
+                                  fontWeight: bold && isBoldCapableFont(fontFamily) ? 800 : 400 };
                   const isActiveWord = activeIndex === word.index;
                   const className = [
                     isActiveWord ? "active" : "",
@@ -701,6 +769,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>;
                 })}
               </div>)}
+              <div className="selection-box">
+                {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResize(pos)} data-testid={`caption-resize-handle-${pos}`} />)}
+              </div>
+            </div>}
+            {scopePrompt && <div className="position-scope-prompt" style={{ left: `${boxX}%`, top: `${Math.min(92, boxY + 8)}%` }} data-testid="position-scope-prompt">
+              <button onClick={() => setScopePrompt(false)} data-testid="apply-this-caption-button">This caption</button>
+              <button onClick={() => { applyTransformToAll(); setScopePrompt(false); }} data-testid="apply-all-captions-button">All captions</button>
             </div>}
             {elements.filter((item) => currentTime >= item.start && currentTime <= item.end).map((item) => {
               const interactive = leftTab === "elements" || leftTab === "text";

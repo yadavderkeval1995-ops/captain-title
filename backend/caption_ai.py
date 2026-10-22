@@ -465,7 +465,17 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         logger.warning("Hinglish conversion dropped %d/%d word indices", len(missing), len(words))
     for word in words:
         item = converted.get(word["index"], {})
-        word["text"] = str(item.get("text") or _romanize_fallback(word["original"])).strip()
+        # _romanize_fallback was previously only reached when GPT returned
+        # nothing for a word (a dropped index) - but GPT can just as easily
+        # ignore the "Roman only" instruction and hand back a word's text
+        # IN Devanagari instead of leaving it empty, which skipped the
+        # fallback entirely and let native script leak straight into the
+        # field every part of the app (transcript, canvas, Timeline, export)
+        # treats as pure-Roman Hinglish. Routing the chosen text through
+        # _romanize_fallback unconditionally closes that gap - it's a no-op
+        # for text that's already Roman (checked internally), so this is
+        # never lossy for the common case.
+        word["text"] = _romanize_fallback(str(item.get("text") or word["original"]).strip())
         emphasis = item.get("emphasis")
         if emphasis not in {"support", "feature", "key"}:
             emphasis = "support"
