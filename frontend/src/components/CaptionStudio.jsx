@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { BookmarkSimple, ChatCircle, DotsThreeVertical, DownloadSimple, FileText, FloppyDisk, FrameCorners, Heart, Play, Share, SpinnerGap } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { api, API_ROOT, errorMessage } from "@/lib/api";
-import { ThemePanel, templates, fonts, variants } from "@/components/ThemePanel";
+import { ThemePanel, templates, fonts } from "@/components/ThemePanel";
 import { TranscriptPanel } from "@/components/TranscriptPanel";
 import { Timeline } from "@/components/Timeline";
 import { LeftRail } from "@/components/LeftRail";
@@ -15,8 +15,6 @@ import { AiToolsPanel } from "@/components/AiToolsPanel";
 import { MomentPopover } from "@/components/MomentPopover";
 import { playSfx } from "@/lib/sfx";
 
-const palettes = Object.fromEntries(templates.map((item) => [item.id, [item.baseColor, item.color]]));
-const accentFontById = Object.fromEntries(templates.map((item) => [item.id, item.accentFont ? `'${item.accentFont}', sans-serif` : null]));
 const fontFamilyById = Object.fromEntries(fonts.map((item) => [item.id, item.family]));
 const tiersById = Object.fromEntries(templates.map((item) => [item.id, item.tiers || null]));
 
@@ -166,6 +164,39 @@ function groupWordsForDisplay(words, wordsPerCaption) {
   return groups;
 }
 
+// Street Glow is LINE-based (two fixed, independently-animated roles: a
+// condensed glow headline + a cursive subline), not word-based - it never
+// goes through the generic tiers-driven caption-overlay render at all (see
+// backend/captions.py's _emit_street_glow_group for the matching export
+// side). Sizes/gap are fixed constants (72/44/-8, scaled by previewScale)
+// mirrored exactly from STREET_GLOW_LINE1_SIZE/LINE2_SIZE/GAP_PX there, not
+// read from word.font_size/word.color - this template owns its whole look.
+// Each line's own key (its first word's index) changes exactly when the
+// visible group changes, remounting the div so its CSS entrance animation
+// (see App.css's .street-glow-line1/.street-glow-line2) replays per cue.
+function StreetGlowOverlay({ visibleWords, scriptMode, boxX, boxY, boxRotation, previewScale, onMouseDown, onResize }) {
+  const rows = splitIntoRows(visibleWords, null, 2);
+  const line1Words = rows[0] || [];
+  const line2Words = rows[1] || [];
+  const lineText = (rowWords, upper) => {
+    const joined = rowWords.map((word) => (scriptMode === "native" && word.original) ? word.original : word.text).join(" ");
+    return upper ? joined.toUpperCase() : joined;
+  };
+  return (
+    <div className="caption-overlay street-glow-overlay"
+      style={{ left: `${boxX}%`, top: `${boxY}%`, transform: `translate(-50%,-50%) rotate(${boxRotation}deg)` }}
+      onMouseDown={onMouseDown} data-testid="live-caption-preview">
+      <div className="street-glow-stack">
+        <div key={`line1-${line1Words[0]?.index}`} className="street-glow-line1" style={{ fontSize: `${72 * previewScale}px` }}>{lineText(line1Words, true)}</div>
+        {line2Words.length > 0 && <div key={`line2-${line2Words[0]?.index}`} className="street-glow-line2" style={{ fontSize: `${44 * previewScale}px`, marginTop: `${-8 * previewScale}px` }}>{lineText(line2Words, false)}</div>}
+      </div>
+      <div className="selection-box">
+        {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={onResize(pos)} data-testid={`caption-resize-handle-${pos}`} />)}
+      </div>
+    </div>
+  );
+}
+
 export const CaptionStudio = ({ initialProject, onNew }) => {
   const [project, setProject] = useState(initialProject);
   const [words, setWords] = useState(initialProject.words);
@@ -228,12 +259,11 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const [sfxMarkers, setSfxMarkers] = useState(initialProject.sfx_markers || []);
   const [momentPopover, setMomentPopover] = useState(null); // word index, or null when closed
   const [momentAnchor, setMomentAnchor] = useState(null); // clicked chip/span's DOMRect, or null to anchor by the video frame
-  const [variant, setVariant] = useState(initialProject.variant || null); // null = template default
   // Dual-Script Toggle: which text shows on canvas/Timeline/exports -
   // the Romanized Hinglish word.text, or the native-script word.original
   // Sarvam's codemix transcription already produced for Hindi/mixed speech.
   const [scriptMode, setScriptMode] = useState(initialProject.script_mode || "roman");
-  // Independent of theme/variant: granular project-wide Outline/Shadow/
+  // Independent of theme: granular project-wide Outline/Shadow/
   // Background controls, plus plain Bold/Italic font-weight toggles -
   // mirrors backend/captions.py's ProjectEdit fields and _write_ass's
   // two-layer outline+shadow/background-box handling exactly (field names
@@ -367,7 +397,6 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   }, [wordGroups, currentTime]);
   const anchorWord = visibleWords[0];
   const tiers = tiersById[theme];
-  const activeVariant = variants.find((item) => item.id === variant) || null;
   // Mirrors _write_ass's own two-layer approach: a real browser already
   // blurs text-shadow independently of the glyph fill (unlike libass's
   // single \blur tag), so the preview doesn't need the backend's two-
@@ -395,10 +424,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   // Glow is a non-directional (0,0-offset) soft light, independent of
   // Shadow - mirrors _write_ass's own separate glow Dialogue layer.
   // glow_color=null means "use this word's own colour" (a self-coloured
-  // neon look, same convention variants' outline=null already uses) - that
-  // has to be resolved PER WORD (different words can have different
-  // colours), so unlike dropShadow/dropShadowActive this can't be computed
-  // once for the whole overlay.
+  // neon look) - that has to be resolved PER WORD (different words can
+  // have different colours), so unlike dropShadow/dropShadowActive this
+  // can't be computed once for the whole overlay.
   const glowShadowFor = (word, active) => {
     if (!textStyle.glow_enabled || textStyle.background_enabled) return null;
     const blur = (active ? textStyle.glow_blur + 3 : textStyle.glow_blur) * previewScale;
@@ -409,7 +437,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
     // word's base colour while the text itself has visibly swapped to the
     // accent colour. Mirrors _write_ass's own word_tags, which resolves the
     // same emphasize override before computing its glow_fill.
-    const displayColor = (active && word.emphasize) ? (activeVariant?.accent || "#EAB308") : word.color;
+    const displayColor = (active && word.emphasize) ? "#EAB308" : word.color;
     return `0px 0px ${blur.toFixed(2)}px ${hexToRgba(textStyle.glow_color || displayColor, textStyle.glow_opacity)}`;
   };
   const basePos = POSITION_DEFAULTS[captionPosition] || POSITION_DEFAULTS.bottom;
@@ -499,15 +527,18 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
         const config = nextTiers[tier];
         return { ...word, color: config.color, font_size: config.size };
       }));
-    } else {
-      setWords((current) => current.map((word) => ({ ...word, color: palettes[next][word.important ? 1 : 0] })));
     }
+    // Street Glow (next === "street_glow", no tiers) ignores word.color/
+    // font_size entirely in both preview and export - its two lines are a
+    // fixed design, not word-driven (see the caption-overlay render below
+    // and backend/captions.py's _emit_street_glow_group) - so there's
+    // nothing to re-bake here for it.
   };
   const payload = () => ({ theme, font_id: fontId, words_per_caption: wordsPerCaption,
                            caption_lines: captionLines, caption_position: captionPosition, words,
                            audio_volume: audioVolume, audio_muted: audioMuted,
                            brightness, contrast, saturation, render_quality: renderQuality, elements,
-                           sfx_markers: sfxMarkers, variant, script_mode: scriptMode,
+                           sfx_markers: sfxMarkers, script_mode: scriptMode,
                            ...textStyle, bold, italic });
   // Dual-Script Toggle: what a word's canvas/Timeline label actually shows -
   // falls back to the Romanized text when scriptMode is "native" but this
@@ -823,20 +854,20 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               </div>
               <div className="safe-zone-meta" />
             </div>}
-            {visibleWords.length > 0 && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
+            {visibleWords.length > 0 && theme === "street_glow" && <StreetGlowOverlay
+              visibleWords={visibleWords} scriptMode={scriptMode}
+              boxX={boxX} boxY={boxY} boxRotation={boxRotation} previewScale={previewScale}
+              onMouseDown={startCaptionDrag} onResize={startResize} />}
+            {visibleWords.length > 0 && theme !== "street_glow" && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%`,
                       transform: `translate(-50%,-50%) rotate(${boxRotation}deg)`, lineHeight: NATIVE_LINE_HEIGHT,
                       fontStyle: italic ? "italic" : "normal",
-                      // Granular Outline/Shadow/Background, independent of
-                      // theme/variant - a variant's own stroke/shadow design
-                      // always wins when one is active, mirroring
-                      // _write_ass's own priority. WebkitTextStroke and
-                      // textShadow are always set explicitly here (never
+                      // Granular Outline/Shadow/Background - WebkitTextStroke
+                      // and textShadow are always set explicitly here (never
                       // left to App.css's own default rule) so every
                       // combination - including both off - renders exactly
                       // what the controls say, matching the export 1:1.
-                      ...(!activeVariant ? { WebkitTextStroke: outlineStroke, textShadow: dropShadow } : {}),
-                      ...(activeVariant ? { fontFamily: activeVariant.fontFamily, textShadow: activeVariant.textShadow, WebkitTextStroke: activeVariant.stroke || undefined, "--variant-accent": activeVariant.accent } : {}) }}
+                      WebkitTextStroke: outlineStroke, textShadow: dropShadow }}
               onMouseDown={startCaptionDrag} data-testid="live-caption-preview">
               {/* Plain text flow with a literal line break between rows -
                   no per-row wrapper <div> with hand-computed margins. A
@@ -858,7 +889,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     above, not nesting it) rather than the whole overlay,
                     matching that line-by-line behaviour exactly instead of
                     a single box the export never actually draws. */}
-                <span style={!activeVariant && textStyle.background_enabled
+                <span style={textStyle.background_enabled
                   ? { backgroundColor: hexToRgba(textStyle.background_color, textStyle.background_opacity),
                       padding: "2px 10px", borderRadius: "3px", boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" }
                   : undefined}>
@@ -866,9 +897,9 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   // Color/size always come from the word itself (editable,
                   // defaulted from the theme at generation/theme-switch
                   // time) - a tiered theme only still decides the font.
-                  const fontFamily = activeVariant ? activeVariant.fontFamily : tiers
+                  const fontFamily = tiers
                     ? tiers[tiers[word.emphasis] ? word.emphasis : "support"].font
-                    : (word.important && accentFontById[theme]) || fontFamilyById[fontId];
+                    : fontFamilyById[fontId];
                   const isActiveWord = activeIndex === word.index;
                   // Glow can be a different colour per word (glow_color=null
                   // means "use this word's own colour"), so it's combined
@@ -879,15 +910,21 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   const glowEntry = glowShadowFor(word, isActiveWord);
                   const style = { color: word.color, fontSize: `${Math.max(20, word.font_size * previewScale)}px`, fontFamily,
                                   fontWeight: bold && isBoldCapableFont(fontFamily) ? 800 : 400,
-                                  ...(!activeVariant && (isActiveWord || glowEntry) ? { textShadow: [isActiveWord ? dropShadowActive : dropShadow, glowEntry].filter((v) => v && v !== "none").join(", ") || "none" } : {}) };
+                                  ...((isActiveWord || glowEntry) ? { textShadow: [isActiveWord ? dropShadowActive : dropShadow, glowEntry].filter((v) => v && v !== "none").join(", ") || "none" } : {}) };
                   const className = [
                     isActiveWord ? "active" : "",
                     isActiveWord && word.kinetic ? `kinetic-${word.kinetic}` : "",
                     isActiveWord && word.emphasize ? "emphasize-accent" : "",
                   ].filter(Boolean).join(" ");
-                  return <span key={word.index}>
+                  const doodleTier = theme === "doodle_marker" && ["key", "feature"].includes(word.emphasis) ? word.emphasis : null;
+                  const relOnMs = Math.max(0, Math.round((word.start - visibleWords[0].start) * 1000));
+                  return <span key={word.index} className={doodleTier ? `doodle-decorated doodle-${doodleTier}` : undefined}>
                     {wordIndex > 0 && " "}
-                    <span className={className} style={style}
+                    {doodleTier === "feature" && <svg className="doodle-loop" viewBox="0 0 100 40" style={{ animationDelay: `${relOnMs}ms` }}>
+                      <path d="M 10 20 C 10 8, 90 6, 92 20 C 94 34, 8 36, 14 18" fill="none" stroke="#EF4444" strokeWidth="3" strokeLinecap="round" pathLength="1" />
+                    </svg>}
+                    <span className={[className, doodleTier === "key" ? "doodle-pill" : ""].filter(Boolean).join(" ")}
+                      style={{ ...style, ...(doodleTier === "key" ? { animationDelay: `${relOnMs}ms` } : {}) }}
                       onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
                       data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>
                   </span>;
@@ -933,7 +970,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
           captionLines={captionLines} onCaptionLines={setCaptionLines}
           captionPosition={captionPosition} onCaptionPosition={choosePosition}
           selectedWord={words[selectedIndex]} onWordStyle={(change) => updateWord(selectedIndex, change)}
-          tab={themeTab} onTab={setThemeTab} variant={variant} onVariant={setVariant}
+          tab={themeTab} onTab={setThemeTab}
           textStyle={textStyle} onTextStyle={updateTextStyle}
           bold={bold} onBold={setBold} italic={italic} onItalic={setItalic}
           hasActiveCaption={visibleWords.length > 0}

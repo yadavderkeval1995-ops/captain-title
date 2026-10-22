@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import math
 import os
@@ -13,6 +14,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
+from PIL import ImageFont
 import imageio_ffmpeg
 
 from auth import current_user
@@ -24,69 +26,29 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 FONTS_DIR = Path(__file__).resolve().parent / "fonts"
 logger = logging.getLogger("captain-title.captions")
 active_jobs: set[str] = set()
-# Caption templates: a color scheme plus an optional "accent_font" used only
-# for emphasized/important words - the primary font for everything else
-# comes from the separately chosen FONTS entry below, so a template can mix
-# two fonts (accent_font set) or stay single-font (accent_font None).
+# Caption templates: exactly two fixed, fully-designed "motion graphic"
+# looks (not a skinnable N-theme system any more) - each owns its complete
+# visual design (font/color/glow) AND its own bespoke motion, matched by
+# hand between this file's ASS export and CaptionStudio.jsx's CSS preview.
+# "street_glow" is LINE-based (two fixed roles: headline/subline) and
+# "doodle_marker" is WORD-based (reuses the existing support/feature/key
+# emphasis tiers from convert_to_hinglish, see caption_ai.py).
 THEMES = {
-    "viral": {"base": "#FFFFFF", "accent": "#FF3B30", "accent_font": "Anton"},
-    "cinematic": {"base": "#FFF7DB", "accent": "#FFB800", "accent_font": "Caveat"},
-    "minimal": {"base": "#FFFFFF", "accent": "#007AFF", "accent_font": None},
-    "podcast": {"base": "#FFFFFF", "accent": "#A855F7", "accent_font": None},
-    "meme_mix": {"base": "#FFFFFF", "accent": "#FFEB3B", "accent_font": "Permanent Marker"},
-    "street_pop": {"base": "#FFFFFF", "accent": "#FF6EC7", "accent_font": "Caveat"},
-    # Designer "tiered" templates: a 3-way support/feature/key reading of
-    # each word (see convert_to_hinglish's emphasis field) instead of a
-    # flat important/normal split, each tier with its own font/color/size -
-    # matches the layered, mixed-typography look used by top caption apps.
-    "editorial_pop": {"tiers": {
-        "support": {"font": "Poppins", "color": "#FFFFFF", "size": 40},
-        "feature": {"font": "Playfair Display SemiBold", "color": "#FFFFFF", "size": 58},
-        "key": {"font": "Anton", "color": "#FFEB3B", "size": 82},
-    }},
-    "clean_vogue": {"tiers": {
-        "support": {"font": "Poppins", "color": "#E4E4E7", "size": 38},
-        "feature": {"font": "Playfair Display SemiBold", "color": "#FF8FC7", "size": 56},
-        "key": {"font": "Bebas Neue", "color": "#FFFFFF", "size": 86},
-    }},
-    "street_heat": {"tiers": {
-        "support": {"font": "Poppins", "color": "#FFFFFF", "size": 40},
-        "feature": {"font": "Permanent Marker", "color": "#FFFFFF", "size": 54},
-        "key": {"font": "Anton", "color": "#FF4D00", "size": 84},
-    }},
-    # "Hormozi style": plain bold white text with the punchline word in
-    # bright yellow and a noticeably heavier font - the single most common
-    # pattern across today's top caption/editing apps (Kapwing, CapCut).
-    "bold_impact": {"base": "#FFFFFF", "accent": "#FFD60A", "accent_font": "Archivo Black"},
-    # A calmer, modern alternative for explainer/SaaS-style talking-head
-    # content - geometric sans, a cool accent instead of a loud one.
-    "tech_editorial": {"base": "#E4E4E7", "accent": "#5EEAD4", "accent_font": "Space Grotesk"},
-    # Hindi-first tiered templates: same layered support/feature/key design
-    # as the three above, built entirely on bundled fonts with real
-    # Devanagari coverage (see DEVANAGARI_CAPABLE_FONTS) instead of a Latin
-    # font that would otherwise get silently swapped out the moment native
-    # script displays - a Hindi creator gets the same designed look in
-    # either script, not a fallback font switch.
-    "hindi_bold": {"tiers": {
-        "support": {"font": "Hind", "color": "#FFFFFF", "size": 40},
-        "feature": {"font": "Mukta ExtraBold", "color": "#FFFFFF", "size": 58},
-        "key": {"font": "Baloo 2 ExtraBold", "color": "#FFD60A", "size": 84},
-    }},
-    "hindi_editorial": {"tiers": {
-        "support": {"font": "Hind", "color": "#E4E4E7", "size": 38},
-        "feature": {"font": "Tiro Devanagari Hindi", "color": "#FFFFFF", "size": 56},
-        "key": {"font": "Rozha One", "color": "#FFB800", "size": 82},
-    }},
-    "hindi_street": {"tiers": {
-        "support": {"font": "Mukta ExtraBold", "color": "#FFFFFF", "size": 40},
-        "feature": {"font": "Yatra One", "color": "#FFFFFF", "size": 54},
-        "key": {"font": "Baloo 2 ExtraBold", "color": "#FF4D9E", "size": 84},
-    }},
-    "hindi_minimal": {"tiers": {
-        "support": {"font": "Hind", "color": "#E4E4E7", "size": 38},
-        "feature": {"font": "Mukta ExtraBold", "color": "#FFFFFF", "size": 54},
-        "key": {"font": "Noto Sans Devanagari Black", "color": "#38BDF8", "size": 78},
-    }},
+    "street_glow": {
+        "motion": "street_glow",
+        "line1": {"font": "Anton", "color": "#FF2E2E", "size": 72},
+        "line2": {"font": "Playfair Display SemiBold", "color": "#FFFFFF", "size": 44},
+    },
+    "doodle_marker": {
+        "motion": "doodle_marker",
+        "tiers": {
+            "support": {"font": "Caveat", "color": "#FFFFFF", "size": 56},
+            "feature": {"font": "Caveat", "color": "#FFFFFF", "size": 56},
+            "key": {"font": "Caveat", "color": "#111111", "size": 56},
+        },
+        "pill_color": "#FACC15",
+        "loop_color": "#EF4444",
+    },
 }
 FONTS = {
     "poppins": {"label": "Poppins", "family": "Poppins"},
@@ -100,19 +62,8 @@ FONTS = {
     "mukta": {"label": "Mukta", "family": "Mukta ExtraBold"},
     "kalam": {"label": "Kalam", "family": "Kalam"},
 }
-# Template style variants (Captik-style "VARIANTS" row) - mirrors the
-# `variants` export in frontend/src/components/ThemePanel.jsx exactly:
-# font family, outline/shadow/blur standing in for text-stroke/box-shadow,
-# and the accent color used for "Emphasize"-tagged words. outline=None means
-# "use the word's own color" (a self-colored glow) rather than a fixed hue.
-VARIANTS = {
-    "rock": {"font": "Anton", "bord": 3, "outline": "#000000", "shad": 0, "blur": 0, "accent": "#FF4D00"},
-    "glow": {"font": "Outfit", "bord": 3, "outline": None, "shad": 0, "blur": 4, "accent": "#22D3EE"},
-    "swiss": {"font": "IBM Plex Sans", "bord": 0, "outline": None, "shad": 0, "blur": 0, "accent": "#007AFF"},
-    "clean": {"font": "Poppins", "bord": 0, "outline": "#000000", "shad": 2, "blur": 1, "accent": "#EAB308"},
-}
-# Editor-side-only fallback accent for an emphasized word when no variant is
-# selected - matches the CSS default in App.css's .emphasize-accent rule.
+# Editor-side-only fallback accent for an "Emphasize" ("FOR THIS MOMENT")
+# toggled word - matches the CSS default in App.css's .emphasize-accent rule.
 DEFAULT_EMPHASIZE_ACCENT = "#EAB308"
 # Dual-script export: none of the bundled Latin display fonts (Anton, Outfit,
 # IBM Plex Sans, Poppins, Bebas Neue, DejaVu Sans) carry Devanagari glyphs, so
@@ -143,6 +94,45 @@ _DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
 
 def _has_devanagari(text):
     return bool(_DEVANAGARI_RE.search(text or ""))
+
+
+@functools.lru_cache(maxsize=32)
+def _pil_font(family, size):
+    path = FONTS_DIR / f"{family}-Bold.ttf"
+    return ImageFont.truetype(str(path), size)
+
+
+def _measure_text_width(text, family, size):
+    """Approximate rendered glyph-advance width using the SAME bundled font
+    file libass itself loads, via PIL/FreeType - close enough to libass's
+    own shaping to place a loosely-fit decorative pill/loop behind a word
+    (see _emit_doodle_decorations), without needing a full text-shaping
+    pass. Falls back to a rough per-character estimate if the font file
+    can't be loaded (never expected for Caveat, bundled at backend/fonts/)."""
+    try:
+        return _pil_font(family, size).getlength(text)
+    except OSError:
+        return len(text) * size * 0.52
+
+
+def _apply_theme_defaults(words, theme):
+    """Re-bakes each word's starting color/font_size from its template -
+    called right after generation and after an AI emphasis re-tag, same as
+    a manual template switch in the editor. doodle_marker (word-emphasis
+    tiers) gets real per-word values here; street_glow is LINE-based, not
+    word-based, so these are just a harmless placeholder (its own row-level
+    rendering in both _write_ass and CaptionStudio.jsx ignores word.color/
+    font_size entirely and uses the template's fixed line1/line2 styling)."""
+    palette = THEMES.get(theme, THEMES["street_glow"])
+    tiers = palette.get("tiers")
+    for word in words:
+        if tiers:
+            config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
+            word["color"] = config["color"]
+            word["font_size"] = config["size"]
+        else:
+            word["color"] = "#FFFFFF"
+            word["font_size"] = 66
 
 
 CAPTION_POSITIONS = {"top", "middle", "bottom"}
@@ -201,8 +191,8 @@ class WordEdit(BaseModel):
     # A separate accent highlight from the tiered-template "important" flag -
     # toggled per word from the moment popover, not tied to any theme/tier.
     # Unlike kinetic above, this DOES reach the export: _write_ass recolors
-    # (to the active variant's accent, or a default yellow) and up-sizes the
-    # word, mirroring App.css's .emphasize-accent rule.
+    # (to DEFAULT_EMPHASIZE_ACCENT) and up-sizes the word, mirroring App.css's
+    # .emphasize-accent rule.
     emphasize: bool = False
 
 
@@ -255,21 +245,13 @@ class ProjectEdit(BaseModel):
     words: list[WordEdit]
     elements: list[ElementEdit] = []
     sfx_markers: list[SfxMarker] = []
-    # Template style variant (Rock/Glow/Swiss/Clean) - applied in both the
-    # editor preview (CaptionStudio.jsx) and the export (_write_ass's
-    # VARIANTS table: font family + outline/shadow/blur standing in for
-    # text-stroke/box-shadow, and the Emphasize accent color).
-    variant: str | None = None
     # Which script each word displays as: "roman" is word.text (the GPT
     # Hinglish romanization); "native" is word.original (Sarvam's own
     # Devanagari-script recognition, when the source speech was Hindi/mixed -
     # see caption_ai.py's convert_to_hinglish). Affects the editor canvas,
     # the Timeline labels, and both exports (_write_ass/_write_srt).
     script_mode: Literal["roman", "native"] = "roman"
-    # Granular, project-wide typography controls, separate from theme/
-    # variant - only apply to captions with no variant selected (a variant's
-    # own outline/shadow design, e.g. Rock's hard outline, always takes
-    # priority, since that's a more specific, deliberate choice). Outline and
+    # Granular, project-wide typography controls. Outline and
     # Shadow are genuinely independent layers in the export (see _write_ass's
     # word_tags/shadow_tags): libass's \blur tag blurs an entire Dialogue
     # line's composited bitmap at once (fill+outline together), so the only
@@ -305,9 +287,8 @@ class ProjectEdit(BaseModel):
     # A non-directional soft light around the glyph (no offset), distinct
     # from Shadow - same two-layer-Dialogue mechanism, just drawn with
     # xshad=yshad=0. glow_color=None means "use each word's own colour" (a
-    # self-coloured neon-style glow, mirroring VARIANTS' "glow" preset and
-    # its outline=None convention above) rather than one fixed colour for
-    # every word.
+    # self-coloured neon-style glow) rather than one fixed colour for every
+    # word.
     glow_enabled: bool = False
     glow_color: str | None = None
     glow_blur: float = Field(default=8, ge=0, le=24)
@@ -412,16 +393,7 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
                 preview_storage_path = f"{APP_NAME}/previews/{project['user_id']}/{uuid.uuid4().hex}.webm"
                 preview_result = await asyncio.to_thread(
                     put_object, preview_storage_path, preview_bytes, "video/webm")
-        palette = THEMES[project["theme"]]
-        tiers = palette.get("tiers")
-        for word in words:
-            if tiers:
-                config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
-                word["color"] = config["color"]
-                word["font_size"] = config["size"]
-            else:
-                word["color"] = palette["accent"] if word["important"] else palette["base"]
-                word["font_size"] = 76 if word["important"] else 66
+        _apply_theme_defaults(words, project["theme"])
         ready_fields = {
             "words": words, "source_transcript": source_transcript,
             "transcription_mode": transcription["mode"], "transcription_quality": transcription,
@@ -473,7 +445,7 @@ async def usage(request: Request, user=Depends(current_user)):
 
 @projects_router.post("/projects/process")
 async def process_video(request: Request, file: UploadFile = File(...),
-                        theme: str = Form("viral"), font_id: str = Form("poppins"),
+                        theme: str = Form("street_glow"), font_id: str = Form("poppins"),
                         speech_language: str = Form("auto"),
                         user=Depends(current_user)):
     if theme not in THEMES:
@@ -516,7 +488,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
-                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None, "script_mode": "roman",
+                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "script_mode": "roman",
                    "outline_enabled": False, "outline_width": 2, "outline_color": "#000000",
                    "shadow_enabled": True, "shadow_angle": 0, "shadow_distance": 2, "shadow_blur": 2,
                    "shadow_opacity": 0.5, "shadow_color": "#000000",
@@ -564,7 +536,7 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "words": [word.model_dump() for word in payload.words],
                   "elements": [element.model_dump() for element in payload.elements],
                   "sfx_markers": [marker.model_dump() for marker in payload.sfx_markers],
-                  "variant": payload.variant, "script_mode": payload.script_mode,
+                  "script_mode": payload.script_mode,
                   "outline_enabled": payload.outline_enabled, "outline_width": payload.outline_width,
                   "outline_color": payload.outline_color,
                   "shadow_enabled": payload.shadow_enabled, "shadow_angle": payload.shadow_angle,
@@ -629,16 +601,7 @@ async def reassign_emphasis_endpoint(project_id: str, request: Request, user=Dep
     # Re-bake color/font_size from the (possibly now different) tier, same
     # as a template switch does - a word whose tier just changed shouldn't
     # keep styling that belonged to its old one.
-    palette = THEMES.get(project["theme"], THEMES["viral"])
-    tiers = palette.get("tiers")
-    for word in words:
-        if tiers:
-            config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
-            word["color"] = config["color"]
-            word["font_size"] = config["size"]
-        else:
-            word["color"] = palette["accent"] if word["important"] else palette["base"]
-            word["font_size"] = 76 if word["important"] else 66
+    _apply_theme_defaults(words, project["theme"])
     await db.projects.update_one({"project_id": project_id}, {"$set": {
         "words": words, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"words": words}
@@ -738,7 +701,6 @@ POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 80)}
 POP_IN_MS = 120
 POP_OUT_MS = 150
 POP_SCALE = 112
-POP_BLUR_BOOST = 3
 
 
 def _group_center(group, caption_position):
@@ -820,8 +782,232 @@ def _write_element_dialogue(element):
             f"Default,,0,0,0,,{{{tags}}}{safe}\n")
 
 
+# Street Glow's two fixed sizes/gap (project px at the 1080x1920 canvas,
+# same convention as every other px value in this file) - not read from
+# word.font_size/word.color at all, since this is a complete, fixed design
+# (not a skinnable one). Mirrors CaptionStudio.jsx's own hardcoded
+# constants exactly, so the preview and export always agree on the layout:
+# both sides place line1/line2 using these same two numbers rather than
+# each trying to independently derive them from font metrics.
+STREET_GLOW_LINE1_SIZE = 72
+STREET_GLOW_LINE2_SIZE = 44
+STREET_GLOW_GAP_PX = -8
+STREET_GLOW_GLOW_BLUR = 10
+STREET_GLOW_SHADOW_BLUR = 3
+STREET_GLOW_GLOW_OPACITY = 0.85
+STREET_GLOW_SHADOW_OPACITY = 0.55
+
+
+def _mask_dialogue_pair(tags, text, dialogue_time, opacity, color):
+    """One alpha-mask + one colour-mask Dialogue line sharing the same
+    geometry tags - see _write_ass's own comment on the gblur-mask
+    technique. opacity_grey encodes opacity as plain grey brightness."""
+    opacity_grey = round(max(0.0, min(1.0, opacity)) * 255)
+    alpha_line = f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{tags}\\c&H{opacity_grey:02X}{opacity_grey:02X}{opacity_grey:02X}&}}{text}\n"
+    color_line = f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{tags}\\c{_ass_color(color)}}}{text}\n"
+    return alpha_line, color_line
+
+
+def _street_glow_text(words, script_mode, upper):
+    parts = []
+    for word in words:
+        text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+        text = text.replace("{", "").replace("}", "")
+        parts.append(text.upper() if upper else text)
+    return " ".join(parts)
+
+
+def _emit_street_glow_group(lines, shadow_alpha_lines, shadow_color_lines,
+                             glow_alpha_lines, glow_color_lines,
+                             group, center_x, center_y, script_mode):
+    """Street Glow is LINE-based, not word-based - each of its two lines
+    independently animates (line1 hard-pops, line2 slides up and fades in),
+    which ASS can only express with each line as its OWN Dialogue event: a
+    \\move/\\t position or scale animation applies to a whole Dialogue, not
+    to one run within a bigger \\N-joined block, so this deliberately does
+    NOT go through the single-Dialogue \\N engine the generic path below
+    uses. Vertical placement is a fixed, hand-picked pair of offsets (not
+    derived from font metrics) because this is one specific, fully fixed
+    2-line design checked by eye against the preview, not a generic
+    multi-theme engine that has to agree with an arbitrary browser layout."""
+    rows = _split_rows(group, _resolve_line_breaks(group, None, 2))
+    line1_words, line2_words = rows[0], (rows[1] if len(rows) > 1 else [])
+    row2_height = STREET_GLOW_LINE2_SIZE if line2_words else 0
+    gap = STREET_GLOW_GAP_PX if line2_words else 0
+    total_height = STREET_GLOW_LINE1_SIZE + row2_height + gap
+    top = center_y - total_height / 2
+    cy1 = round(top + STREET_GLOW_LINE1_SIZE / 2)
+    cy2 = round(top + STREET_GLOW_LINE1_SIZE + gap + row2_height / 2)
+    dialogue_time = f"{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])}"
+
+    line1 = THEMES["street_glow"]["line1"]
+    line1_text = _street_glow_text(line1_words, script_mode, upper=True)
+    line1_geometry = (f"\\an5\\pos({center_x},{cy1})\\fn{line1['font']}\\fs{STREET_GLOW_LINE1_SIZE}"
+                      f"\\fscx100\\fscy100\\bord0\\shad0\\blur0"
+                      f"\\t(0,160,\\fscx108\\fscy108)\\t(160,240,\\fscx100\\fscy100)")
+    lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{line1_geometry}\\c{_ass_color(line1['color'])}}}{line1_text}\n")
+    # Line1's own neon glow - the same gblur-mask technique as the generic
+    # Shadow/Glow layers below, just always-on and hardcoded to this
+    # template's own red (this template owns its complete look, not the
+    # project's Shadow/Glow panel).
+    glow_alpha, glow_color = _mask_dialogue_pair(line1_geometry, line1_text, dialogue_time,
+                                                  STREET_GLOW_GLOW_OPACITY, line1["color"])
+    glow_alpha_lines.append(glow_alpha)
+    glow_color_lines.append(glow_color)
+
+    if not line2_words:
+        return
+    line2 = THEMES["street_glow"]["line2"]
+    line2_text = _street_glow_text(line2_words, script_mode, upper=False)
+    move_from_y = cy2 + 18
+    line2_geometry = (f"\\an5\\move({center_x},{move_from_y},{center_x},{cy2},0,220)\\fad(120,80)"
+                      f"\\fn{line2['font']}\\fs{STREET_GLOW_LINE2_SIZE}\\fscx100\\fscy100\\bord0\\shad0\\blur0")
+    lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{line2_geometry}\\c{_ass_color(line2['color'])}}}{line2_text}\n")
+    shadow_alpha, shadow_color = _mask_dialogue_pair(line2_geometry, line2_text, dialogue_time,
+                                                      STREET_GLOW_SHADOW_OPACITY, "#000000")
+    shadow_alpha_lines.append(shadow_alpha)
+    shadow_color_lines.append(shadow_color)
+
+
+# Doodle Marker's uniform base size (project px at the 1080x1920 canvas) -
+# every word is this one size, only colour/decoration differs by tier (see
+# THEMES["doodle_marker"]). DOODLE_NATIVE_LINE_HEIGHT reuses the exact
+# multiplier calibrated for the generic \N engine (see _write_ass's own
+# comment on it) purely to ESTIMATE where a multi-row caption's later rows
+# sit, for placing a decoration behind a word in them - the real text still
+# flows through the generic single-Dialogue \N path below untouched, this
+# estimate only affects where a pill/loop gets drawn, not the text itself.
+# A few px of drift here reads as hand-drawn imperfection, not a bug - this
+# is a much looser tolerance than the core engine's own preview/export gap.
+DOODLE_FONT_SIZE = 56
+DOODLE_NATIVE_LINE_HEIGHT = 1.47
+
+
+def _doodle_row_center_y(center_y, row_index, num_rows):
+    return round(center_y + (row_index - (num_rows - 1) / 2) * DOODLE_FONT_SIZE * DOODLE_NATIVE_LINE_HEIGHT)
+
+
+# libass's \clip rectangle, when combined with a \pN vector drawing in the
+# SAME override block, was found (via a minimal isolated repro - a plain
+# \p1 rect with a STATIC \clip exactly matching its own bounds still came
+# out clipped to half width) to not clip at the coordinates given - some
+# libass-version interaction between \clip and \p mode, not anything in
+# this file's own math. Animating that unreliable \clip+\t combination
+# would be building the reveal on a foundation that doesn't hold, so the
+# draw-on/wipe animations below use a handful of discrete growth STEPS
+# (separate short Dialogues, each a bit more "grown" than the last)
+# instead - a steppier reveal than true sub-frame interpolation, but one
+# that actually renders where it's told to.
+DOODLE_REVEAL_STEPS = 6
+
+
+def _doodle_pill_path(hw, hh, right_x):
+    """A filled, asymmetric rounded blob (ASS \\p vector drawing, centered
+    on its own \\pos) approximating the organic CSS border-radius from the
+    spec - ASS has no border-radius equivalent, so each corner gets its own
+    hand-picked radius instead of one uniform value, for the same
+    "not a perfect rectangle" organic feel. right_x is the shape's current
+    right edge in local coords (equal to hw for a fully "grown" pill, less
+    for an in-progress reveal step - see _emit_doodle_decorations) - the
+    LEFT edge always stays at -hw, so stepping right_x up across a few
+    Dialogues reads as the pill growing left-to-right."""
+    grown = max(1.0, right_x - (-hw))
+    r_tl, r_bl = hh * 0.55, hh * 0.22
+    r_tr, r_br = min(hh * 0.18, grown / 2), min(hh * 0.5, grown / 2)
+    return (f"m {round(-hw + r_tl)} {round(-hh)} "
+            f"l {round(right_x - r_tr)} {round(-hh)} "
+            f"b {round(right_x)} {round(-hh)} {round(right_x)} {round(-hh)} {round(right_x)} {round(-hh + r_tr)} "
+            f"l {round(right_x)} {round(hh - r_br)} "
+            f"b {round(right_x)} {round(hh)} {round(right_x)} {round(hh)} {round(right_x - r_br)} {round(hh)} "
+            f"l {round(-hw + r_bl)} {round(hh)} "
+            f"b {round(-hw)} {round(hh)} {round(-hw)} {round(hh)} {round(-hw)} {round(hh - r_bl)} "
+            f"l {round(-hw)} {round(-hh + r_tl)} "
+            f"b {round(-hw)} {round(-hh)} {round(-hw)} {round(-hh)} {round(-hw + r_tl)} {round(-hh)}")
+
+
+def _doodle_loop_path(hw, hh):
+    """A hand-drawn-looking, deliberately-not-quite-closed ellipse ring
+    (ASS \\p vector drawing, stroked not filled - see _emit_doodle_decorations)
+    - directly re-projects the spec's own SVG path (viewBox 100x40, center
+    50,20) into local drawing coords scaled to this word's own half-width/
+    half-height, rather than drawing a generic/symmetric ellipse."""
+    sx, sy = hw / 50, hh / 20
+    return (f"m {round(-40*sx)} 0 "
+            f"b {round(-40*sx)} {round(-12*sy)} {round(40*sx)} {round(-14*sy)} {round(42*sx)} 0 "
+            f"b {round(44*sx)} {round(14*sy)} {round(-42*sx)} {round(16*sy)} {round(-36*sx)} {round(-2*sy)}")
+
+
+def _emit_doodle_decorations(lines, group, rows, center_x, center_y, script_mode):
+    """Doodle Marker's pill/loop decorations draw BEHIND the already-emitted
+    text Dialogue (Layer -1, same "negative = behind" convention
+    _write_element_dialogue already uses) as their own small vector-drawing
+    Dialogues, stepped in over a few frames (see DOODLE_REVEAL_STEPS) to
+    read as a draw-on/wipe - the user's own backend mapping spec called for
+    an animated \\clip for this, which turned out not to render correctly
+    combined with \\p vector drawing (see DOODLE_REVEAL_STEPS's own
+    comment). They can't live inside the generic \\N-joined text Dialogue
+    itself (that block has no per-word coordinates of its own, by design -
+    see the \\N engine's comment), so each word's on-screen position is
+    independently estimated here via real glyph-width measurement
+    (_measure_text_width) against the SAME bundled font file libass
+    renders, plus _doodle_row_center_y's row-height estimate."""
+    palette = THEMES["doodle_marker"]
+    num_rows = len(rows)
+    for row_index, row in enumerate(rows):
+        row_cy = _doodle_row_center_y(center_y, row_index, num_rows)
+        texts = [(word.get("original") or word["text"]) if script_mode == "native" else word["text"] for word in row]
+        widths = [_measure_text_width(text, "Caveat", DOODLE_FONT_SIZE) for text in texts]
+        space_w = _measure_text_width(" ", "Caveat", DOODLE_FONT_SIZE) or DOODLE_FONT_SIZE * 0.28
+        row_width = sum(widths) + space_w * max(0, len(row) - 1)
+        cursor = center_x - row_width / 2
+        for word, text, width in zip(row, texts, widths):
+            word_cx = round(cursor + width / 2)
+            cursor += width + space_w
+            tier = word["emphasis"] if word.get("emphasis") in palette["tiers"] else "support"
+            if tier not in ("key", "feature"):
+                continue
+            word_end = _ass_time(group[-1]["end"])
+            if tier == "key":
+                hw, hh = width / 2 + 14, DOODLE_FONT_SIZE * 0.42
+                reveal_ms = 180
+                style_tags = f"\\1a&H00&\\1c{_ass_color(palette['pill_color'])}\\3a&HFF&\\bord0\\shad0\\blur0"
+            else:
+                hw = width / 2 + 10
+                hh = hw * 0.4
+                reveal_ms = 220
+                style_tags = f"\\1a&HFF&\\3a&H00&\\3c{_ass_color(palette['loop_color'])}\\bord3\\shad0\\blur0"
+            step_dur = reveal_ms / DOODLE_REVEAL_STEPS / 1000
+            for step in range(1, DOODLE_REVEAL_STEPS + 1):
+                step_start = word["start"] + (step - 1) * step_dur
+                start_time = _ass_time(step_start)
+                end_time = word_end if step == DOODLE_REVEAL_STEPS else _ass_time(step_start + step_dur)
+                fraction = step / DOODLE_REVEAL_STEPS
+                if tier == "key":
+                    right_x = -hw + 2 * hw * fraction
+                    drawing = _doodle_pill_path(hw, hh, right_x=right_x)
+                    bbox_max_x, bbox_max_y = right_x, hh
+                else:
+                    step_hw, step_hh = hw * fraction, hh * fraction
+                    drawing = _doodle_loop_path(step_hw, step_hh)
+                    bbox_max_x, bbox_max_y = step_hw, step_hh
+                # libass centers a \p vector drawing's \an5 \pos by
+                # subtracting HALF ITS OWN BOUNDING-BOX WIDTH/HEIGHT from
+                # the given point, regardless of where that bbox actually
+                # starts - verified empirically (an off-center shape, e.g.
+                # one growing from a fixed left edge like the pill above,
+                # rendered up to a full half-width too far left/up otherwise).
+                # Compensating by always sending (desired + bbox_max) as
+                # \pos, rather than the desired point itself, cancels that
+                # out for any path whose local origin (0,0) sits at its own
+                # true center - which _doodle_pill_path/_doodle_loop_path's
+                # fixed LEFT edge (-hw) and symmetric height both do.
+                pos_x, pos_y = round(word_cx + bbox_max_x), round(row_cy + bbox_max_y)
+                tags = f"\\an5\\pos({pos_x},{pos_y}){style_tags}\\p1"
+                lines.append(f"Dialogue: -1,{start_time},{end_time},Default,,0,0,0,,{{{tags}}}{drawing}{{\\p0}}\n")
+
+
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
-               caption_lines=1, caption_position="bottom", elements=None, variant=None,
+               caption_lines=1, caption_position="bottom", elements=None,
                script_mode="roman", bold=True, italic=False,
                outline_enabled=False, outline_width=2, outline_color="#000000",
                shadow_enabled=True, shadow_angle=0, shadow_distance=2, shadow_blur=2,
@@ -830,18 +1016,14 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                background_enabled=False, background_color="#000000", background_opacity=0.6,
                shadow_alpha_path=None, shadow_color_path=None,
                glow_alpha_path=None, glow_color_path=None):
-    palette = THEMES.get(theme, THEMES["viral"])
+    palette = THEMES.get(theme, THEMES["street_glow"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
-    accent_family = palette.get("accent_font") or primary_family
-    variant_config = VARIANTS.get(variant)
-    # A selected Variant always takes priority (its own outline/shadow design
-    # is a deliberate, more specific choice - see VARIANTS above). Otherwise
     # Background and Outline/Shadow are mutually exclusive: BorderStyle (ASS's
     # box-vs-outline switch) is a Style-level property, not per-word, so a
     # project can't mix a background box with a per-word outline/shadow in
     # one ASS file. The editor's Text panel enforces the same choice.
-    use_background = not variant_config and background_enabled
+    use_background = background_enabled
     # libass's own \blur is a cruder approximation of Gaussian blur than a
     # browser's native CSS text-shadow blur - visibly coarser/more "stepped"
     # even when it's blurring the right shape (a solid silhouette, not a
@@ -855,14 +1037,14 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     # `alphamerge` into one proper RGBA layer and composited under the
     # crisp primary text in _render. See _write_blur_mask_files below for
     # the four small per-word functions that build these masks' tags.
-    use_shadow_layer = not variant_config and not use_background and shadow_enabled
+    use_shadow_layer = not use_background and shadow_enabled
     shadow_x, shadow_y = _shadow_offset(shadow_angle, shadow_distance) if use_shadow_layer else (0, 0)
     # Glow is the same mask-based blur as Shadow but with no offset - a
     # soft, even light around the glyph rather than a directional drop
     # shadow - composited even further back, so a caption can combine both
     # (a tight shadow for grounding + a wide glow for pop) without either
     # washing the other out.
-    use_glow_layer = not variant_config and not use_background and glow_enabled
+    use_glow_layer = not use_background and glow_enabled
     # Bold is NOT forced here at the Style level - see BOLD_CAPABLE_FONTS
     # above. word_tags() below applies \b1 per word, only for a family that
     # can actually back it up with a real face.
@@ -891,18 +1073,24 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                                       strict_count=words_per_caption is not None)
     for group in groups:
         center_x, center_y = _group_center(group, caption_position)
+        # Street Glow is LINE-based (two independently-animated, fixed
+        # roles), not word-based - it never goes through the generic
+        # tiers-driven word_tags()/\N-joined-block path below at all (see
+        # _emit_street_glow_group's own comment on why). Anything without
+        # "tiers" falls back to it too, so a legacy/unknown theme id on an
+        # older saved project still renders instead of crashing.
+        if not tiers:
+            _emit_street_glow_group(lines, shadow_alpha_lines, shadow_color_lines,
+                                     glow_alpha_lines, glow_color_lines,
+                                     group, center_x, center_y, script_mode)
+            continue
         rotation = _group_rotation(group)
         breaks = _resolve_line_breaks(group, tiers, caption_lines)
         rows = _split_rows(group, breaks)
 
         def word_tags(word, display_text):
-            if variant_config:
-                family = variant_config["font"]
-            elif tiers:
-                tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
-                family = tiers[tier]["font"]
-            else:
-                family = accent_family if word.get("important") else primary_family
+            tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
+            family = tiers[tier]["font"]
             # Glyph coverage overrides style choice - but only when it has
             # to: most of the Latin display fonts above can't render
             # Devanagari at all, so when the native script is actually
@@ -918,11 +1106,9 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             color = word.get("color", "#FFFFFF")
             font_size = word.get("font_size", 52)
             # "FOR THIS MOMENT" Emphasize toggle: a fixed accent highlight
-            # (the active variant's accent, or a default yellow with none
-            # selected) plus a size bump - mirrors App.css's
-            # .emphasize-accent rule and its var(--variant-accent) hookup.
+            # plus a size bump - mirrors App.css's .emphasize-accent rule.
             if word.get("emphasize"):
-                color = (variant_config or {}).get("accent", DEFAULT_EMPHASIZE_ACCENT)
+                color = DEFAULT_EMPHASIZE_ACCENT
                 font_size = round(font_size * 1.18)
             # \fscx100\fscy100 is set explicitly (not just as a \t() target)
             # so each word starts its own animation from a clean baseline -
@@ -943,16 +1129,6 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
             rel_off = max(rel_on + 1, round((word["end"] - group[0]["start"]) * 1000))
             pop_in_end = min(rel_off, rel_on + POP_IN_MS)
             pop_out_start = max(pop_in_end, rel_off - POP_OUT_MS)
-
-            if variant_config:
-                outline_hex = variant_config["outline"] or color
-                base_blur = variant_config["blur"]
-                primary = (f"{base}\\c{_ass_color(color)}{bold_tag}"
-                           f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
-                           f"\\shad{variant_config['shad']}\\blur{base_blur}")
-                primary += (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE}\\blur{base_blur + POP_BLUR_BOOST})"
-                            f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100\\blur{base_blur})")
-                return primary, None, None, None, None, font_size
 
             pop_scale_only = (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE})"
                               f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100)")
@@ -989,8 +1165,7 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
                 opacity_grey = round(max(0.0, min(1.0, glow_opacity)) * 255)
                 glow_alpha_tags = f"\\c&H{opacity_grey:02X}{opacity_grey:02X}{opacity_grey:02X}&{mask_base}"
                 # glow_color=None means "use this word's own colour" (a
-                # self-coloured neon glow) - resolved per word here, same
-                # convention as VARIANTS' outline=None above, since
+                # self-coloured neon glow) - resolved per word here, since
                 # different words in one caption can have different colours.
                 glow_color_tags = f"\\c{_ass_color(glow_color or color)}{mask_base}"
             return primary, shadow_alpha_tags, shadow_color_tags, glow_alpha_tags, glow_color_tags, font_size
@@ -1063,6 +1238,8 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         if glow_alpha_parts:
             glow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_alpha_parts)}\n")
             glow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_color_parts)}\n")
+        if theme == "doodle_marker":
+            _emit_doodle_decorations(lines, group, rows, center_x, center_y, script_mode)
     for element in (elements or []):
         if element["end"] > element["start"]:
             lines.append(_write_element_dialogue(element))
@@ -1347,12 +1524,20 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         glow_color_ass = os.path.join(temp, "glow_color.ass")
         output = os.path.join(temp, "captain-title.mp4")
         Path(source).write_bytes(data)
-        shadow_blur = project.get("shadow_blur", 2)
-        glow_blur = project.get("glow_blur", 8)
+        # Street Glow's shadow/glow are baked into the template itself (see
+        # _emit_street_glow_group) rather than read from the project's own
+        # Shadow/Glow panel - the blur STRENGTH still has to come from
+        # somewhere for _render's gblur sigma, though, so it's overridden
+        # here to the template's own fixed values instead.
+        if project["theme"] == "street_glow":
+            shadow_blur, glow_blur = STREET_GLOW_SHADOW_BLUR, STREET_GLOW_GLOW_BLUR
+        else:
+            shadow_blur = project.get("shadow_blur", 2)
+            glow_blur = project.get("glow_blur", 8)
         _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
                   project.get("words_per_caption"), project.get("caption_lines", 1),
                   project.get("caption_position", "bottom"), project.get("elements"),
-                  variant=project.get("variant"), script_mode=project.get("script_mode", "roman"),
+                  script_mode=project.get("script_mode", "roman"),
                   bold=project.get("bold", True), italic=project.get("italic", False),
                   outline_enabled=project.get("outline_enabled", False),
                   outline_width=project.get("outline_width", 2),
