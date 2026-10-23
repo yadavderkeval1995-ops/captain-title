@@ -37,7 +37,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
 
   const generate = async () => {
     const form = new FormData();
-    form.append("file", file); form.append("theme", "viral"); form.append("speech_language", speechLanguage);
+    form.append("file", file); form.append("theme", "street_glow"); form.append("speech_language", speechLanguage);
     setProcessing(true);
     setProgress(2);
     setProcessingLabel("Uploading video");

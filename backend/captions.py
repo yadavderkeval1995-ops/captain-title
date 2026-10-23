@@ -1,5 +1,7 @@
 import asyncio
+import functools
 import logging
+import math
 import os
 import re
 import subprocess
@@ -12,6 +14,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
+from PIL import ImageFont
 import imageio_ffmpeg
 
 from auth import current_user
@@ -23,57 +26,113 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 FONTS_DIR = Path(__file__).resolve().parent / "fonts"
 logger = logging.getLogger("captain-title.captions")
 active_jobs: set[str] = set()
-# Caption templates: a color scheme plus an optional "accent_font" used only
-# for emphasized/important words - the primary font for everything else
-# comes from the separately chosen FONTS entry below, so a template can mix
-# two fonts (accent_font set) or stay single-font (accent_font None).
+# Caption templates: exactly two fixed, fully-designed "motion graphic"
+# looks (not a skinnable N-theme system any more) - each owns its complete
+# visual design (font/color/glow) AND its own bespoke motion, matched by
+# hand between this file's ASS export and CaptionStudio.jsx's CSS preview.
+# "street_glow" is LINE-based (two fixed roles: headline/subline) and
+# "doodle_marker" is WORD-based (reuses the existing support/feature/key
+# emphasis tiers from convert_to_hinglish, see caption_ai.py).
 THEMES = {
-    "viral": {"base": "#FFFFFF", "accent": "#FF3B30", "accent_font": "Anton"},
-    "cinematic": {"base": "#FFF7DB", "accent": "#FFB800", "accent_font": "Caveat"},
-    "minimal": {"base": "#FFFFFF", "accent": "#007AFF", "accent_font": None},
-    "podcast": {"base": "#FFFFFF", "accent": "#A855F7", "accent_font": None},
-    "meme_mix": {"base": "#FFFFFF", "accent": "#FFEB3B", "accent_font": "Permanent Marker"},
-    "street_pop": {"base": "#FFFFFF", "accent": "#FF6EC7", "accent_font": "Caveat"},
-    # Designer "tiered" templates: a 3-way support/feature/key reading of
-    # each word (see convert_to_hinglish's emphasis field) instead of a
-    # flat important/normal split, each tier with its own font/color/size -
-    # matches the layered, mixed-typography look used by top caption apps.
-    "editorial_pop": {"tiers": {
-        "support": {"font": "Poppins", "color": "#FFFFFF", "size": 40},
-        "feature": {"font": "Playfair Display SemiBold", "color": "#FFFFFF", "size": 58},
-        "key": {"font": "Anton", "color": "#FFEB3B", "size": 82},
-    }},
-    "clean_vogue": {"tiers": {
-        "support": {"font": "Poppins", "color": "#E4E4E7", "size": 38},
-        "feature": {"font": "Playfair Display SemiBold", "color": "#FF8FC7", "size": 56},
-        "key": {"font": "Bebas Neue", "color": "#FFFFFF", "size": 86},
-    }},
-    "street_heat": {"tiers": {
-        "support": {"font": "Poppins", "color": "#FFFFFF", "size": 40},
-        "feature": {"font": "Permanent Marker", "color": "#FFFFFF", "size": 54},
-        "key": {"font": "Anton", "color": "#FF4D00", "size": 84},
-    }},
+    "street_glow": {
+        "motion": "street_glow",
+        "line1": {"font": "Anton", "color": "#FF2E2E", "size": 72},
+        "line2": {"font": "Playfair Display SemiBold", "color": "#FFFFFF", "size": 44},
+    },
+    "doodle_marker": {
+        "motion": "doodle_marker",
+        "tiers": {
+            "support": {"font": "Caveat", "color": "#FFFFFF", "size": 56},
+            "feature": {"font": "Caveat", "color": "#FFFFFF", "size": 56},
+            "key": {"font": "Caveat", "color": "#111111", "size": 56},
+        },
+        "pill_color": "#FACC15",
+        "loop_color": "#EF4444",
+    },
 }
 FONTS = {
     "poppins": {"label": "Poppins", "family": "Poppins"},
     "anton": {"label": "Anton", "family": "Anton"},
     "bebas": {"label": "Bebas Neue", "family": "Bebas Neue"},
     "classic": {"label": "Classic", "family": "DejaVu Sans"},
+    "archivo": {"label": "Archivo Black", "family": "Archivo Black"},
+    "space_grotesk": {"label": "Space Grotesk", "family": "Space Grotesk"},
+    "baloo2": {"label": "Baloo 2", "family": "Baloo 2 ExtraBold"},
+    "hind": {"label": "Hind", "family": "Hind"},
+    "mukta": {"label": "Mukta", "family": "Mukta ExtraBold"},
+    "kalam": {"label": "Kalam", "family": "Kalam"},
 }
-# Template style variants (Captik-style "VARIANTS" row) - mirrors the
-# `variants` export in frontend/src/components/ThemePanel.jsx exactly:
-# font family, outline/shadow/blur standing in for text-stroke/box-shadow,
-# and the accent color used for "Emphasize"-tagged words. outline=None means
-# "use the word's own color" (a self-colored glow) rather than a fixed hue.
-VARIANTS = {
-    "rock": {"font": "Anton", "bord": 3, "outline": "#000000", "shad": 0, "blur": 0, "accent": "#FF4D00"},
-    "glow": {"font": "Outfit", "bord": 3, "outline": None, "shad": 0, "blur": 4, "accent": "#22D3EE"},
-    "swiss": {"font": "IBM Plex Sans", "bord": 0, "outline": None, "shad": 0, "blur": 0, "accent": "#007AFF"},
-    "clean": {"font": "Poppins", "bord": 0, "outline": "#000000", "shad": 2, "blur": 1, "accent": "#EAB308"},
-}
-# Editor-side-only fallback accent for an emphasized word when no variant is
-# selected - matches the CSS default in App.css's .emphasize-accent rule.
+# Editor-side-only fallback accent for an "Emphasize" ("FOR THIS MOMENT")
+# toggled word - matches the CSS default in App.css's .emphasize-accent rule.
 DEFAULT_EMPHASIZE_ACCENT = "#EAB308"
+# Dual-script export: none of the bundled Latin display fonts (Anton, Outfit,
+# IBM Plex Sans, Poppins, Bebas Neue, DejaVu Sans) carry Devanagari glyphs, so
+# when script_mode="native" surfaces a word's native-script text we force
+# this font regardless of theme/variant, purely for glyph coverage.
+DEVANAGARI_FONT = "Noto Sans Devanagari"
+# Every bundled font (backend/fonts/) whose own glyph set actually covers
+# Devanagari - a Hindi template built on one of these keeps its own font
+# in native-script mode instead of word_tags() silently swapping it out
+# for the DEVANAGARI_FONT fallback above (see word_tags's own comment).
+DEVANAGARI_CAPABLE_FONTS = {
+    DEVANAGARI_FONT, "Noto Sans Devanagari Black", "Baloo 2 ExtraBold", "Hind",
+    "Mukta ExtraBold", "Rozha One", "Yatra One", "Tiro Devanagari Hindi", "Kalam",
+}
+# Every bundled font (backend/fonts/) that actually has a second, genuinely
+# bolder weight file of its own - everything else is bundled as a single
+# weight (often already a Bold/ExtraBold/Black cut by name, just not paired
+# with a lighter sibling file). Requesting \b1 on one of those asks
+# fontconfig/libass for a bolder face that doesn't exist, which it answers
+# by synthetically embossing the existing glyphs - a visibly different,
+# slightly outlined look from how a browser's own font-synthesis renders
+# the same request in the live preview. Keying the Bold toggle off this set
+# (checked per-word by the actual chosen family, not a single project-wide
+# Style flag) means a word only ever gets a REAL bold face, or none at all.
+BOLD_CAPABLE_FONTS = {"Poppins", "Caveat"}
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+
+
+def _has_devanagari(text):
+    return bool(_DEVANAGARI_RE.search(text or ""))
+
+
+@functools.lru_cache(maxsize=32)
+def _pil_font(family, size):
+    path = FONTS_DIR / f"{family}-Bold.ttf"
+    return ImageFont.truetype(str(path), size)
+
+
+def _measure_text_width(text, family, size):
+    """Approximate rendered glyph-advance width using the SAME bundled font
+    file libass itself loads, via PIL/FreeType - close enough to libass's
+    own shaping to place a loosely-fit decorative pill/loop behind a word
+    (see _emit_doodle_decorations), without needing a full text-shaping
+    pass. Falls back to a rough per-character estimate if the font file
+    can't be loaded (never expected for Caveat, bundled at backend/fonts/)."""
+    try:
+        return _pil_font(family, size).getlength(text)
+    except OSError:
+        return len(text) * size * 0.52
+
+
+def _apply_theme_defaults(words, theme):
+    """Re-bakes each word's starting color/font_size from its template -
+    called right after generation and after an AI emphasis re-tag, same as
+    a manual template switch in the editor. doodle_marker (word-emphasis
+    tiers) gets real per-word values here; street_glow is LINE-based, not
+    word-based, so these are just a harmless placeholder (its own row-level
+    rendering in both _write_ass and CaptionStudio.jsx ignores word.color/
+    font_size entirely and uses the template's fixed line1/line2 styling)."""
+    palette = THEMES.get(theme, THEMES["street_glow"])
+    tiers = palette.get("tiers")
+    for word in words:
+        if tiers:
+            config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
+            word["color"] = config["color"]
+            word["font_size"] = config["size"]
+        else:
+            word["color"] = "#FFFFFF"
+            word["font_size"] = 66
 
 
 CAPTION_POSITIONS = {"top", "middle", "bottom"}
@@ -89,7 +148,12 @@ class WordEdit(BaseModel):
     emphasis: str = "support"
     uncertain: bool = False
     color: str = "#FFFFFF"
-    font_size: int = Field(default=52, ge=24, le=92)
+    # Bounds mirror the Transform panel's Scale slider (CaptionStudio.jsx's
+    # setCaptionScale clamps to [16, 120]) - they MUST match, or scaling a
+    # caption past the old 92 ceiling fails this validation on save/export
+    # for every word at once (Apply to All Captions broadcasts one size to
+    # every word, so a single out-of-range scale fails the whole project).
+    font_size: int = Field(default=66, ge=16, le=120)
     # None means "no manual placement" - inherit the project's caption_position
     # preset. A concrete value is a percentage (0-100) of canvas width/height
     # for where the caption box's center should sit, set by dragging it in
@@ -106,6 +170,19 @@ class WordEdit(BaseModel):
     # ASS renderer still places text at a point (\pos), not a wrapped box.
     box_width: float | None = Field(default=None, ge=0, le=100)
     box_height: float | None = Field(default=None, ge=0, le=100)
+    # None means "no manual rotation" (0deg). A concrete value tilts this
+    # caption's whole box around its own center point (the same point \pos
+    # anchors on, via \an5), set by the Transform panel's Rotation slider.
+    rotation: float | None = Field(default=None, ge=-45, le=45)
+    # None means "auto grouping" (the heuristics in _group_words_for_display
+    # decide where one caption/display-group ends and the next begins).
+    # True forces a new group to start at this word (a manual "Split at
+    # Word"/"Split at Playhead" edit); False forces this word to join the
+    # PREVIOUS group even if the heuristics would otherwise break here (a
+    # manual "Merge with Next" edit, applied to the first word of the group
+    # being merged away). Mirrors new_line's tri-state pattern one level up,
+    # at the caption-grouping level instead of the line-wrap level.
+    new_caption: bool | None = None
     # "FOR THIS MOMENT" kinetic tag applied to this word while it's active in
     # the editor preview. Editor-side only for now, like box_width/height
     # above - the ASS renderer has no equivalent of a live CSS keyframe
@@ -114,8 +191,8 @@ class WordEdit(BaseModel):
     # A separate accent highlight from the tiered-template "important" flag -
     # toggled per word from the moment popover, not tied to any theme/tier.
     # Unlike kinetic above, this DOES reach the export: _write_ass recolors
-    # (to the active variant's accent, or a default yellow) and up-sizes the
-    # word, mirroring App.css's .emphasize-accent rule.
+    # (to DEFAULT_EMPHASIZE_ACCENT) and up-sizes the word, mirroring App.css's
+    # .emphasize-accent rule.
     emphasize: bool = False
 
 
@@ -132,6 +209,11 @@ class ElementEdit(BaseModel):
     end: float = Field(ge=0)
     pos_x: float = Field(default=50, ge=0, le=100)
     pos_y: float = Field(default=30, ge=0, le=100)
+    # Draw-order staging relative to the caption text (ASS Layer field: a
+    # higher layer draws on top). This is standard z-index staging only -
+    # there's no video matting/segmentation here, so "behind" sits behind
+    # the captions, not behind an actual person in the footage.
+    layer: Literal["front", "behind"] = "front"
 
 
 class SfxMarker(BaseModel):
@@ -163,11 +245,59 @@ class ProjectEdit(BaseModel):
     words: list[WordEdit]
     elements: list[ElementEdit] = []
     sfx_markers: list[SfxMarker] = []
-    # Template style variant (Rock/Glow/Swiss/Clean) - applied in both the
-    # editor preview (CaptionStudio.jsx) and the export (_write_ass's
-    # VARIANTS table: font family + outline/shadow/blur standing in for
-    # text-stroke/box-shadow, and the Emphasize accent color).
-    variant: str | None = None
+    # Which script each word displays as: "roman" is word.text (the GPT
+    # Hinglish romanization); "native" is word.original (Sarvam's own
+    # Devanagari-script recognition, when the source speech was Hindi/mixed -
+    # see caption_ai.py's convert_to_hinglish). Affects the editor canvas,
+    # the Timeline labels, and both exports (_write_ass/_write_srt).
+    script_mode: Literal["roman", "native"] = "roman"
+    # Granular, project-wide typography controls. Outline and
+    # Shadow are genuinely independent layers in the export (see _write_ass's
+    # word_tags/shadow_tags): libass's \blur tag blurs an entire Dialogue
+    # line's composited bitmap at once (fill+outline together), so the only
+    # way to get crisp primary text with a smoothly-blurred shadow behind it
+    # - what every browser's CSS text-shadow does, and what users expect - is
+    # to draw the shadow as its own separate, lower-layer Dialogue line (fully
+    # blurrable) underneath a second, always-unblurred Dialogue line for the
+    # outline+fill. Background instead uses BorderStyle=3 (ASS's own "opaque
+    # box" mode), since libass auto-sizes that box from each line's real text
+    # metrics - guessing a box width/height ourselves would drift from the
+    # actual glyphs. Background is mutually exclusive with Outline/Shadow
+    # (BorderStyle is a Style-level, not per-word, property) - when it's on,
+    # the editor hides the Outline/Shadow controls rather than silently
+    # ignoring them.
+    # Defaults (outline off, a barely-there shadow) match the understated
+    # look competitor caption apps default to - a crisp flat glyph lifted
+    # just enough off a busy background, with contrast coming from font
+    # weight/colour rather than a visible border. Outline stays available
+    # and fully configurable for whoever wants the harder-edged look.
+    outline_enabled: bool = False
+    outline_width: float = Field(default=2, ge=0, le=8)
+    outline_color: str = "#000000"
+    shadow_enabled: bool = True
+    # Clockwise degrees from straight down (CSS text-shadow's own default
+    # direction) - 0=down, 90=left, 180=up, 270=right. See _shadow_offset.
+    shadow_angle: float = Field(default=0, ge=0, le=360)
+    shadow_distance: float = Field(default=2, ge=0, le=15)
+    # "Smoothness"/feather - directly the shadow layer's own \blur strength.
+    # 0 is a crisp, hard-edged offset copy; higher values feather it out.
+    shadow_blur: float = Field(default=2, ge=0, le=15)
+    shadow_opacity: float = Field(default=0.5, ge=0, le=1)
+    shadow_color: str = "#000000"
+    # A non-directional soft light around the glyph (no offset), distinct
+    # from Shadow - same two-layer-Dialogue mechanism, just drawn with
+    # xshad=yshad=0. glow_color=None means "use each word's own colour" (a
+    # self-coloured neon-style glow) rather than one fixed colour for every
+    # word.
+    glow_enabled: bool = False
+    glow_color: str | None = None
+    glow_blur: float = Field(default=8, ge=0, le=24)
+    glow_opacity: float = Field(default=0.6, ge=0, le=1)
+    background_enabled: bool = False
+    background_color: str = "#000000"
+    background_opacity: float = Field(default=0.6, ge=0, le=1)
+    bold: bool = True
+    italic: bool = False
 
 
 class RetranscribeRequest(BaseModel):
@@ -263,16 +393,7 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
                 preview_storage_path = f"{APP_NAME}/previews/{project['user_id']}/{uuid.uuid4().hex}.webm"
                 preview_result = await asyncio.to_thread(
                     put_object, preview_storage_path, preview_bytes, "video/webm")
-        palette = THEMES[project["theme"]]
-        tiers = palette.get("tiers")
-        for word in words:
-            if tiers:
-                config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
-                word["color"] = config["color"]
-                word["font_size"] = config["size"]
-            else:
-                word["color"] = palette["accent"] if word["important"] else palette["base"]
-                word["font_size"] = 62 if word["important"] else 52
+        _apply_theme_defaults(words, project["theme"])
         ready_fields = {
             "words": words, "source_transcript": source_transcript,
             "transcription_mode": transcription["mode"], "transcription_quality": transcription,
@@ -324,7 +445,7 @@ async def usage(request: Request, user=Depends(current_user)):
 
 @projects_router.post("/projects/process")
 async def process_video(request: Request, file: UploadFile = File(...),
-                        theme: str = Form("viral"), font_id: str = Form("poppins"),
+                        theme: str = Form("street_glow"), font_id: str = Form("poppins"),
                         speech_language: str = Form("auto"),
                         user=Depends(current_user)):
     if theme not in THEMES:
@@ -367,7 +488,13 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "theme": theme, "font_id": font_id,
                    "words_per_caption": None, "caption_lines": 1, "caption_position": "bottom",
                    "audio_volume": 100, "audio_muted": False,
-                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "variant": None,
+                   "brightness": 0, "contrast": 100, "saturation": 100, "render_quality": "high", "elements": [], "sfx_markers": [], "script_mode": "roman",
+                   "outline_enabled": False, "outline_width": 2, "outline_color": "#000000",
+                   "shadow_enabled": True, "shadow_angle": 0, "shadow_distance": 2, "shadow_blur": 2,
+                   "shadow_opacity": 0.5, "shadow_color": "#000000",
+                   "glow_enabled": False, "glow_color": None, "glow_blur": 8, "glow_opacity": 0.6,
+                   "background_enabled": False, "background_color": "#000000", "background_opacity": 0.6,
+                   "bold": True, "italic": False,
                    "words": [], "source_transcript": "",
                    "speech_language": speech_language, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
@@ -409,7 +536,17 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
                   "words": [word.model_dump() for word in payload.words],
                   "elements": [element.model_dump() for element in payload.elements],
                   "sfx_markers": [marker.model_dump() for marker in payload.sfx_markers],
-                  "variant": payload.variant,
+                  "script_mode": payload.script_mode,
+                  "outline_enabled": payload.outline_enabled, "outline_width": payload.outline_width,
+                  "outline_color": payload.outline_color,
+                  "shadow_enabled": payload.shadow_enabled, "shadow_angle": payload.shadow_angle,
+                  "shadow_distance": payload.shadow_distance, "shadow_blur": payload.shadow_blur,
+                  "shadow_opacity": payload.shadow_opacity, "shadow_color": payload.shadow_color,
+                  "glow_enabled": payload.glow_enabled, "glow_color": payload.glow_color,
+                  "glow_blur": payload.glow_blur, "glow_opacity": payload.glow_opacity,
+                  "background_enabled": payload.background_enabled,
+                  "background_color": payload.background_color, "background_opacity": payload.background_opacity,
+                  "bold": payload.bold, "italic": payload.italic,
                   "updated_at": datetime.now(timezone.utc).isoformat()}})
     if not result.matched_count:
         raise HTTPException(404, "Project not found")
@@ -419,12 +556,12 @@ async def update_project(project_id: str, payload: ProjectEdit, request: Request
 @projects_router.get("/projects/{project_id}/srt")
 async def export_srt(project_id: str, request: Request, user=Depends(current_user)):
     project = await request.app.state.db.projects.find_one(
-        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0, "words": 1})
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0, "words": 1, "script_mode": 1})
     if not project:
         raise HTTPException(404, "Project not found")
     if not project.get("words"):
         raise HTTPException(422, "No captions to export yet")
-    srt = _write_srt(project["words"])
+    srt = _write_srt(project["words"], project.get("script_mode", "roman"))
     return Response(srt, media_type="application/x-subrip",
                     headers={"Content-Disposition": "attachment; filename=captain-title.srt"})
 
@@ -464,16 +601,7 @@ async def reassign_emphasis_endpoint(project_id: str, request: Request, user=Dep
     # Re-bake color/font_size from the (possibly now different) tier, same
     # as a template switch does - a word whose tier just changed shouldn't
     # keep styling that belonged to its old one.
-    palette = THEMES.get(project["theme"], THEMES["viral"])
-    tiers = palette.get("tiers")
-    for word in words:
-        if tiers:
-            config = tiers[word["emphasis"] if word.get("emphasis") in tiers else "support"]
-            word["color"] = config["color"]
-            word["font_size"] = config["size"]
-        else:
-            word["color"] = palette["accent"] if word["important"] else palette["base"]
-            word["font_size"] = 62 if word["important"] else 52
+    _apply_theme_defaults(words, project["theme"])
     await db.projects.update_one({"project_id": project_id}, {"$set": {
         "words": words, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"words": words}
@@ -487,6 +615,25 @@ def _ass_time(seconds):
 def _ass_color(hex_color):
     value = hex_color.lstrip("#").ljust(6, "F")[:6]
     return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}&"
+
+
+def _ass_color_alpha(hex_color, opacity=1.0):
+    """Same as _ass_color, but with an explicit alpha channel - ASS alpha is
+    inverted from the usual convention (00 = fully opaque, FF = fully
+    transparent), so opacity (0-1, normal convention) has to be flipped."""
+    value = hex_color.lstrip("#").ljust(6, "F")[:6]
+    alpha = round((1 - max(0.0, min(1.0, opacity))) * 255)
+    return f"&H{alpha:02X}{value[4:6]}{value[2:4]}{value[0:2]}&"
+
+
+def _shadow_offset(angle_deg, distance):
+    """Converts a clockwise-from-straight-down angle + distance into ASS's
+    \\xshad/\\yshad pixel offsets (x right-positive, y DOWN-positive, same as
+    screen/video coordinates). angle=0 points straight down, matching CSS
+    text-shadow's own default direction, so the Shadow panel's dial reads the
+    same way a designer already expects from CSS."""
+    radians = math.radians(angle_deg)
+    return distance * math.sin(radians), distance * math.cos(radians)
 
 
 SENTENCE_END_CHARS = ".!?।॥"  # includes Devanagari danda/double danda
@@ -510,7 +657,13 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
     a natural pause (max_gap) is still a break point either way. A sentence-
     ending word is always the last word of its group, regardless of the gap
     or count settings, so a caption never splices the tail of one sentence
-    onto the start of the next."""
+    onto the start of the next.
+
+    A word's own new_caption overrides all of the above: True always starts
+    a new group right at that word (a manual "Split" edit), False always
+    keeps it in the previous group (a manual "Merge" edit) even past
+    max_words/max_gap/sentence-end - the same tri-state pattern new_line
+    uses one level down, for caption boundaries instead of line wraps."""
     groups = []
     index = 0
     total = len(words)
@@ -518,11 +671,18 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
         group = [words[index]]
         group_end = words[index]["end"]
         next_index = index + 1
-        while (next_index < total and len(group) < max_words and not _ends_sentence(group[-1])
-              and words[next_index]["start"] - group_end < max_gap
-              and (strict_count or group_end - words[index]["start"] < min_display)):
-            group.append(words[next_index])
-            group_end = words[next_index]["end"]
+        while next_index < total:
+            nxt = words[next_index]
+            forced_split = nxt.get("new_caption") is True
+            forced_merge = nxt.get("new_caption") is False
+            if forced_split:
+                break
+            if not forced_merge and not (len(group) < max_words and not _ends_sentence(group[-1])
+                  and nxt["start"] - group_end < max_gap
+                  and (strict_count or group_end - words[index]["start"] < min_display)):
+                break
+            group.append(nxt)
+            group_end = nxt["end"]
             next_index += 1
         groups.append(group)
         index = next_index
@@ -531,20 +691,43 @@ def _group_words_for_display(words, min_display=0.35, max_words=3, max_gap=0.4, 
 
 # Alignment (ASS \an numpad values) and vertical margin for each position
 # preset. "middle" ignores MarginV (ASS vertically centers regardless).
-POSITION_PRESETS = {"top": (8, 150), "middle": (5, 0), "bottom": (2, 210)}
+# Mirrors CaptionStudio.jsx's POSITION_DEFAULTS exactly (percentages of the
+# 1080x1920 canvas) - the point the whole caption block (every row of it) is
+# centered on, same as the preview's `top:${boxY}%; transform:translate(-50%,-50%)`.
+POSITION_DEFAULTS = {"top": (50, 14), "middle": (50, 50), "bottom": (50, 80)}
+# "Active word" pop timing/scale - mirrors .caption-overlay span.active's
+# transform:scale(1.1) plus its brighter glow, animated in and back out
+# over the word's own speaking window via ASS \t() transform tags.
+POP_IN_MS = 120
+POP_OUT_MS = 150
+POP_SCALE = 112
 
 
-def _group_position(group, caption_position):
-    """A group carries a manual pos_x/pos_y (dragged in the editor) on its
-    first word if the user has placed this exact caption - otherwise fall
-    back to the project's position preset."""
+def _group_center(group, caption_position):
+    """A group carries a manual pos_x/pos_y (dragged, or set from the
+    Transform panel's Position sliders) on its first word if the user has
+    placed this exact caption - otherwise fall back to the project's
+    position preset."""
     anchor = group[0]
     pos_x, pos_y = anchor.get("pos_x"), anchor.get("pos_y")
-    if pos_x is not None and pos_y is not None:
-        x_px, y_px = round(pos_x / 100 * 1080), round(pos_y / 100 * 1920)
-        return f"\\an5\\pos({x_px},{y_px})", 0
-    align, margin_v = POSITION_PRESETS.get(caption_position, POSITION_PRESETS["bottom"])
-    return f"\\an{align}", margin_v
+    if pos_x is None or pos_y is None:
+        pos_x, pos_y = POSITION_DEFAULTS.get(caption_position, POSITION_DEFAULTS["bottom"])
+    return round(pos_x / 100 * 1080), round(pos_y / 100 * 1920)
+
+
+def _group_rotation(group):
+    """The Transform panel's Rotation slider, set per-caption on the
+    group's anchor (first) word - None/0 means no rotation."""
+    return group[0].get("rotation") or 0
+
+
+def _split_rows(group, breaks):
+    rows = [[]]
+    for index, word in enumerate(group):
+        if index > 0 and breaks[index]:
+            rows.append([])
+        rows[-1].append(word)
+    return rows
 
 
 def _auto_line_breaks(group, tiers, caption_lines):
@@ -577,75 +760,529 @@ def _resolve_line_breaks(group, tiers, caption_lines):
 
 def _write_element_dialogue(element):
     """A sticker or free-text overlay: fixed position (no word-sync), own
-    font size/color, drawn on a layer above the caption text so it sits on
-    top of it. A sticker glyph relies on fontconfig's own fallback to find a
-    font that covers it (the project's chosen caption font usually doesn't);
-    a text layer instead honors its own explicit font choice."""
+    font size/color. Draw order relative to the caption text (Layer 0) is
+    standard z-index staging only - there's no video matting/segmentation
+    here, so "behind" sits behind the captions, not behind an actual person
+    in the footage. A sticker glyph relies on fontconfig's own fallback to
+    find a font that covers it (the project's chosen caption font usually
+    doesn't); a text layer instead honors its own explicit font choice."""
     safe = (element.get("char") or "").replace("{", "").replace("}", "")
     x_px = round(element.get("pos_x", 50) / 100 * 1080)
     y_px = round(element.get("pos_y", 30) / 100 * 1920)
-    tags = f"\\an5\\pos({x_px},{y_px})\\fs{element.get('font_size', 120)}\\c{_ass_color(element.get('color', '#FFFFFF'))}"
+    # Matches .element-overlay's CSS text-shadow (0 2px 6px rgba(0,0,0,.7))
+    # rather than inheriting the Style line's own Outline/Shadow - elements
+    # have no per-theme/variant border of their own, so without this they'd
+    # pick up whatever the Style line happens to default to.
+    tags = f"\\an5\\pos({x_px},{y_px})\\fs{element.get('font_size', 120)}\\c{_ass_color(element.get('color', '#FFFFFF'))}\\bord0\\shad2\\blur3"
     if element.get("kind") == "text":
         family = FONTS.get(element.get("font_id", "poppins"), FONTS["poppins"])["family"]
         tags = f"\\fn{family}" + tags
-    return (f"Dialogue: 1,{_ass_time(element['start'])},{_ass_time(element['end'])},"
+    layer = -1 if element.get("layer") == "behind" else 2
+    return (f"Dialogue: {layer},{_ass_time(element['start'])},{_ass_time(element['end'])},"
             f"Default,,0,0,0,,{{{tags}}}{safe}\n")
 
 
+# Street Glow's two fixed sizes/gap (project px at the 1080x1920 canvas,
+# same convention as every other px value in this file) - not read from
+# word.font_size/word.color at all, since this is a complete, fixed design
+# (not a skinnable one). Mirrors CaptionStudio.jsx's own hardcoded
+# constants exactly, so the preview and export always agree on the layout:
+# both sides place line1/line2 using these same two numbers rather than
+# each trying to independently derive them from font metrics.
+STREET_GLOW_LINE1_SIZE = 72
+STREET_GLOW_LINE2_SIZE = 44
+STREET_GLOW_GAP_PX = -8
+STREET_GLOW_GLOW_BLUR = 10
+STREET_GLOW_SHADOW_BLUR = 3
+STREET_GLOW_GLOW_OPACITY = 0.85
+STREET_GLOW_SHADOW_OPACITY = 0.55
+
+
+def _mask_dialogue_pair(tags, text, dialogue_time, opacity, color):
+    """One alpha-mask + one colour-mask Dialogue line sharing the same
+    geometry tags - see _write_ass's own comment on the gblur-mask
+    technique. opacity_grey encodes opacity as plain grey brightness."""
+    opacity_grey = round(max(0.0, min(1.0, opacity)) * 255)
+    alpha_line = f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{tags}\\c&H{opacity_grey:02X}{opacity_grey:02X}{opacity_grey:02X}&}}{text}\n"
+    color_line = f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{tags}\\c{_ass_color(color)}}}{text}\n"
+    return alpha_line, color_line
+
+
+def _street_glow_text(words, script_mode, upper):
+    parts = []
+    for word in words:
+        text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+        text = text.replace("{", "").replace("}", "")
+        parts.append(text.upper() if upper else text)
+    return " ".join(parts)
+
+
+def _emit_street_glow_group(lines, shadow_alpha_lines, shadow_color_lines,
+                             glow_alpha_lines, glow_color_lines,
+                             group, center_x, center_y, script_mode):
+    """Street Glow is LINE-based, not word-based - each of its two lines
+    independently animates (line1 hard-pops, line2 slides up and fades in),
+    which ASS can only express with each line as its OWN Dialogue event: a
+    \\move/\\t position or scale animation applies to a whole Dialogue, not
+    to one run within a bigger \\N-joined block, so this deliberately does
+    NOT go through the single-Dialogue \\N engine the generic path below
+    uses. Vertical placement is a fixed, hand-picked pair of offsets (not
+    derived from font metrics) because this is one specific, fully fixed
+    2-line design checked by eye against the preview, not a generic
+    multi-theme engine that has to agree with an arbitrary browser layout."""
+    rows = _split_rows(group, _resolve_line_breaks(group, None, 2))
+    line1_words, line2_words = rows[0], (rows[1] if len(rows) > 1 else [])
+    row2_height = STREET_GLOW_LINE2_SIZE if line2_words else 0
+    gap = STREET_GLOW_GAP_PX if line2_words else 0
+    total_height = STREET_GLOW_LINE1_SIZE + row2_height + gap
+    top = center_y - total_height / 2
+    cy1 = round(top + STREET_GLOW_LINE1_SIZE / 2)
+    cy2 = round(top + STREET_GLOW_LINE1_SIZE + gap + row2_height / 2)
+    dialogue_time = f"{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])}"
+
+    line1 = THEMES["street_glow"]["line1"]
+    line1_text = _street_glow_text(line1_words, script_mode, upper=True)
+    line1_geometry = (f"\\an5\\pos({center_x},{cy1})\\fn{line1['font']}\\fs{STREET_GLOW_LINE1_SIZE}"
+                      f"\\fscx100\\fscy100\\bord0\\shad0\\blur0"
+                      f"\\t(0,160,\\fscx108\\fscy108)\\t(160,240,\\fscx100\\fscy100)")
+    lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{line1_geometry}\\c{_ass_color(line1['color'])}}}{line1_text}\n")
+    # Line1's own neon glow - the same gblur-mask technique as the generic
+    # Shadow/Glow layers below, just always-on and hardcoded to this
+    # template's own red (this template owns its complete look, not the
+    # project's Shadow/Glow panel).
+    glow_alpha, glow_color = _mask_dialogue_pair(line1_geometry, line1_text, dialogue_time,
+                                                  STREET_GLOW_GLOW_OPACITY, line1["color"])
+    glow_alpha_lines.append(glow_alpha)
+    glow_color_lines.append(glow_color)
+
+    if not line2_words:
+        return
+    line2 = THEMES["street_glow"]["line2"]
+    line2_text = _street_glow_text(line2_words, script_mode, upper=False)
+    move_from_y = cy2 + 18
+    line2_geometry = (f"\\an5\\move({center_x},{move_from_y},{center_x},{cy2},0,220)\\fad(120,80)"
+                      f"\\fn{line2['font']}\\fs{STREET_GLOW_LINE2_SIZE}\\fscx100\\fscy100\\bord0\\shad0\\blur0")
+    lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{{{line2_geometry}\\c{_ass_color(line2['color'])}}}{line2_text}\n")
+    shadow_alpha, shadow_color = _mask_dialogue_pair(line2_geometry, line2_text, dialogue_time,
+                                                      STREET_GLOW_SHADOW_OPACITY, "#000000")
+    shadow_alpha_lines.append(shadow_alpha)
+    shadow_color_lines.append(shadow_color)
+
+
+# Doodle Marker's uniform base size (project px at the 1080x1920 canvas) -
+# every word is this one size, only colour/decoration differs by tier (see
+# THEMES["doodle_marker"]). DOODLE_NATIVE_LINE_HEIGHT reuses the exact
+# multiplier calibrated for the generic \N engine (see _write_ass's own
+# comment on it) purely to ESTIMATE where a multi-row caption's later rows
+# sit, for placing a decoration behind a word in them - the real text still
+# flows through the generic single-Dialogue \N path below untouched, this
+# estimate only affects where a pill/loop gets drawn, not the text itself.
+# A few px of drift here reads as hand-drawn imperfection, not a bug - this
+# is a much looser tolerance than the core engine's own preview/export gap.
+DOODLE_FONT_SIZE = 56
+DOODLE_NATIVE_LINE_HEIGHT = 1.47
+
+
+def _doodle_row_center_y(center_y, row_index, num_rows):
+    return round(center_y + (row_index - (num_rows - 1) / 2) * DOODLE_FONT_SIZE * DOODLE_NATIVE_LINE_HEIGHT)
+
+
+# libass's \clip rectangle, when combined with a \pN vector drawing in the
+# SAME override block, was found (via a minimal isolated repro - a plain
+# \p1 rect with a STATIC \clip exactly matching its own bounds still came
+# out clipped to half width) to not clip at the coordinates given - some
+# libass-version interaction between \clip and \p mode, not anything in
+# this file's own math. Animating that unreliable \clip+\t combination
+# would be building the reveal on a foundation that doesn't hold, so the
+# draw-on/wipe animations below use a handful of discrete growth STEPS
+# (separate short Dialogues, each a bit more "grown" than the last)
+# instead - a steppier reveal than true sub-frame interpolation, but one
+# that actually renders where it's told to.
+DOODLE_REVEAL_STEPS = 6
+
+
+def _doodle_pill_path(hw, hh, right_x):
+    """A filled, asymmetric rounded blob (ASS \\p vector drawing, centered
+    on its own \\pos) approximating the organic CSS border-radius from the
+    spec - ASS has no border-radius equivalent, so each corner gets its own
+    hand-picked radius instead of one uniform value, for the same
+    "not a perfect rectangle" organic feel. right_x is the shape's current
+    right edge in local coords (equal to hw for a fully "grown" pill, less
+    for an in-progress reveal step - see _emit_doodle_decorations) - the
+    LEFT edge always stays at -hw, so stepping right_x up across a few
+    Dialogues reads as the pill growing left-to-right."""
+    grown = max(1.0, right_x - (-hw))
+    r_tl, r_bl = hh * 0.55, hh * 0.22
+    r_tr, r_br = min(hh * 0.18, grown / 2), min(hh * 0.5, grown / 2)
+    return (f"m {round(-hw + r_tl)} {round(-hh)} "
+            f"l {round(right_x - r_tr)} {round(-hh)} "
+            f"b {round(right_x)} {round(-hh)} {round(right_x)} {round(-hh)} {round(right_x)} {round(-hh + r_tr)} "
+            f"l {round(right_x)} {round(hh - r_br)} "
+            f"b {round(right_x)} {round(hh)} {round(right_x)} {round(hh)} {round(right_x - r_br)} {round(hh)} "
+            f"l {round(-hw + r_bl)} {round(hh)} "
+            f"b {round(-hw)} {round(hh)} {round(-hw)} {round(hh)} {round(-hw)} {round(hh - r_bl)} "
+            f"l {round(-hw)} {round(-hh + r_tl)} "
+            f"b {round(-hw)} {round(-hh)} {round(-hw)} {round(-hh)} {round(-hw + r_tl)} {round(-hh)}")
+
+
+def _doodle_loop_path(hw, hh):
+    """A hand-drawn-looking, deliberately-not-quite-closed ellipse ring
+    (ASS \\p vector drawing, stroked not filled - see _emit_doodle_decorations)
+    - directly re-projects the spec's own SVG path (viewBox 100x40, center
+    50,20) into local drawing coords scaled to this word's own half-width/
+    half-height, rather than drawing a generic/symmetric ellipse."""
+    sx, sy = hw / 50, hh / 20
+    return (f"m {round(-40*sx)} 0 "
+            f"b {round(-40*sx)} {round(-12*sy)} {round(40*sx)} {round(-14*sy)} {round(42*sx)} 0 "
+            f"b {round(44*sx)} {round(14*sy)} {round(-42*sx)} {round(16*sy)} {round(-36*sx)} {round(-2*sy)}")
+
+
+def _emit_doodle_decorations(lines, group, rows, center_x, center_y, script_mode):
+    """Doodle Marker's pill/loop decorations draw BEHIND the already-emitted
+    text Dialogue (Layer -1, same "negative = behind" convention
+    _write_element_dialogue already uses) as their own small vector-drawing
+    Dialogues, stepped in over a few frames (see DOODLE_REVEAL_STEPS) to
+    read as a draw-on/wipe - the user's own backend mapping spec called for
+    an animated \\clip for this, which turned out not to render correctly
+    combined with \\p vector drawing (see DOODLE_REVEAL_STEPS's own
+    comment). They can't live inside the generic \\N-joined text Dialogue
+    itself (that block has no per-word coordinates of its own, by design -
+    see the \\N engine's comment), so each word's on-screen position is
+    independently estimated here via real glyph-width measurement
+    (_measure_text_width) against the SAME bundled font file libass
+    renders, plus _doodle_row_center_y's row-height estimate."""
+    palette = THEMES["doodle_marker"]
+    num_rows = len(rows)
+    for row_index, row in enumerate(rows):
+        row_cy = _doodle_row_center_y(center_y, row_index, num_rows)
+        texts = [(word.get("original") or word["text"]) if script_mode == "native" else word["text"] for word in row]
+        widths = [_measure_text_width(text, "Caveat", DOODLE_FONT_SIZE) for text in texts]
+        space_w = _measure_text_width(" ", "Caveat", DOODLE_FONT_SIZE) or DOODLE_FONT_SIZE * 0.28
+        row_width = sum(widths) + space_w * max(0, len(row) - 1)
+        cursor = center_x - row_width / 2
+        for word, text, width in zip(row, texts, widths):
+            word_cx = round(cursor + width / 2)
+            cursor += width + space_w
+            tier = word["emphasis"] if word.get("emphasis") in palette["tiers"] else "support"
+            if tier not in ("key", "feature"):
+                continue
+            word_end = _ass_time(group[-1]["end"])
+            if tier == "key":
+                hw, hh = width / 2 + 14, DOODLE_FONT_SIZE * 0.42
+                reveal_ms = 180
+                style_tags = f"\\1a&H00&\\1c{_ass_color(palette['pill_color'])}\\3a&HFF&\\bord0\\shad0\\blur0"
+            else:
+                hw = width / 2 + 10
+                hh = hw * 0.4
+                reveal_ms = 220
+                style_tags = f"\\1a&HFF&\\3a&H00&\\3c{_ass_color(palette['loop_color'])}\\bord3\\shad0\\blur0"
+            step_dur = reveal_ms / DOODLE_REVEAL_STEPS / 1000
+            for step in range(1, DOODLE_REVEAL_STEPS + 1):
+                step_start = word["start"] + (step - 1) * step_dur
+                start_time = _ass_time(step_start)
+                end_time = word_end if step == DOODLE_REVEAL_STEPS else _ass_time(step_start + step_dur)
+                fraction = step / DOODLE_REVEAL_STEPS
+                if tier == "key":
+                    right_x = -hw + 2 * hw * fraction
+                    drawing = _doodle_pill_path(hw, hh, right_x=right_x)
+                    bbox_max_x, bbox_max_y = right_x, hh
+                else:
+                    step_hw, step_hh = hw * fraction, hh * fraction
+                    drawing = _doodle_loop_path(step_hw, step_hh)
+                    bbox_max_x, bbox_max_y = step_hw, step_hh
+                # libass centers a \p vector drawing's \an5 \pos by
+                # subtracting HALF ITS OWN BOUNDING-BOX WIDTH/HEIGHT from
+                # the given point, regardless of where that bbox actually
+                # starts - verified empirically (an off-center shape, e.g.
+                # one growing from a fixed left edge like the pill above,
+                # rendered up to a full half-width too far left/up otherwise).
+                # Compensating by always sending (desired + bbox_max) as
+                # \pos, rather than the desired point itself, cancels that
+                # out for any path whose local origin (0,0) sits at its own
+                # true center - which _doodle_pill_path/_doodle_loop_path's
+                # fixed LEFT edge (-hw) and symmetric height both do.
+                pos_x, pos_y = round(word_cx + bbox_max_x), round(row_cy + bbox_max_y)
+                tags = f"\\an5\\pos({pos_x},{pos_y}){style_tags}\\p1"
+                lines.append(f"Dialogue: -1,{start_time},{end_time},Default,,0,0,0,,{{{tags}}}{drawing}{{\\p0}}\n")
+
+
 def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
-               caption_lines=1, caption_position="bottom", elements=None, variant=None):
-    palette = THEMES.get(theme, THEMES["viral"])
+               caption_lines=1, caption_position="bottom", elements=None,
+               script_mode="roman", bold=True, italic=False,
+               outline_enabled=False, outline_width=2, outline_color="#000000",
+               shadow_enabled=True, shadow_angle=0, shadow_distance=2, shadow_blur=2,
+               shadow_opacity=0.5, shadow_color="#000000",
+               glow_enabled=False, glow_color=None, glow_blur=8, glow_opacity=0.6,
+               background_enabled=False, background_color="#000000", background_opacity=0.6,
+               shadow_alpha_path=None, shadow_color_path=None,
+               glow_alpha_path=None, glow_color_path=None):
+    palette = THEMES.get(theme, THEMES["street_glow"])
     primary_family = FONTS.get(font_id, FONTS["poppins"])["family"]
     tiers = palette.get("tiers")
-    accent_family = palette.get("accent_font") or primary_family
-    variant_config = VARIANTS.get(variant)
-    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
+    # Background and Outline/Shadow are mutually exclusive: BorderStyle (ASS's
+    # box-vs-outline switch) is a Style-level property, not per-word, so a
+    # project can't mix a background box with a per-word outline/shadow in
+    # one ASS file. The editor's Text panel enforces the same choice.
+    use_background = background_enabled
+    # libass's own \blur is a cruder approximation of Gaussian blur than a
+    # browser's native CSS text-shadow blur - visibly coarser/more "stepped"
+    # even when it's blurring the right shape (a solid silhouette, not a
+    # hollow outline ring - see the two-layer-Dialogue history this
+    # replaced). Shadow and Glow are instead rendered as two tiny MASK .ass
+    # files each (an "alpha" mask - a plain grey whose brightness encodes
+    # opacity - and a "colour" mask - the real colour at full brightness),
+    # burned onto solid black canvases and blurred with ffmpeg's own gblur
+    # (genuinely smooth, same quality tier as a browser), then the colour
+    # mask's RGB + the blurred alpha mask's luma are combined with
+    # `alphamerge` into one proper RGBA layer and composited under the
+    # crisp primary text in _render. See _write_blur_mask_files below for
+    # the four small per-word functions that build these masks' tags.
+    use_shadow_layer = not use_background and shadow_enabled
+    shadow_x, shadow_y = _shadow_offset(shadow_angle, shadow_distance) if use_shadow_layer else (0, 0)
+    # Glow is the same mask-based blur as Shadow but with no offset - a
+    # soft, even light around the glyph rather than a directional drop
+    # shadow - composited even further back, so a caption can combine both
+    # (a tight shadow for grounding + a wide glow for pop) without either
+    # washing the other out.
+    use_glow_layer = not use_background and glow_enabled
+    # Bold is NOT forced here at the Style level - see BOLD_CAPABLE_FONTS
+    # above. word_tags() below applies \b1 per word, only for a family that
+    # can actually back it up with a real face.
+    italic_field = -1 if italic else 0
+    if use_background:
+        # BorderStyle=3 ("opaque box"): libass auto-sizes the box from each
+        # line's own real text metrics, which a hand-rolled \p vector
+        # rectangle could never match without re-implementing font shaping -
+        # Outline becomes the box's padding, Shadow a flat box drop offset
+        # (kept at 0 - a flat box reads cleanest), BackColour the box fill.
+        border_style_field, outline_field, shadow_field = 3, 14, 0
+        box_fill = _ass_color_alpha(background_color, background_opacity).rstrip("&")
+        outline_colour_field, back_colour_field = box_fill, box_fill
+    else:
+        border_style_field, outline_field, shadow_field = 1, 0, 0
+        outline_colour_field, back_colour_field = "&H00000000", "&H80000000"
+    # WrapStyle 2: no automatic word-wrap, only our own explicit \N breaks
+    # (from _resolve_line_breaks/_split_rows below) are ever honoured - we
+    # decide line breaks ourselves and don't want libass silently adding
+    # its own if a line happens to run long.
+    header = f"""[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\nStyle: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,{outline_colour_field},{back_colour_field},0,{italic_field},0,0,100,100,0,0,{border_style_field},{outline_field},{shadow_field},2,70,70,210,1\n[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"""
     lines = [header]
-    groups = _group_words_for_display(words, max_words=words_per_caption or 3,
+    shadow_alpha_lines, shadow_color_lines = [], []
+    glow_alpha_lines, glow_color_lines = [], []
+    # Both fixed templates need multiple words flowing together per cue -
+    # Street Glow's two lines (a multi-word headline + a multi-word
+    # subline, e.g. "guard fence" / "sakte hain") and Doodle Marker's
+    # single flowing line (e.g. "lagatar consistent", a pill-highlighted
+    # word sitting next to a plain one) both fall apart at the generic
+    # 3-word cap and 0.35s min-display, which are tuned for the old rapid-
+    # fire single/double-word caption chips - either cap would cut most
+    # cues off at 1 word well before a realistic phrase finishes being
+    # spoken. Both get the same more generous thresholds; explicit
+    # words_per_caption still overrides both via strict_count.
+    is_fixed_template = theme in ("street_glow", "doodle_marker")
+    default_max_words = 6 if is_fixed_template else 3
+    min_display = 1.5 if is_fixed_template else 0.35
+    groups = _group_words_for_display(words, min_display=min_display,
+                                      max_words=words_per_caption or default_max_words,
                                       strict_count=words_per_caption is not None)
     for group in groups:
-        position_tag, margin_v = _group_position(group, caption_position)
-        breaks = _resolve_line_breaks(group, tiers, caption_lines)
-        word_parts = []
-        for index, word in enumerate(group):
-            safe = word["text"].replace("{", "").replace("}", "")
-            # Color/size always come from the word itself (editable per word
-            # in the UI, defaulted from the theme at generation/theme-switch
-            # time) - a tiered theme only still decides the font family,
-            # unless a style variant is active, which overrides the font for
-            # every word regardless of theme/tier (matching the editor).
-            if variant_config:
-                family = variant_config["font"]
-            elif tiers:
-                tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
-                family = tiers[tier]["font"]
-            else:
-                family = accent_family if word.get("important") else primary_family
+        center_x, center_y = _group_center(group, caption_position)
+        # Street Glow is LINE-based (two independently-animated, fixed
+        # roles), not word-based - it never goes through the generic
+        # tiers-driven word_tags()/\N-joined-block path below at all (see
+        # _emit_street_glow_group's own comment on why). Anything without
+        # "tiers" falls back to it too, so a legacy/unknown theme id on an
+        # older saved project still renders instead of crashing.
+        if not tiers:
+            _emit_street_glow_group(lines, shadow_alpha_lines, shadow_color_lines,
+                                     glow_alpha_lines, glow_color_lines,
+                                     group, center_x, center_y, script_mode)
+            continue
+        rotation = _group_rotation(group)
+        # Doodle Marker uses ONE uniform font size for every tier - only
+        # colour/decoration differ (see THEMES) - so, unlike the old
+        # multi-size tiered templates this auto-break-per-tier-change rule
+        # was built for, there's no size collision to avoid by breaking
+        # the line every time a word's tier differs from the last one.
+        # Words should flow on one line, decorated in place, like the
+        # reference design - passing tiers=None here keeps _auto_line_breaks
+        # in its "only break at an explicit caption_lines=2 midpoint, or a
+        # word's own manual new_line override" mode instead.
+        break_tiers = None if theme == "doodle_marker" else tiers
+        breaks = _resolve_line_breaks(group, break_tiers, caption_lines)
+        rows = _split_rows(group, breaks)
+
+        def word_tags(word, display_text):
+            tier = word["emphasis"] if word.get("emphasis") in tiers else "support"
+            family = tiers[tier]["font"]
+            # Glyph coverage overrides style choice - but only when it has
+            # to: most of the Latin display fonts above can't render
+            # Devanagari at all, so when the native script is actually
+            # showing (word.original, not a Romanized fallback), force the
+            # fallback font that covers it UNLESS the family already chosen
+            # (a Hindi template's own font, e.g. Baloo 2/Hind/Mukta/Rozha
+            # One/Yatra One/Tiro Devanagari Hindi) already has real
+            # Devanagari glyphs of its own - forcing the fallback on top of
+            # those would silently throw away the whole point of a
+            # dedicated Hindi template the moment native script is shown.
+            if _has_devanagari(display_text) and family not in DEVANAGARI_CAPABLE_FONTS:
+                family = DEVANAGARI_FONT
             color = word.get("color", "#FFFFFF")
             font_size = word.get("font_size", 52)
             # "FOR THIS MOMENT" Emphasize toggle: a fixed accent highlight
-            # (the active variant's accent, or a default yellow with none
-            # selected) plus a size bump - mirrors App.css's
-            # .emphasize-accent rule and its var(--variant-accent) hookup.
+            # plus a size bump - mirrors App.css's .emphasize-accent rule.
             if word.get("emphasize"):
-                color = (variant_config or {}).get("accent", DEFAULT_EMPHASIZE_ACCENT)
+                color = DEFAULT_EMPHASIZE_ACCENT
                 font_size = round(font_size * 1.18)
-            tags = f"\\fn{family}\\c{_ass_color(color)}\\fs{font_size}"
-            if variant_config:
-                outline_hex = variant_config["outline"] or color
-                tags += (f"\\3c{_ass_color(outline_hex)}\\bord{variant_config['bord']}"
-                         f"\\shad{variant_config['shad']}\\blur{variant_config['blur']}")
-            if index == 0:
-                tags = position_tag + tags
-            separator = r"\N" if (index > 0 and breaks[index]) else (" " if index > 0 else "")
-            word_parts.append(f"{separator}{{{tags}}}{safe}")
-        styled = "".join(word_parts)
-        lines.append(f"Dialogue: 0,{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])},"
-                     f"Default,,0,0,{margin_v},,{styled}\n")
+            # \fscx100\fscy100 is set explicitly (not just as a \t() target)
+            # so each word starts its own animation from a clean baseline -
+            # override tags otherwise carry forward onto the next word's
+            # text run within the same Dialogue line, which would let one
+            # word's still-finishing pop bleed into the next word's.
+            base = f"\\fn{family}\\fs{font_size}\\fscx100\\fscy100"
+            bold_tag = "\\b1" if bold and family in BOLD_CAPABLE_FONTS else ""
+            # "Active word" pop: CaptionStudio.jsx's .caption-overlay
+            # span.active scales the word up 1.1x and brightens its glow
+            # for exactly as long as it's the word currently being spoken.
+            # The export has no live playhead to key off of, but each word
+            # already carries its own [start,end] - animate the same pop in
+            # and back out over that word's own window, relative to this
+            # Dialogue line's own start time (libass \t() transform tags are
+            # always relative, not absolute clip time).
+            rel_on = max(0, round((word["start"] - group[0]["start"]) * 1000))
+            rel_off = max(rel_on + 1, round((word["end"] - group[0]["start"]) * 1000))
+            pop_in_end = min(rel_off, rel_on + POP_IN_MS)
+            pop_out_start = max(pop_in_end, rel_off - POP_OUT_MS)
+
+            pop_scale_only = (f"\\t({rel_on},{pop_in_end},\\fscx{POP_SCALE}\\fscy{POP_SCALE})"
+                              f"\\t({pop_out_start},{rel_off},\\fscx100\\fscy100)")
+            if use_background:
+                # Style line's BorderStyle=3 already draws the box - no
+                # per-word \bord/\shad/\blur override needed (or wanted: an
+                # override here would resize the box per-word instead of
+                # drawing one consistent box per line).
+                primary = f"{base}\\c{_ass_color(color)}{bold_tag}" + pop_scale_only
+                return primary, None, None, None, None, font_size
+
+            # Granular Outline - crisp, never blurred (Shadow/Glow are built
+            # as separate blur-mask files below, not as ASS override tags).
+            outline_tags = (f"\\3c{_ass_color(outline_color)}\\bord{outline_width}" if outline_enabled
+                            else "\\bord0")
+            primary = f"{base}\\c{_ass_color(color)}{bold_tag}{outline_tags}\\shad0\\blur0" + pop_scale_only
+
+            # Mask tags carry no colour of their own (the alpha mask is a
+            # plain grey, the colour mask the real hue) - just the shared
+            # geometry (font/size/position/pop-scale) every mask needs, with
+            # \bord0\blur0\shad0 since the "solid silhouette to blur"
+            # concern that drove \bord on the old single-layer approach
+            # doesn't apply to a real alpha-channel gblur.
+            mask_base = f"{base}{bold_tag}\\bord0\\shad0\\blur0" + pop_scale_only
+
+            shadow_alpha_tags = shadow_color_tags = None
+            if use_shadow_layer:
+                opacity_grey = round(max(0.0, min(1.0, shadow_opacity)) * 255)
+                shadow_alpha_tags = f"\\c&H{opacity_grey:02X}{opacity_grey:02X}{opacity_grey:02X}&{mask_base}"
+                shadow_color_tags = f"\\c{_ass_color(shadow_color)}{mask_base}"
+
+            glow_alpha_tags = glow_color_tags = None
+            if use_glow_layer:
+                opacity_grey = round(max(0.0, min(1.0, glow_opacity)) * 255)
+                glow_alpha_tags = f"\\c&H{opacity_grey:02X}{opacity_grey:02X}{opacity_grey:02X}&{mask_base}"
+                # glow_color=None means "use this word's own colour" (a
+                # self-coloured neon glow) - resolved per word here, since
+                # different words in one caption can have different colours.
+                glow_color_tags = f"\\c{_ass_color(glow_color or color)}{mask_base}"
+            return primary, shadow_alpha_tags, shadow_color_tags, glow_alpha_tags, glow_color_tags, font_size
+
+        # One Dialogue line per caption group, rows joined by \N instead of
+        # each row getting its own manually-computed \pos - libass stacks
+        # \N-separated lines using the font's own native metrics (each
+        # line's own tallest run, same as a browser's line box), the same
+        # thing CaptionStudio.jsx's CSS line-height now relies on too. That
+        # fixes a real, measured gap: the old per-row "font_size * 1.1,
+        # centered by hand" approximation and a browser's own line-box
+        # layout don't distribute a line's space above/below the glyph ink
+        # the same way, so rows could end up visibly farther apart in the
+        # export even when the TOTAL block height matched the preview's.
+        # Letting libass and the browser each use their own native line
+        # layout (rather than our own two different hand-rolled
+        # approximations of it) is what actually gets them to agree.
+        word_parts = []
+        shadow_alpha_parts, shadow_color_parts = [], []
+        glow_alpha_parts, glow_color_parts = [], []
+        first_word = True
+        for row_index, row in enumerate(rows):
+            if row_index > 0:
+                word_parts.append("\\N")
+                if use_shadow_layer:
+                    shadow_alpha_parts.append("\\N")
+                    shadow_color_parts.append("\\N")
+                if use_glow_layer:
+                    glow_alpha_parts.append("\\N")
+                    glow_color_parts.append("\\N")
+            for index, word in enumerate(row):
+                display_text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+                safe = display_text.replace("{", "").replace("}", "")
+                primary_tags, shadow_alpha_tags, shadow_color_tags, glow_alpha_tags, glow_color_tags, _ = \
+                    word_tags(word, display_text)
+                if first_word:
+                    # \org pins the rotation pivot to the whole caption
+                    # block's own center so a multi-row caption rotates as
+                    # one rigid block - with everything now anchored by a
+                    # single \pos for the whole \N-joined block, \org and
+                    # \pos are simply the same point.
+                    frz = f"\\org({center_x},{center_y})\\frz{rotation:g}" if rotation else ""
+                    primary_tags = f"\\an5\\pos({center_x},{center_y}){frz}" + primary_tags
+                    if shadow_alpha_tags is not None:
+                        shadow_cx, shadow_cy = round(center_x + shadow_x), round(center_y + shadow_y)
+                        shadow_frz = f"\\org({shadow_cx},{shadow_cy})\\frz{rotation:g}" if rotation else ""
+                        shadow_pos = f"\\an5\\pos({shadow_cx},{shadow_cy}){shadow_frz}"
+                        shadow_alpha_tags = shadow_pos + shadow_alpha_tags
+                        shadow_color_tags = shadow_pos + shadow_color_tags
+                    if glow_alpha_tags is not None:
+                        # No offset - glow sits directly behind the primary
+                        # glyph, same \pos/\org as the primary layer.
+                        glow_pos = f"\\an5\\pos({center_x},{center_y}){frz}"
+                        glow_alpha_tags = glow_pos + glow_alpha_tags
+                        glow_color_tags = glow_pos + glow_color_tags
+                    first_word = False
+                separator = " " if index > 0 else ""
+                word_parts.append(f"{separator}{{{primary_tags}}}{safe}")
+                if shadow_alpha_tags is not None:
+                    shadow_alpha_parts.append(f"{separator}{{{shadow_alpha_tags}}}{safe}")
+                    shadow_color_parts.append(f"{separator}{{{shadow_color_tags}}}{safe}")
+                if glow_alpha_tags is not None:
+                    glow_alpha_parts.append(f"{separator}{{{glow_alpha_tags}}}{safe}")
+                    glow_color_parts.append(f"{separator}{{{glow_color_tags}}}{safe}")
+        dialogue_time = f"{_ass_time(group[0]['start'])},{_ass_time(group[-1]['end'])}"
+        lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(word_parts)}\n")
+        if shadow_alpha_parts:
+            shadow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_alpha_parts)}\n")
+            shadow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(shadow_color_parts)}\n")
+        if glow_alpha_parts:
+            glow_alpha_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_alpha_parts)}\n")
+            glow_color_lines.append(f"Dialogue: 0,{dialogue_time},Default,,0,0,0,,{''.join(glow_color_parts)}\n")
+        if theme == "doodle_marker":
+            _emit_doodle_decorations(lines, group, rows, center_x, center_y, script_mode)
     for element in (elements or []):
         if element["end"] > element["start"]:
             lines.append(_write_element_dialogue(element))
     Path(path).write_text("".join(lines), encoding="utf-8")
+    # Mask files are only written when their layer actually produced content -
+    # _render checks which of these paths exist to decide which extra
+    # blur-mask ffmpeg stages to build, so a disabled/inactive layer simply
+    # leaves no file behind rather than an empty, pointless one.
+    mask_header = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\n[V4+ Styles]\n"
+                   f"Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,"
+                   f"Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
+                   f"Alignment,MarginL,MarginR,MarginV,Encoding\n"
+                   f"Style: Default,{primary_family},52,&H00FFFFFF,&H00007AFF,&H00000000,&H00000000,0,"
+                   f"{italic_field},0,0,100,100,0,0,1,0,0,2,70,70,210,1\n"
+                   f"[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n")
+    for mask_path, mask_lines in ((shadow_alpha_path, shadow_alpha_lines), (shadow_color_path, shadow_color_lines),
+                                  (glow_alpha_path, glow_alpha_lines), (glow_color_path, glow_color_lines)):
+        if mask_path and mask_lines:
+            Path(mask_path).write_text(mask_header + "".join(mask_lines), encoding="utf-8")
 
 
 def _srt_time(seconds):
@@ -654,10 +1291,11 @@ def _srt_time(seconds):
     return f"{hours:02d}:{minutes:02d}:{int(secs):02d},{millis:03d}"
 
 
-def _write_srt(words):
+def _write_srt(words, script_mode="roman"):
     lines = []
     for index, word in enumerate(words, start=1):
-        lines.append(f"{index}\n{_srt_time(word['start'])} --> {_srt_time(word['end'])}\n{word['text']}\n")
+        text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+        lines.append(f"{index}\n{_srt_time(word['start'])} --> {_srt_time(word['end'])}\n{text}\n")
     return "\n".join(lines)
 
 
@@ -671,39 +1309,91 @@ def _escape_filter_path(path):
 
 
 RENDER_QUALITY_PRESETS = {
-    # "high" is close to visually lossless; "draft" trades quality for a
-    # much faster encode when you just want to sanity-check timing/styling
-    # before spending the time on a full-quality export.
-    "high": {"preset": "slow", "crf": "17"},
+    # "high" is close to visually lossless; "medium" (not libx264's "slow")
+    # keeps that same CRF - so still very high quality - while encoding
+    # meaningfully faster, since "slow" could make a real-length export
+    # take long enough to feel hung with no progress indicator in the UI.
+    # "draft" trades quality for a much faster encode when you just want to
+    # sanity-check timing/styling before spending the time on a full export.
+    "high": {"preset": "medium", "crf": "17"},
     "draft": {"preset": "veryfast", "crf": "26"},
 }
+# Hard ceiling on how long a single ffmpeg render may run. Without this, a
+# genuinely stuck/runaway ffmpeg process (a corrupt source file, a pathological
+# filter graph, a platform-specific encoder quirk) hangs the render request
+# forever - the backend never responds, so the editor's "Exporting..." button
+# never recovers either. A clear timeout error beats an infinite spinner.
+RENDER_TIMEOUT_SECONDS = 300
 
-# Mirrors frontend/src/lib/sfx.js's placeholder tones - there's no licensed
-# SFX audio bundled, so the export gets the same synthesized stand-in tone
-# the editor previews (frequency sweep + short envelope) rather than the
-# marker having no audible effect at all in the final video.
-SFX_TONE_PARAMS = {
-    "whoosh": {"freq": 180, "sweep_to": 540, "duration": 0.2},
-    "bass_drop": {"freq": 90, "sweep_to": 27, "duration": 0.4},
-    "pop": {"freq": 880, "sweep_to": 880, "duration": 0.2},
-    "cash": {"freq": 660, "sweep_to": 990, "duration": 0.2},
-    "shutter": {"freq": 1400, "sweep_to": 1400, "duration": 0.08},
-}
+# Mirrors frontend/src/lib/sfx.js's placeholder sounds - there's no
+# licensed SFX audio bundled (every free/CC0 sample host tried from this
+# sandbox - Freesound, Pixabay, Mixkit, Zapsplat, SoundBible, OpenGameArt -
+# is blocked by the outbound proxy policy here), so the export gets a
+# synthesized stand-in for each type instead of the marker having no
+# audible effect at all in the final video. whoosh/pop/shutter are
+# fundamentally noisy, transient sounds (air movement, a sharp impact) -
+# synthesizing them as a pure tone sweep (the original approach) reads as
+# a generic "beep" no matter the frequency, so those three are built from
+# filtered white noise instead; bass_drop (a real pitch-dropping sine, same
+# technique real trailer bass drops use) and cash (two short bell tones,
+# like a cash register's two-note "cha-ching") stay tone-based since that
+# genuinely is the right synthesis technique for what they're imitating.
+def _tone_burst(freq, duration, attack=0.01, decay=6):
+    """A single sine tone with a fast attack + exponential decay envelope -
+    the building block for bass_drop's sweep and cash's two chime notes."""
+    phase = f"2*PI*{freq}*t"
+    envelope = f"if(lt(t,{attack}),t/{attack},exp(-{decay}*(t-{attack})/{duration}))"
+    return f"({envelope})*sin({phase})"
 
 
 def _sfx_source_filter(sfx_type, label):
-    """A standalone ffmpeg lavfi source filter (no -i input needed) that
-    synthesizes one SFX marker's placeholder tone: a linear frequency sweep
-    with a quick attack and an exponential decay envelope, matching the
-    shape (if not the exact oscillator waveform) of the Web Audio preview."""
-    params = SFX_TONE_PARAMS.get(sfx_type, SFX_TONE_PARAMS["pop"])
-    freq, sweep_to, duration = params["freq"], params["sweep_to"], params["duration"]
-    phase = f"2*PI*({freq}+({sweep_to}-{freq})*min(t/{duration},1))*t"
-    attack = min(0.015, duration / 4)
-    release = duration * 0.6
-    envelope = f"if(lt(t,{attack}),t/{attack},exp(-5*(t-{attack})/{release}))"
-    expr = f"({envelope})*sin({phase})"
-    return f"aevalsrc=exprs='{expr}':s=44100:d={duration}[{label}]"
+    """A standalone ffmpeg lavfi filter chain (no -i input needed) that
+    synthesizes one SFX marker's placeholder sound, ending in output pad
+    [{label}] so the caller (_sfx_mix_filters) can pipe it into its own
+    pan/delay/volume stage same as before. Any internal sub-labels are
+    namespaced off `label` so multiple markers of the same type in one
+    project never collide on a shared pad name."""
+    if sfx_type == "whoosh":
+        # Band-limited noise instead of a tone sweep - air-movement texture,
+        # not a pitch. A moderate, fairly wide band gives it an "airy"
+        # broadband character; the long-ish decay is what reads as "whoosh"
+        # rather than a short "swish".
+        return (f"anoisesrc=d=0.3:c=white:r=44100:a=0.6,"
+                f"bandpass=f=1100:width_type=h:w=900,"
+                f"afade=t=in:d=0.02,afade=t=out:st=0.08:d=0.22:curve=exp,"
+                f"volume=1.3[{label}]")
+    if sfx_type == "pop":
+        # A quick noise burst through a higher band - a sharp transient
+        # "pop"/bubble sound, not a held note.
+        return (f"anoisesrc=d=0.08:c=white:r=44100:a=0.5,"
+                f"bandpass=f=2200:width_type=h:w=1800,"
+                f"afade=t=in:d=0.002,afade=t=out:st=0.012:d=0.068:curve=exp,"
+                f"volume=1.6[{label}]")
+    if sfx_type == "shutter":
+        # A very short, bright noise click - a camera shutter's mechanical
+        # snap reads as broadband high-frequency energy, not a tone at all.
+        return (f"anoisesrc=d=0.05:c=white:r=44100:a=0.5,"
+                f"highpass=f=3500,"
+                f"afade=t=in:d=0.001,afade=t=out:st=0.006:d=0.044:curve=exp,"
+                f"volume=1.3[{label}]")
+    if sfx_type == "cash":
+        # Two short bell-like notes a fifth apart, the second landing ~70ms
+        # after the first - the classic two-note "cha-ching" shape, instead
+        # of one continuous ascending sweep.
+        note_a, note_b = f"{label}_a", f"{label}_b"
+        return (f"aevalsrc=exprs='{_tone_burst(880, 0.15)}':s=44100:d=0.15[{note_a}];"
+                f"aevalsrc=exprs='{_tone_burst(1320, 0.15)}':s=44100:d=0.15[{note_b}];"
+                f"[{note_b}]adelay=70|70[{note_b}d];"
+                f"[{note_a}][{note_b}d]amix=inputs=2:duration=longest:normalize=0,"
+                f"volume=0.6[{label}]")
+    # bass_drop (and any unrecognized type, as the previous default was):
+    # a sine dropping from 90Hz to 27Hz, the same technique real trailer/
+    # EDM bass drops use - asoftclip adds a bit of harmonic saturation so
+    # it has some weight instead of sounding like a thin, clean sine.
+    phase = "2*PI*(90+(27-90)*min(t/0.4,1))*t"
+    envelope = "if(lt(t,0.015),t/0.015,exp(-5*(t-0.015)/0.24))"
+    return (f"aevalsrc=exprs='({envelope})*sin({phase})':s=44100:d=0.4,"
+            f"asoftclip=type=tanh:param=0.7,volume=1.3[{label}]")
 
 
 def _sfx_mix_filters(sfx_markers):
@@ -721,8 +1411,37 @@ def _sfx_mix_filters(sfx_markers):
     return lines, labels
 
 
+def _blur_mask_steps(prefix, alpha_rel, color_rel, blur_px, width, height, fonts_rel):
+    """ffmpeg filter_complex steps for one genuinely-smooth-blurred Shadow/
+    Glow layer. libass's own \\blur is a cruder approximation of Gaussian
+    blur than ffmpeg's gblur (the same quality tier a browser's CSS blur
+    uses) - but gblur needs a real alpha channel to blur into, and burning
+    an .ass file directly onto an already-transparent canvas doesn't
+    reliably produce one (tested empirically against this ffmpeg build -
+    the ass filter left the destination's alpha plane untouched, so
+    nothing composited). The workaround: burn a plain GREY copy of the
+    glyphs (brightness = this layer's configured opacity) onto an opaque
+    black canvas - an ordinary, fully-supported opaque render - blur THAT
+    with gblur, then use its luma as the alpha channel (via alphamerge) for
+    a second, unblurred, full-brightness colour pass. alphamerge only reads
+    colour where the blurred alpha is nonzero, so the colour pass itself
+    never needs blurring - only the shape gating it does."""
+    sigma = max(0.1, blur_px)
+    return [
+        f"color=c=black:s={width}x{height}:r=25[{prefix}_abg]",
+        f"[{prefix}_abg]ass={_escape_filter_path(alpha_rel)}:fontsdir={_escape_filter_path(fonts_rel)},"
+        f"gblur=sigma={sigma}[{prefix}_amask]",
+        f"color=c=black:s={width}x{height}:r=25[{prefix}_cbg]",
+        f"[{prefix}_cbg]ass={_escape_filter_path(color_rel)}:fontsdir={_escape_filter_path(fonts_rel)}[{prefix}_cmask]",
+        f"[{prefix}_cmask][{prefix}_amask]alphamerge[{prefix}_layer]",
+    ], f"{prefix}_layer"
+
+
 def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=False,
-           brightness=0, contrast=100, saturation=100, quality="high", sfx_markers=None):
+           brightness=0, contrast=100, saturation=100, quality="high", sfx_markers=None,
+           shadow_alpha_path=None, shadow_color_path=None, shadow_blur=0,
+           glow_alpha_path=None, glow_color_path=None, glow_blur=0,
+           video_width=None, video_height=None):
     # Escaping a Windows drive-letter colon with '\:' only works for the
     # subtitles filter's own filename argument - ffmpeg's generic option
     # parser (used for fontsdir=...) doesn't honor that escape the same way
@@ -739,10 +1458,47 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
     # stay their own full-strength color regardless of how the footage is
     # graded - matches how caption apps treat text as a separate layer.
     eq_arg = f"eq=brightness={brightness / 100}:contrast={contrast / 100}:saturation={saturation / 100}"
-    video_filter = f"{eq_arg},{subtitles_arg}"
     render_preset = RENDER_QUALITY_PRESETS.get(quality, RENDER_QUALITY_PRESETS["high"])
     common_args = ["-c:v", "libx264", "-preset", render_preset["preset"], "-crf", render_preset["crf"],
                    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output]
+
+    width, height = video_width or 1080, video_height or 1920
+    # Shadow/Glow blur strengths are authored at the ASS script's 1080-wide
+    # canvas scale (same scale as outline width/shadow distance) - gblur's
+    # sigma is real output pixels, so it has to scale by how much bigger or
+    # smaller the actual export resolution is than that authoring canvas.
+    # SIGMA_TO_CSS_BLUR_RADIUS corrects for gblur's sigma and a browser's
+    # text-shadow blur-radius not being quite the same unit - measured
+    # empirically (not from any spec, which is vague on the exact
+    # conversion) by blurring an identical solid shape with both: a 20px
+    # CSS blur-radius and a sigma=22 gblur pass produced matching edge
+    # spread (measured via the 10%-90% intensity transition width), so a
+    # sigma about 1.1x the authored blur value reproduces the same visual
+    # amount of blur the live preview's CSS already shows for that value.
+    SIGMA_TO_CSS_BLUR_RADIUS = 1.1
+    canvas_scale = (width / 1080) * SIGMA_TO_CSS_BLUR_RADIUS
+    video_steps = [f"[0:v]{eq_arg}[graded]"]
+    current = "graded"
+    if glow_alpha_path and os.path.exists(glow_alpha_path):
+        steps, label = _blur_mask_steps(
+            "glow", os.path.relpath(glow_alpha_path, work_dir), os.path.relpath(glow_color_path, work_dir),
+            glow_blur * canvas_scale, width, height, fonts_rel)
+        video_steps += steps
+        # shortest=1: the mask layers are built from an unbounded `color`
+        # source (no fixed duration), so without this `overlay` follows
+        # ffmpeg's default of running for the LONGER of its two inputs -
+        # the "infinite" mask layer - instead of the real (finite) video,
+        # and the render never finishes.
+        video_steps.append(f"[{current}][{label}]overlay=0:0:shortest=1[with_glow]")
+        current = "with_glow"
+    if shadow_alpha_path and os.path.exists(shadow_alpha_path):
+        steps, label = _blur_mask_steps(
+            "shadow", os.path.relpath(shadow_alpha_path, work_dir), os.path.relpath(shadow_color_path, work_dir),
+            shadow_blur * canvas_scale, width, height, fonts_rel)
+        video_steps += steps
+        video_steps.append(f"[{current}][{label}]overlay=0:0:shortest=1[with_shadow]")
+        current = "with_shadow"
+    video_steps.append(f"[{current}]{subtitles_arg}[vout]")
 
     sfx_lines, sfx_labels = _sfx_mix_filters(sfx_markers or [])
     if sfx_labels:
@@ -751,19 +1507,28 @@ def _render(source, ass_path, output, fonts_dir, audio_volume=100, audio_muted=F
         # input by 1/N, so the main audio stays at its own authored volume
         # and only the SFX branches carry their own (lower) mix volume.
         mix_inputs = "".join(f"[{label}]" for label in ["main_a", *sfx_labels])
-        filter_complex = (
-            f"[0:v]{video_filter}[vout];[0:a]volume={volume}[main_a];"
-            + ";".join(sfx_lines) + ";"
-            + f"{mix_inputs}amix=inputs={1 + len(sfx_labels)}:duration=first:dropout_transition=0:normalize=0[aout]"
+        audio_steps = (
+            [f"[0:a]volume={volume}[main_a]"] + sfx_lines
+            + [f"{mix_inputs}amix=inputs={1 + len(sfx_labels)}:duration=first:dropout_transition=0:normalize=0[aout]"]
         )
-        args = [FFMPEG, "-y", "-i", source, "-filter_complex", filter_complex,
-                "-map", "[vout]", "-map", "[aout]", *common_args]
     else:
-        args = [FFMPEG, "-y", "-i", source, "-vf", video_filter, "-af", f"volume={volume}", *common_args]
+        audio_steps = [f"[0:a]volume={volume}[aout]"]
 
-    result = subprocess.run(args, capture_output=True, text=True, cwd=work_dir)
+    filter_complex = ";".join(video_steps + audio_steps)
+    args = [FFMPEG, "-y", "-i", source, "-filter_complex", filter_complex,
+            "-map", "[vout]", "-map", "[aout]", *common_args]
+
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, cwd=work_dir,
+                                timeout=RENDER_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        logger.error("FFmpeg render timed out after %ss: %s", RENDER_TIMEOUT_SECONDS, " ".join(args))
+        raise RuntimeError(
+            f"Rendering took longer than {RENDER_TIMEOUT_SECONDS}s and was stopped. "
+            "Try a shorter clip, or Draft quality for a faster export."
+        ) from exc
     if result.returncode:
-        logger.error("FFmpeg render failed: %s", result.stderr[-2000:])
+        logger.error("FFmpeg render failed (exit %s): %s", result.returncode, result.stderr[-2000:])
         raise RuntimeError("FFmpeg could not render this video")
 
 
@@ -777,18 +1542,63 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
     with tempfile.TemporaryDirectory() as temp:
         source = os.path.join(temp, "source.mp4")
         ass = os.path.join(temp, "captions.ass")
+        shadow_alpha = os.path.join(temp, "shadow_alpha.ass")
+        shadow_color_ass = os.path.join(temp, "shadow_color.ass")
+        glow_alpha = os.path.join(temp, "glow_alpha.ass")
+        glow_color_ass = os.path.join(temp, "glow_color.ass")
         output = os.path.join(temp, "captain-title.mp4")
         Path(source).write_bytes(data)
+        # Street Glow's shadow/glow are baked into the template itself (see
+        # _emit_street_glow_group) rather than read from the project's own
+        # Shadow/Glow panel - the blur STRENGTH still has to come from
+        # somewhere for _render's gblur sigma, though, so it's overridden
+        # here to the template's own fixed values instead.
+        if project["theme"] == "street_glow":
+            shadow_blur, glow_blur = STREET_GLOW_SHADOW_BLUR, STREET_GLOW_GLOW_BLUR
+        else:
+            shadow_blur = project.get("shadow_blur", 2)
+            glow_blur = project.get("glow_blur", 8)
         _write_ass(ass, project["words"], project["theme"], project.get("font_id", "poppins"),
                   project.get("words_per_caption"), project.get("caption_lines", 1),
                   project.get("caption_position", "bottom"), project.get("elements"),
-                  variant=project.get("variant"))
+                  script_mode=project.get("script_mode", "roman"),
+                  bold=project.get("bold", True), italic=project.get("italic", False),
+                  outline_enabled=project.get("outline_enabled", False),
+                  outline_width=project.get("outline_width", 2),
+                  outline_color=project.get("outline_color", "#000000"),
+                  shadow_enabled=project.get("shadow_enabled", True),
+                  shadow_angle=project.get("shadow_angle", 0),
+                  shadow_distance=project.get("shadow_distance", 2),
+                  shadow_blur=shadow_blur,
+                  shadow_opacity=project.get("shadow_opacity", 0.5),
+                  shadow_color=project.get("shadow_color", "#000000"),
+                  glow_enabled=project.get("glow_enabled", False),
+                  glow_color=project.get("glow_color"),
+                  glow_blur=glow_blur,
+                  glow_opacity=project.get("glow_opacity", 0.6),
+                  background_enabled=project.get("background_enabled", False),
+                  background_color=project.get("background_color", "#000000"),
+                  background_opacity=project.get("background_opacity", 0.6),
+                  shadow_alpha_path=shadow_alpha, shadow_color_path=shadow_color_ass,
+                  glow_alpha_path=glow_alpha, glow_color_path=glow_color_ass)
         try:
             await asyncio.to_thread(_render, source, ass, output, str(FONTS_DIR),
                                     project.get("audio_volume", 100), project.get("audio_muted", False),
                                     project.get("brightness", 0), project.get("contrast", 100),
                                     project.get("saturation", 100), project.get("render_quality", "high"),
-                                    sfx_markers=project.get("sfx_markers", []))
+                                    sfx_markers=project.get("sfx_markers", []),
+                                    shadow_alpha_path=shadow_alpha, shadow_color_path=shadow_color_ass,
+                                    shadow_blur=shadow_blur,
+                                    glow_alpha_path=glow_alpha, glow_color_path=glow_color_ass,
+                                    glow_blur=glow_blur,
+                                    video_width=project.get("width"), video_height=project.get("height"))
+        except RuntimeError as exc:
+            # Our own _render() raises RuntimeError with a message that's
+            # already safe and useful to show the user directly (a timeout,
+            # or "FFmpeg could not render this video") - surface it instead
+            # of a generic message, so a stuck export is distinguishable
+            # from any other failure.
+            raise HTTPException(500, str(exc)) from exc
         except Exception as exc:
             raise HTTPException(500, "Video rendering failed") from exc
         rendered = Path(output).read_bytes()

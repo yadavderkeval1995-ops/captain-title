@@ -41,6 +41,11 @@ export const TextPanel = ({ elements, selectedId, onSelect, onAdd, onUpdate, onD
         <label className="control-label" data-testid="text-color-label"><span>Colour</span>
           <input type="color" value={selected.color} onChange={(e) => onUpdate(selected.id, { color: e.target.value })} data-testid="text-color-input" />
         </label>
+        <label className="control-label" data-testid="text-layer-depth-label">Layer</label>
+        <div className="layout-grid two layer-depth-toggle" data-testid="text-layer-depth-toggle">
+          <button className={(selected.layer || "front") === "front" ? "active" : ""} onClick={() => onUpdate(selected.id, { layer: "front" })} data-testid="text-layer-front-button">In Front</button>
+          <button className={selected.layer === "behind" ? "active" : ""} onClick={() => onUpdate(selected.id, { layer: "behind" })} data-testid="text-layer-behind-button">Behind Speaker</button>
+        </div>
         <label className="control-label" data-testid="text-timing-label">Timing</label>
         <div className="layout-grid two">
           <button onClick={() => onUpdate(selected.id, { start: Math.min(currentTime, selected.end - 0.1) })} data-testid="text-set-start-button">Start here</button>

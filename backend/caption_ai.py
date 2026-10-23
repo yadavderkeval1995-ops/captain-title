@@ -11,11 +11,119 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import imageio_ffmpeg
+from indic_transliteration import sanscript
+from indic_transliteration.sanscript import transliterate
 from openai import AsyncOpenAI
 from sarvamai import AsyncSarvamAI
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 logger = logging.getLogger("captain-title.caption_ai")
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+
+# indic_transliteration's schemes (OPTITRANS/ITRANS/HK all included) are
+# literal Sanskrit-style transliterations, not Hindi-phonetic romanization -
+# they render anusvara (ं) as "m" (a Sanskrit convention) instead of Hindi's
+# nasalized "n" (हैं -> "haim", not "hain"), and never apply Hindi's
+# word-final schwa deletion, so a word like आप keeps its silent trailing
+# vowel (-> "apa", not "aap"). These are exactly the highest-frequency words
+# in ordinary Hindi speech - pronouns, the copula, negation, common verbs
+# and postpositions - so when GPT returns raw Devanagari for a word instead
+# of its own natural Hinglish spelling (the case _romanize_fallback below
+# exists for), it's far more likely to land on one of these than an obscure
+# word. A small lookup table of their real spelling fixes the overwhelming
+# majority of visibly-wrong output without needing a full phonetic rewrite
+# of the transliteration engine itself.
+_COMMON_HINDI_ROMANIZATIONS = {
+    "है": "hai", "हैं": "hain", "था": "tha", "थी": "thi", "थे": "the",
+    "हूं": "hoon", "हूँ": "hoon", "हो": "ho", "होगा": "hoga", "होगी": "hogi",
+    "होंगे": "honge", "होना": "hona", "रहा": "raha", "रही": "rahi", "रहे": "rahe",
+    "मैं": "main", "मुझे": "mujhe", "मुझको": "mujhko", "मेरा": "mera", "मेरी": "meri",
+    "मेरे": "mere", "हम": "hum", "हमें": "hamein", "हमारा": "hamara", "हमारी": "hamari",
+    "हमारे": "hamare", "तू": "tu", "तुझे": "tujhe", "तेरा": "tera", "तुम": "tum",
+    "तुम्हें": "tumhein", "तुम्हारा": "tumhara", "आप": "aap", "आपका": "aapka",
+    "आपकी": "aapki", "आपके": "aapke", "आपको": "aapko", "वह": "woh", "वो": "woh",
+    "उसे": "use", "उसका": "uska", "उसकी": "uski", "उसके": "uske",
+    "ये": "ye", "यह": "yeh", "इसे": "ise", "इसका": "iska", "इसकी": "iski", "इसके": "iske",
+    "वे": "ve", "उन्हें": "unhein", "उनका": "unka", "उनकी": "unki", "उनके": "unke",
+    "नहीं": "nahin", "मत": "mat", "ना": "na",
+    "क्या": "kya", "कौन": "kaun", "कहाँ": "kahan", "कहां": "kahan", "कब": "kab",
+    "क्यों": "kyun", "कैसे": "kaise", "कितना": "kitna", "कितनी": "kitni", "कितने": "kitne",
+    "और": "aur", "या": "ya", "लेकिन": "lekin", "पर": "par", "भी": "bhi", "तो": "to",
+    "ही": "hi", "जो": "jo", "कि": "ki", "से": "se", "को": "ko", "का": "ka",
+    "की": "ki", "के": "ke", "में": "mein", "पे": "pe", "तक": "tak", "साथ": "saath",
+    "बिना": "bina",
+    "करना": "karna", "करता": "karta", "करती": "karti", "करते": "karte", "किया": "kiya",
+    "कर": "kar", "करो": "karo", "करें": "karein", "करूंगा": "karunga",
+    "जाना": "jana", "जाता": "jata", "जाती": "jati", "जाते": "jate", "गया": "gaya",
+    "गयी": "gayi", "गई": "gai", "गए": "gaye", "जाओ": "jao",
+    "आना": "aana", "आता": "aata", "आती": "aati", "आते": "aate", "आया": "aaya",
+    "आई": "aai", "आए": "aaye",
+    "देना": "dena", "देता": "deta", "दिया": "diya", "लेना": "lena", "लेता": "leta",
+    "लिया": "liya", "कहना": "kehna", "कहा": "kaha",
+    "सुनना": "sunna", "सुना": "suna", "देखना": "dekhna", "देखा": "dekha", "देखो": "dekho",
+    "समझना": "samajhna", "समझा": "samjha", "चाहिए": "chahiye", "चाहता": "chahta",
+    "चाहती": "chahti", "सकता": "sakta", "सकती": "sakti", "सकते": "sakte",
+    "मिलना": "milna", "मिला": "mila", "रखना": "rakhna", "रखा": "rakha",
+    "बहुत": "bahut", "अच्छा": "accha", "अच्छी": "acchi", "अच्छे": "acche",
+    "बड़ा": "bada", "बड़ी": "badi", "छोटा": "chota", "नया": "naya",
+    "सब": "sab", "सभी": "sabhi", "कुछ": "kuch", "कोई": "koi", "हर": "har",
+    "अपना": "apna", "अपनी": "apni", "अपने": "apne", "खुद": "khud",
+    "एक": "ek", "दो": "do", "तीन": "teen",
+    "ऐसा": "aisa", "ऐसी": "aisi", "ऐसे": "aise", "वैसा": "vaisa", "वैसी": "vaisi",
+    "जैसा": "jaisa", "जैसी": "jaisi", "जैसे": "jaise", "कैसा": "kaisa", "कैसी": "kaisi",
+    "थोड़ा": "thoda", "थोड़ी": "thodi", "ज्यादा": "zyada", "ज़्यादा": "zyada",
+    "शायद": "shayad", "ज़रूर": "zaroor", "जरूर": "zaroor", "यार": "yaar",
+    "अभी": "abhi", "फिर": "phir", "सच": "sach", "झूठ": "jhooth", "पता": "pata",
+    "समय": "samay", "वक़्त": "waqt", "वक्त": "waqt", "बात": "baat", "काम": "kaam",
+    "दिन": "din", "रात": "raat", "घर": "ghar", "यहाँ": "yahan", "यहां": "yahan",
+    "वहाँ": "wahan", "वहां": "wahan",
+}
+
+
+def _romanize_fallback(text):
+    """Best-effort algorithmic Devanagari->Roman transliteration, used ONLY
+    when GPT drops a word's index or returns no usable text for it (see
+    convert_to_hinglish below). Without this, that fallback used to be the
+    word's own raw `original` text verbatim - which is genuine Devanagari
+    for Hindi/mixed speech - silently leaking native script into word.text,
+    the field "Roman Hinglish" mode renders everywhere (editor, Timeline,
+    export). Algorithmic transliteration reads rougher than GPT's own
+    natural Hinglish spelling, but it guarantees word.text is never
+    Devanagari, which GPT dropping an index must never compromise.
+    _COMMON_HINDI_ROMANIZATIONS is checked first, since those are the words
+    the raw transliteration scheme gets most visibly wrong."""
+    if not text or not _DEVANAGARI_RE.search(text):
+        return text
+    cleaned = text.replace("।", ".").replace("॥", ".")
+    stripped = cleaned.rstrip(".,!?\"'")
+    natural = _COMMON_HINDI_ROMANIZATIONS.get(stripped)
+    if natural is not None:
+        return natural + cleaned[len(stripped):]
+    return transliterate(cleaned, sanscript.DEVANAGARI, sanscript.OPTITRANS).lower()
+
+
+def _common_hindi_spelling(original_text):
+    """Looks _COMMON_HINDI_ROMANIZATIONS up directly against a word's raw
+    ASR source text (word.original, always Devanagari for Hindi speech) -
+    checked BEFORE GPT's own chosen romanization, not just as a fallback for
+    when GPT leaves a word in Devanagari. GPT can just as easily write its
+    OWN wrong spelling directly in Roman script (e.g. "maim" for मैं,
+    "maam"/"isa" and other near-misses) as it can skip romanizing a word
+    entirely - that output never contains Devanagari, so _romanize_fallback
+    above never even sees it to correct it. These are the highest-frequency
+    words in ordinary Hindi speech, so forcing their one unambiguous
+    spelling - regardless of what GPT happened to output - costs nothing
+    and fixes the mistake GPT itself makes most often, without touching how
+    any other, more context-dependent word gets romanized."""
+    if not original_text:
+        return None
+    cleaned = original_text.strip()
+    stripped = cleaned.rstrip(".,!?\"'।॥")
+    natural = _COMMON_HINDI_ROMANIZATIONS.get(stripped)
+    if natural is None:
+        return None
+    trailing = cleaned[len(stripped):].replace("।", ".").replace("॥", ".")
+    return natural + trailing
 
 
 def _as_dict(value):
@@ -171,15 +279,27 @@ def _build_whisper_candidate(response, skip_before: float = 0.0):
     data = _as_dict(response)
     response_segments = getattr(response, "segments", None) or data.get("segments") or []
     accepted_segments = []
-    for index, raw_segment in enumerate(response_segments):
+    for raw_segment in response_segments:
         segment = _as_dict(raw_segment)
         text = str(segment.get("text", "")).strip()
         if not text:
             continue
-        # Whisper's very first segment of a request often gets an inflated
-        # no_speech_prob (it has no preceding audio to calibrate against),
-        # so don't let that one false-positive drop real opening speech.
-        if index > 0 and float(segment.get("no_speech_prob", 0)) >= 0.65:
+        # Whisper's very first stretch of ANY audio buffer it's handed often
+        # gets an inflated no_speech_prob (no preceding context to calibrate
+        # against yet) - so don't let that false-positive drop real opening
+        # speech. This used to only exempt literal segment index 0, which
+        # broke for the first chunk specifically: that chunk gets a 0.5s
+        # silence lead-in prepended (see _split_wav) so Whisper has
+        # something to "warm up" on before the real content starts, which
+        # can push the genuine opening-speech segment to index 1 instead of
+        # 0 - leaving it unprotected and liable to get dropped, which took
+        # most/all of that chunk's real words with it (the first ~20-23s of
+        # the video). Keying the exemption off actual elapsed time relative
+        # to skip_before (how far into the buffer real content starts for
+        # THIS chunk - the lead-in for chunk 0, the overlap priming audio
+        # for every chunk after it) protects whichever segment that
+        # actually is, not just whichever index it happens to land on.
+        if float(segment.get("start", 0)) >= skip_before + 1.0 and float(segment.get("no_speech_prob", 0)) >= 0.65:
             continue
         accepted_segments.append(segment)
     accepted_ranges = [(float(item.get("start", 0)), float(item.get("end", 0))) for item in accepted_segments]
@@ -434,7 +554,33 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         logger.warning("Hinglish conversion dropped %d/%d word indices", len(missing), len(words))
     for word in words:
         item = converted.get(word["index"], {})
-        word["text"] = str(item.get("text") or word["original"]).strip()
+        # Precedence: (1) _common_hindi_spelling checked against the real
+        # ASR source - GPT can misspell one of these high-frequency words in
+        # Roman script just as easily as it can leave it in Devanagari (e.g.
+        # writing "maim" for मैं directly), and that output never contains
+        # Devanagari for _romanize_fallback below to ever catch and correct.
+        # It only overrides GPT's own answer when that answer is a close
+        # match to the dictionary spelling (a SequenceMatcher ratio - cheap,
+        # no extra dependency - comfortably separates "maim"/"main" at .75
+        # or "apa"/"aap" at .67 from an unrelated word GPT deliberately
+        # substituted, which scores under .4 in practice): GPT is explicitly
+        # instructed to correct genuine ASR mishearings from context, and a
+        # wildly different answer means it did exactly that, which must
+        # still win over a fixed dictionary entry keyed only on the raw,
+        # possibly-mis-heard ASR source. (2) Otherwise, GPT's own chosen
+        # text, or the raw source text if GPT dropped this index - routed
+        # through _romanize_fallback unconditionally (a no-op for text
+        # that's already Roman) so Devanagari GPT hands back instead of
+        # romanizing never leaks into word.text, the field every part of the
+        # app (transcript, canvas, Timeline, export) treats as pure-Roman
+        # Hinglish.
+        gpt_text = str(item.get("text") or "").strip()
+        common = _common_hindi_spelling(word["original"])
+        if common is not None and (not gpt_text or _DEVANAGARI_RE.search(gpt_text)
+                                    or SequenceMatcher(None, gpt_text.lower(), common.lower()).ratio() >= 0.5):
+            word["text"] = common
+        else:
+            word["text"] = _romanize_fallback(gpt_text or word["original"])
         emphasis = item.get("emphasis")
         if emphasis not in {"support", "feature", "key"}:
             emphasis = "support"
