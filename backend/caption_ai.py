@@ -394,6 +394,42 @@ def _emit_interpolated(result: list[dict], texts: list[str], start: float, end: 
         result.append({"original": text, "start": round(word_start, 3), "end": round(min(end, word_start + step), 3)})
 
 
+def _detect_merged_matches(ops: list[tuple], whisper_tokens: list[str], sarvam_tokens: list[str]):
+    """Find whisper word indices caught up in a Sarvam word-merge: on fast
+    Hindi speech, Sarvam sometimes recognizes several spoken words as ONE
+    run-on token with no internal spacing. The aligner then fuzzy-matches
+    that oversized token to whichever single Whisper word scores best and
+    "skip_whisper"s the Whisper words on either side of it as unmatched -
+    which normally means a Whisper-only hallucination to discard, but here
+    means the other whisper-tokenized words the merged blob actually spans.
+    Flags a match as a merge (by its matched whisper index) only when the
+    sarvam token is much longer than what it matched AND is bracketed by at
+    least one such orphaned neighbor - an ordinary long single word, matched
+    cleanly with no orphaned neighbors, is left alone."""
+    merged = set()
+    n = len(ops)
+    for idx, op in enumerate(ops):
+        if op[0] != "match":
+            continue
+        i, j = op[1], op[2]
+        sarvam_word = sarvam_tokens[j]
+        if len(sarvam_word) < 9 or len(sarvam_word) < 2.3 * max(1, len(whisper_tokens[i])):
+            continue
+        before = idx - 1
+        while before >= 0 and ops[before][0] == "skip_whisper":
+            before -= 1
+        after = idx + 1
+        while after < n and ops[after][0] == "skip_whisper":
+            after += 1
+        if before + 1 == idx and after == idx + 1:
+            continue  # no orphaned neighbors - an ordinary long single-word match
+        for k in range(before + 1, after):
+            if ops[k][0] == "skip_whisper":
+                merged.add(ops[k][1])
+        merged.add(i)
+    return merged
+
+
 def _stitch_chunk(whisper_words: list[dict], sarvam_text: str):
     """Replace Whisper's (less accurate) words with Sarvam's recognized
     words, while keeping Whisper's per-word timing."""
@@ -402,6 +438,7 @@ def _stitch_chunk(whisper_words: list[dict], sarvam_text: str):
         return []
     whisper_tokens = [word["original"] for word in whisper_words]
     ops = _align_words(whisper_tokens, sarvam_tokens)
+    merged_indices = _detect_merged_matches(ops, whisper_tokens, sarvam_tokens)
     result = []
     pending: list[str] = []
     last_end = whisper_words[0]["start"]
@@ -412,13 +449,28 @@ def _stitch_chunk(whisper_words: list[dict], sarvam_text: str):
             if pending:
                 _emit_interpolated(result, pending, last_end, whisper_words[i]["start"])
                 pending = []
-            result.append({"original": sarvam_tokens[j], "start": whisper_words[i]["start"], "end": whisper_words[i]["end"]})
+            # A merge-flagged match uses Whisper's own (less accurate, but
+            # correctly segmented) word instead of Sarvam's unsplittable
+            # run-on blob - GPT's Hinglish pass still corrects its spelling
+            # from context same as any other ASR word.
+            text = whisper_tokens[i] if i in merged_indices else sarvam_tokens[j]
+            result.append({"original": text, "start": whisper_words[i]["start"], "end": whisper_words[i]["end"]})
             last_end = whisper_words[i]["end"]
         elif kind == "skip_whisper":
-            # A Whisper word with no Sarvam counterpart - likely a Whisper
-            # mis-hearing or hallucination Sarvam didn't reproduce. Drop the
-            # word but keep its timing as a continuity anchor.
-            last_end = max(last_end, whisper_words[op[1]]["end"])
+            i = op[1]
+            if i in merged_indices:
+                # One of the words a neighboring merge swallowed - recover it
+                # with its own Whisper text/timing instead of dropping it.
+                if pending:
+                    _emit_interpolated(result, pending, last_end, whisper_words[i]["start"])
+                    pending = []
+                result.append({"original": whisper_tokens[i], "start": whisper_words[i]["start"], "end": whisper_words[i]["end"]})
+                last_end = whisper_words[i]["end"]
+            else:
+                # A Whisper word with no Sarvam counterpart - likely a Whisper
+                # mis-hearing or hallucination Sarvam didn't reproduce. Drop
+                # the word but keep its timing as a continuity anchor.
+                last_end = max(last_end, whisper_words[i]["end"])
         else:
             pending.append(sarvam_tokens[op[1]])
     if pending:
