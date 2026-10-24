@@ -991,6 +991,76 @@ window.renderComposite = async function renderComposite(W, H, mediaTime) {
     attempts
   };
 };
+function canvasesIdentical(c1, c2, W, H) {
+  const g1 = drawnAlphaCanvas(c1, W, H).getContext("2d").getImageData(0, 0, W, H).data;
+  const g2 = drawnAlphaCanvas(c2, W, H).getContext("2d").getImageData(0, 0, W, H).data;
+  if (g1.length !== g2.length) return false;
+  for (let i = 0; i < g1.length; i++) if (g1[i] !== g2[i]) return false;
+  return true;
+}
+window.testCaching = async function testCaching(W, H, steadyTimes) {
+  const pool = new RendererPool(1, W, H);
+  await pool.init();
+  const framesByLayer = {};
+  for (const layer of LAYERS) framesByLayer[layer] = [];
+  for (const t of steadyTimes) {
+    for (const layer of LAYERS) {
+      framesByLayer[layer].push(await pool.renderLayer(layer, t, 0));
+    }
+  }
+  const results = {};
+  for (const layer of LAYERS) {
+    const frames = framesByLayer[layer];
+    const cmp = [];
+    for (let i = 1; i < frames.length; i++) {
+      cmp.push({
+        vs: `${steadyTimes[0]}->${steadyTimes[i]}`,
+        identical: canvasesIdentical(frames[0], frames[i], W, H)
+      });
+    }
+    results[layer] = cmp;
+  }
+  await pool.destroy();
+  document.getElementById("container").innerHTML = "";
+  return results;
+};
+window.testPlaybackLoop = async function testPlaybackLoop(W, H, mode, frameCount, startTime, dt) {
+  const pool = new RendererPool(1, W, H);
+  await pool.init();
+  await pool.renderLayer(LAYERS[0], startTime, 0);
+  const times = [];
+  for (let i = 0; i < frameCount; i++) {
+    times.push(mode === "scrub" ? startTime + Math.random() * dt * frameCount : startTime + i * dt);
+  }
+  const frameMs = [];
+  for (const t of times) {
+    const f0 = performance.now();
+    for (const layer of LAYERS) await pool.renderLayer(layer, t, 0);
+    frameMs.push(performance.now() - f0);
+  }
+  await pool.destroy();
+  document.getElementById("container").innerHTML = "";
+  const over60 = frameMs.filter((m) => m > 16.7).length;
+  const over30 = frameMs.filter((m) => m > 33.3).length;
+  const avg = frameMs.reduce((a, b) => a + b, 0) / frameMs.length;
+  const sorted = [...frameMs].sort((a, b) => a - b);
+  const p50 = sorted[Math.floor(sorted.length * 0.5)];
+  const p95 = sorted[Math.floor(sorted.length * 0.95)];
+  return {
+    mode,
+    W,
+    H,
+    frameCount,
+    avgMs: avg,
+    p50Ms: p50,
+    p95Ms: p95,
+    maxMs: Math.max(...frameMs),
+    minMs: Math.min(...frameMs),
+    droppedVs60fps: over60,
+    droppedVs30fps: over30,
+    frameMs
+  };
+};
 window.testPool = async function testPool(poolSize, W, H, mediaTime, trials) {
   const results = [];
   for (let trial = 0; trial < trials; trial++) {

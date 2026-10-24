@@ -201,6 +201,88 @@ window.renderComposite = async function renderComposite(W, H, mediaTime) {
   };
 };
 
+// Byte-for-byte compares two canvases' pixel data - used to test whether a
+// layer's rendered output is truly identical (safe to cache) across two
+// separate render calls, not just "visually close."
+function canvasesIdentical(c1, c2, W, H) {
+  const g1 = drawnAlphaCanvas(c1, W, H).getContext("2d").getImageData(0, 0, W, H).data;
+  const g2 = drawnAlphaCanvas(c2, W, H).getContext("2d").getImageData(0, 0, W, H).data;
+  if (g1.length !== g2.length) return false;
+  for (let i = 0; i < g1.length; i++) if (g1[i] !== g2[i]) return false;
+  return true;
+}
+
+// Tests whether glow/shadow (and crisp text) layers are safe to cache once
+// a caption group's entrance animation has settled: renders the SAME
+// mediaTime twice (self-consistency) and DIFFERENT mediaTimes within the
+// group's steady window (time-invariance - the real question for caching,
+// since a cache keyed only on "same timestamp" is useless for scrubbing).
+window.testCaching = async function testCaching(W, H, steadyTimes) {
+  const pool = new RendererPool(1, W, H);
+  await pool.init();
+  const framesByLayer = {};
+  for (const layer of LAYERS) framesByLayer[layer] = [];
+  for (const t of steadyTimes) {
+    for (const layer of LAYERS) {
+      framesByLayer[layer].push(await pool.renderLayer(layer, t, 0));
+    }
+  }
+  const results = {};
+  for (const layer of LAYERS) {
+    const frames = framesByLayer[layer];
+    const cmp = [];
+    for (let i = 1; i < frames.length; i++) {
+      cmp.push({
+        vs: `${steadyTimes[0]}->${steadyTimes[i]}`,
+        identical: canvasesIdentical(frames[0], frames[i], W, H),
+      });
+    }
+    results[layer] = cmp;
+  }
+  await pool.destroy();
+  document.getElementById("container").innerHTML = "";
+  return results;
+};
+
+// Simulates a real preview render loop: either sequential PLAYBACK (small
+// fixed dt between frames) or random-access SCRUBBING (uniform random seeks
+// within the window), rendering the FULL 5-layer composite each "frame"
+// (what a real preview must do to show the complete visual, not just one
+// layer) on a single warmed pool_size=1 instance. Returns per-frame latency
+// and dropped-frame counts against both a 30fps (33.3ms) and 60fps (16.7ms)
+// budget.
+window.testPlaybackLoop = async function testPlaybackLoop(W, H, mode, frameCount, startTime, dt) {
+  const pool = new RendererPool(1, W, H);
+  await pool.init();
+  // Warm up the instance once (pay the one-time first-render retry cost
+  // outside the measured loop, matching how a real preview would warm up
+  // on mount, not on the first user-visible scrub/play frame).
+  await pool.renderLayer(LAYERS[0], startTime, 0);
+
+  const times = [];
+  for (let i = 0; i < frameCount; i++) {
+    times.push(mode === "scrub" ? startTime + Math.random() * dt * frameCount : startTime + i * dt);
+  }
+
+  const frameMs = [];
+  for (const t of times) {
+    const f0 = performance.now();
+    for (const layer of LAYERS) await pool.renderLayer(layer, t, 0);
+    frameMs.push(performance.now() - f0);
+  }
+  await pool.destroy();
+  document.getElementById("container").innerHTML = "";
+
+  const over60 = frameMs.filter((m) => m > 16.7).length;
+  const over30 = frameMs.filter((m) => m > 33.3).length;
+  const avg = frameMs.reduce((a, b) => a + b, 0) / frameMs.length;
+  const sorted = [...frameMs].sort((a, b) => a - b);
+  const p50 = sorted[Math.floor(sorted.length * 0.5)];
+  const p95 = sorted[Math.floor(sorted.length * 0.95)];
+  return { mode, W, H, frameCount, avgMs: avg, p50Ms: p50, p95Ms: p95, maxMs: Math.max(...frameMs),
+            minMs: Math.min(...frameMs), droppedVs60fps: over60, droppedVs30fps: over30, frameMs };
+};
+
 window.testPool = async function testPool(poolSize, W, H, mediaTime, trials) {
   const results = [];
   for (let trial = 0; trial < trials; trial++) {

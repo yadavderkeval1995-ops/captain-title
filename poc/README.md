@@ -312,7 +312,7 @@ close-up crops for all three timestamps are in `results/1080p/`.
   are expected to be faster; this was not independently verified on real
   hardware in this POC.**
 
-### Phase D summary
+### Phase D summary (superseded in part by Phase E below — see the real-time-performance caveat there)
 
 - The 5-instance reliability problem is solved, understood, and the fix
   (retry-with-pixel-verification inside a reused pool-size-1 instance) is
@@ -329,3 +329,242 @@ close-up crops for all three timestamps are in `results/1080p/`.
   software-WebGL sandbox, not validated on real GPU hardware.
 - **No integration has been proposed in this phase, per the governing
   instruction.** This document reports results only.
+
+---
+
+## Phase E: real-time performance — resolution-aware rendering, caching, and architecture fit
+
+Phase D proved visual *correctness* (positions, geometry, glow/shadow all
+match the real export closely). The user's next concern, explicitly, is
+*speed*: will this hold up as a live, interactive preview — not just a
+batch of still frames compared after the fact. This phase tests that
+directly, still entirely inside `poc/`, no production files touched, no
+merge, no new templates.
+
+### 1. Rendering at actual preview resolution (not fixed 1080×1920)
+
+`pooled.js`'s `renderComposite(W, H, mediaTime)` already took resolution as
+a parameter (Phase D just always called it with 1080×1920). Called instead
+at 1080×1920, 540×960, and 360×640 for the same `mediaTime`, then
+normalizing each result's measured bounding box back to 1080-scale units
+for direct comparison:
+
+| Resolution | Width (norm.) | Height (norm.) | Center X (norm.) | Center Y (norm.) |
+|---|---|---|---|---|
+| 1080×1920 (native) | 302.0 | 93.0 | 539.5 | 1538.0 |
+| 540×960 | 308.0 | 96.0 | 539.0 | 1537.0 |
+| 360×640 | 306.0 | 99.0 | 538.5 | 1536.0 |
+
+All three stay within ~2% of each other, and center position is accurate
+to within 1px at every size. **libass natively re-scales from the
+authored script resolution (`PlayResX`/`PlayResY`, fixed at 1080×1920 in
+every `.ass` file here) to whatever pixel canvas it's given** — there is
+no need to regenerate or re-author captions per preview size; the exact
+same `.ass` files render correctly scaled at any target resolution. The
+small (~2-3%) growth in measured height at lower resolutions is consistent
+with mask-threshold quantization (fewer pixels crossing the alpha
+threshold at small sizes), not a real geometry error — confirmed visually
+in `results/multi_res/native_vs_upscaled_360.png` (native 1080p vs. a
+360p-native render blown back up: same proportions, same position, the
+only visible difference is the upscaled copy's own pixelation from
+nearest-neighbor magnification, which a real preview would never do since
+it displays the native render at native size).
+
+### 2. Glow/shadow/text layer caching: safe, and the key to real-time performance
+
+Rendered all 5 layers (crisp text, glow alpha/color, shadow alpha/color)
+at 5 different timestamps spanning a caption group's *settled* window
+(0.70s-2.10s into a group whose entrance animation finishes at ~0.22-0.24s)
+at a typical preview size (540×960), then compared every later frame
+against the first **byte-for-byte**. **Result: 100% identical across all 5
+layers at all 5 timestamps tested** (`poc/prototype/pooled.js`'s
+`testCaching`). Once a caption group's entrance animation settles, its
+rendered bitmap is exactly time-invariant until the group ends — a clean,
+provable cache key (caption group ID + "settled" boolean, not exact
+timestamp).
+
+This matters enormously for performance (see #3): a cached composite
+bitmap costs **~0.04ms** to redraw via `drawImage` (measured: 60 blits,
+avg 0.043ms, max 2.5ms) — i.e., essentially free, nowhere near a frame
+budget concern.
+
+### 3. Smooth playback and scrubbing: not with naive per-frame re-render — yes with caching
+
+Simulated both sequential **playback** (30 frames at 1/30s steps) and
+random-access **scrubbing** (30 random seeks) at both requested preview
+sizes, rendering the *full 5-layer composite every simulated frame* (what
+a naive "just call the renderer on every `requestAnimationFrame`" preview
+would do):
+
+| Config | Avg frame time | p95 | Dropped vs. 60fps (16.7ms) | Dropped vs. 30fps (33.3ms) |
+|---|---|---|---|---|
+| 360×640 playback | 271ms | 251ms | 30/30 | 30/30 |
+| 360×640 scrub | 250ms | 253ms | 30/30 | 30/30 |
+| 540×960 playback | 272ms | 256ms | 30/30 | 30/30 |
+| 540×960 scrub | 250ms | 255ms | 30/30 | 30/30 |
+
+**Every single simulated frame missed both budgets, at both sizes, in
+both modes — this naive architecture is not real-time capable.** The cost
+barely drops from 360×640 to 540×960 (and only ~2x from 1080p down to
+either), which tells you the bottleneck is **not raster/pixel work** —
+it's the fixed per-layer overhead of 5 separate WASM/worker round-trips
+(`setTrackByUrl` + `manualRender` + the retry-verification from Phase D),
+paid 5 times per frame regardless of how few pixels are being drawn.
+
+Combined with finding #2, this reframes the real answer: **don't re-render
+every frame.** A cache-aware preview — render once when a caption group's
+entrance animation settles, reuse (blit) that bitmap for every frame until
+the next group starts — makes steady-state playback and scrubbing
+effectively free (~0.04ms/frame, no dropped frames, no contest). What
+remains genuinely expensive, and is **not** solved by caching, is the
+*brief animation window itself* (~220-240ms per group in Street Glow): at
+~250-580ms per full composite render, rendering that window frame-by-frame
+via JASSUB would itself play back in visible slow motion. This is the one
+real open problem for smooth animated transitions, not steady display —
+see the recommendation at the end.
+
+### 4. Performance at the two requested preview sizes (360×640, 540×960)
+
+| Resolution | Init (3 trials) | Full 5-layer composite (3 trials) | Chromium RSS growth after one cycle |
+|---|---|---|---|
+| 360×640 | 113-180ms | 260-287ms | ~58MB (357→415MB) |
+| 540×960 | 105-132ms | 296-300ms | ~85MB (357→442MB) |
+| 1080×1920 (Phase D, for reference) | 98-235ms | 458-624ms | ~200-230MB |
+
+Init time is roughly resolution-independent (WASM/worker/font loading
+dominates, not canvas size). Memory growth scales down meaningfully at
+preview sizes vs. full export resolution.
+
+### 5. Memory, init, latency, dropped frames — consolidated
+
+Covered above (#3, #4): dropped frames are 100% under naive per-frame
+re-render and 0% under cache-and-blit; init is ~100-235ms regardless of
+size; full-composite latency is ~260-620ms depending on resolution; memory
+growth is ~60-230MB per render cycle depending on resolution, and did not
+compound further on repeated cycles in these tests (not stress-tested
+across a long multi-hour editing session in this POC).
+
+### 6. Quality consistency: preview resolution → full export
+
+Addressed together with #1: native rendering at 360×640/540×960 produces
+geometry that normalizes back to within ~1-2% of native 1080×1920
+rendering (center position within 1px), and visually matches (see
+`results/multi_res/native_vs_upscaled_360.png`). Because the SAME `.ass`
+files and the SAME libass renderer are used at every size — just with a
+different output canvas — there is no separate "preview-quality" vs.
+"export-quality" render path to drift apart, unlike the current CSS-based
+preview which is a structurally different renderer (browser text layout)
+from the export (ffmpeg/libass).
+
+### 7. Architecture fit for other template effects
+
+Grounded directly in what `backend/captions.py` already does (not
+speculation):
+
+- **Animated highlights** (color sweeps, scale pops, position moves):
+  already proven, both in production (Street Glow's own `\t(0,160,\fscx108
+  \fscy108)` scale-pop and `\move`/`\fad` line-2 entrance) and re-confirmed
+  in Phase D's parity testing (entrance-timestamp geometry matched within
+  2px). `\t`-interpolated tag animation is solid, no new finding needed.
+- **SVG-like vector shapes**: already proven in production — Doodle
+  Marker's pill and pencil-loop decorations are genuine ASS `\p` vector
+  drawings (`_doodle_pill_path`/`_doodle_loop_path` in `captions.py`), not
+  CSS. libass draws arbitrary filled or stroked vector paths natively.
+- **Word-level animation**: already proven in production (Doodle Marker's
+  per-word reveal, one independent `Dialogue` per word/step). **New
+  finding, correcting an existing code comment**: `captions.py` currently
+  avoids an animated `\clip` + `\p` reveal, citing a repro where "a plain
+  `\p1` rect with a STATIC `\clip` exactly matching its own bounds still
+  came out clipped to half width" — and uses 6 discrete growth steps
+  instead. This POC re-tested that exact scenario in JASSUB
+  (`poc/prototype/clip_test.*`) and found the *real* cause: libass
+  positions an `\an5`-anchored `\p` drawing's origin at `pos - bbox_max`
+  (the path's local max corner), **not** `pos - bbox_center` — the same
+  quirk `_emit_doodle_decorations` already documents and compensates for
+  elsewhere in the file. A clip rectangle computed against the *naive*
+  expected position (not knowing about that offset) will indeed clip the
+  *actual*, shifted shape to roughly half its area — exactly the
+  symptom originally reported. Once the clip rectangle is computed against
+  the shape's *actual* rendered bounds (the same compensation already
+  applied to position the pill/loop shapes), static `\clip` matches
+  exactly, and an **animated** `\t(0,1000,\clip(...))` reveal interpolates
+  correctly and smoothly (tested at 0%, 50%, ~100% progress: widths 0 →
+  200 → 396 out of an expected 0 → 200 → 400px, linear as expected). This
+  suggests the current 6-step discrete reveal could become a true smooth
+  continuous reveal — a genuine improvement opportunity, not just parity
+  — **but this was only verified in JASSUB (WASM libass); it should be
+  re-confirmed against the real ffmpeg/export libass build before relying
+  on it in production**, since this POC did not test the export path for
+  this specific tag combination.
+- **Net**: the ASS/libass feature set (vector drawing, clipping,
+  interpolated tag animation, per-word timing via independent Dialogue
+  events) already covers everything in Street Glow and Doodle Marker today
+  and, per the tests above, covers animated highlights, SVG-like shapes,
+  and word-level animation for new templates too. The constraint is not
+  *expressiveness* — it's the per-layer rendering *cost* found in #3: a
+  template with more effect layers costs proportionally more per
+  full-composite render (each layer is a separate fixed-overhead
+  JASSUB round-trip), which raises the stakes on the caching architecture
+  in #2/#3 being mandatory, not optional, as the template catalog grows.
+
+### Software WebGL vs. real GPU hardware
+
+**Every number in this phase (and Phase D) was measured on this sandbox's
+software-rendered WebGL (SwiftShader), not real GPU hardware — this could
+not be tested on real hardware in this environment.** The per-frame
+~250-620ms full-composite cost is the single most important number in this
+report, and it is a software-rendering worst case. On a real user's
+hardware-accelerated browser, raw per-layer render cost should drop
+significantly (SwiftShader is a CPU fallback specifically built for
+environments with no GPU access, typically an order of magnitude or more
+slower than real hardware WebGL for this kind of compositing work) —
+*but the fixed per-layer round-trip overhead that dominates the numbers
+above (worker messaging, WASM boundary crossing, `setTrackByUrl`
+reparse) is not purely a GPU-bound cost, so it should not be assumed to
+shrink by the same factor.* This was not independently verified on real
+hardware in this POC and should be the first thing confirmed before
+trusting these specific millisecond figures for a go/no-go decision.
+
+### Recommendation
+
+**The architecture (WASM libass / JASSUB) is suitable for a production
+caption editor with 10 initial templates, conditional on building it as a
+cache-aware renderer from the start — not as a naive "re-render every
+frame" preview:**
+
+- **Steady-state caption display** (the overwhelming majority of real
+  playback/scrubbing time, since caption groups last 1.6-4s and only their
+  first ~220-240ms is animating): solved. Render once per group when its
+  entrance animation settles, cache the bitmap, blit it (~0.04ms) for
+  every subsequent frame until the next group. No dropped frames, no
+  resolution penalty, scales to however many templates/layers a group
+  uses since it's paid once, not per-frame.
+- **The animation window itself** (~200-250ms per group): **not solved**
+  by this POC. Naive full-composite re-render during that window would
+  itself take longer than the animation's own real-time duration in this
+  sandbox. Two credible paths forward, neither built or tested here: (a)
+  render the animation's start and end states via JASSUB (both cacheable
+  per #2) and interpolate between them with a cheap CSS/canvas transform
+  (scale/position/opacity) for the brief transition, falling back to true
+  libass rendering only once settled — mirroring what the *original* CSS
+  preview already did, just now backed by libass-accurate endpoints; or
+  (b) verify real GPU hardware closes enough of the gap that live
+  re-render during a 220ms window becomes viable outright. Given the
+  per-layer round-trip overhead this phase found to dominate over raster
+  cost, (a) is the safer bet to validate first.
+- **10 templates**: not a capacity concern for expressiveness (per #7,
+  the ASS feature set already used in production covers animated
+  highlights, vector shapes, and word-level animation) or for caching
+  (per-group caching is independent of how many templates exist — only
+  one group renders at a time). It does multiply how many *distinct*
+  effect-layer combinations need the animation-window strategy above to
+  be solved, since more layers per template means proportionally slower
+  full-composite renders during that window.
+- **Before integration**: validate the animation-window strategy (hybrid
+  cache + CSS-tween, or confirm real-hardware WebGL performance directly),
+  and re-confirm the animated-clip finding in #7 against the real export
+  libass build. Both are concrete, scoped follow-ups, not reasons to
+  abandon the approach — the hard parts already de-risked in Phases D/E
+  (pixel-accurate geometry, resolution independence, caching safety, and
+  effect expressiveness) are the ones that would have been hardest to fix
+  after committing to integration.
