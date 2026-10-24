@@ -912,10 +912,23 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                     above, not nesting it) rather than the whole overlay,
                     matching that line-by-line behaviour exactly instead of
                     a single box the export never actually draws. */}
-                <span style={textStyle.background_enabled
-                  ? { backgroundColor: hexToRgba(textStyle.background_color, textStyle.background_opacity),
-                      padding: "2px 10px", borderRadius: "3px", boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" }
-                  : undefined}>
+                <span style={{
+                  // Decorative script fonts (Caveat especially) ship a very
+                  // narrow native space-glyph advance - a literal single
+                  // space character between words is technically present
+                  // (confirmed: the DOM really does have a space text node
+                  // there) but reads as fully glued at caption sizes, since
+                  // the font's own space is only 1-3px wide once scaled
+                  // down. wordSpacing adds a guaranteed EXTRA gap on top of
+                  // the font's own space glyph - unlike letter-spacing it
+                  // only affects actual space characters, so it can't pull
+                  // letters WITHIN a word apart, only push words apart.
+                  wordSpacing: `${Math.max(3, 14 * previewScale)}px`,
+                  ...(textStyle.background_enabled
+                    ? { backgroundColor: hexToRgba(textStyle.background_color, textStyle.background_opacity),
+                        padding: "2px 10px", borderRadius: "3px", boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" }
+                    : {}),
+                }}>
                 {row.map((word, wordIndex) => {
                   // Color/size always come from the word itself (editable,
                   // defaulted from the theme at generation/theme-switch
