@@ -568,3 +568,183 @@ frame" preview:**
   (pixel-accurate geometry, resolution independence, caching safety, and
   effect expressiveness) are the ones that would have been hardest to fix
   after committing to integration.
+
+---
+
+## Phase F: cache-aware animation — Street Glow entrance/exit, playback, and a playable demo
+
+Phase E showed caching makes *static* caption display free, but left the
+animated transition itself (~200-250ms per group) as the one unsolved cost.
+This phase builds and tests the actual fix: a hybrid engine that renders
+each caption group's *settled* state once via real libass (cacheable, per
+Phase E), then reproduces that group's real entrance/exit animation as a
+canvas transform on the cached bitmap, using the exact tag math from
+`backend/captions.py`'s Street Glow implementation — not an invented
+simplified animation.
+
+### 1-2. The hybrid engine (`poc/prototype/hybrid.js`)
+
+Line 1 and line 2 animate independently in the real template, so each is
+captured as its own sprite (text + its own glow or shadow, composited
+together, full-canvas-sized): `line1_only.ass` + `glow_alpha/color.ass` for
+line 1, `line2_only.ass` + `shadow_alpha/color.ass` for line 2 (two new
+derived `.ass` files under `poc/ground_truth/`, split by line the same way
+`glow_alpha.ass`/`shadow_alpha.ass` already were by `_emit_street_glow_group`
+— not hand-simplified). Both sprites are captured once per group, at
+`groupStart + 240ms` (after every entrance animation in the template has
+finished). Every frame after that:
+
+- **Line 1** (`\t(0,160,\fscx108\fscy108)\t(160,240,\fscx100\fscy100)`):
+  the exact same two-segment linear scale interpolation, applied as
+  `ctx.scale()` around line 1's real `\pos` anchor.
+- **Line 2** (`\move(...,0,220)\fad(120,80)`): the exact same linear
+  position and opacity interpolation, applied as a `drawImage` y-offset and
+  `globalAlpha`.
+- Line 1 has no exit animation in the real template (hard cut at group
+  end) — the hybrid reproduces that exactly, not a fade that doesn't exist.
+
+A `captureGroup()` cache keyed by caption group index makes the first
+frame of any group expensive (one real render) and every frame after it
+near-free — the same pattern Phase E proved, now covering genuinely
+*animated* frames, not just static ones.
+
+### 3. Hybrid vs. real render, timestamp by timestamp — not assumed equivalent
+
+Rendered 26 real per-frame composites (the naive full-libass-render
+technique from Phases D/E, used here only as ground truth) and 26 matching
+hybrid frames, at the same timestamps, across the entrance window
+(0.40-0.68s), the exit window (2.12-2.22s), and the group transition
+(2.20-2.32s), at 540×960. Diffed within the caption region:
+
+| Moment | Mean RGB diff on ink pixels (0-765) | % of region differing >20 |
+|---|---|---|
+| t=0.40 (animation start) | 0.0 | 0.0% |
+| t=0.42-0.62 (mid-entrance, scale/move/fade active) | 19.9-31.7 | 1.5-2.6% |
+| t=0.64+ (settled) | 0.0 | 0.0% |
+| t=2.12-2.32 (exit, gap, next entrance) | 0.0 except within each group's own active window | same pattern |
+
+**The discrepancy exists only during the ~200ms of actual motion, and is
+exactly zero at rest** (both at the instant an animation starts and once
+it settles) — expected, since both frames are driven from the same
+underlying settled render at those instants. Visually, side-by-side
+comparison at normal viewing scale shows no perceptible difference (see
+`results/hybrid/sidebyside_*.png`). At 4x pixel-diff amplification
+(`results/hybrid/triptych_diff_0.46.png`), a faint double-edge/ghosting
+outline is visible along text strokes during the transition — consistent
+with libass re-rasterizing each glyph fresh at every intermediate scale
+value, versus the hybrid canvas-scaling one fixed 100%-rasterized bitmap.
+This is real, measured, and honestly reported, and — per the user's own
+framing for this phase — judged against actual visual quality rather than
+chasing a lower pixel-diff number: it is not visible without amplification.
+The group transition itself (`results/hybrid/transition_sequence.png`) is
+clean — no flash, no leftover content from the previous group, no
+double-exposure.
+
+### 4-6. Playback, scrubbing, seeking backward, pause/resume, memory
+
+All four driven through one `HybridEngine` instance at 540×960 (results in
+`poc/results/hybrid/`):
+
+| Test | Frames | Avg | p50 | p95 | Max | Dropped (33.3ms budget) |
+|---|---|---|---|---|---|---|
+| Continuous 30fps playback, 0-2.5s (spans group 0 entrance→steady→exit, the gap, group 1 entrance) | 75 | 13.2ms | 1.3ms | 11.9ms | 438ms | 2/75 (2.7%) |
+| Rapid random-access scrubbing, 0-4.8s | 60 | 8.0ms | 1.4ms | 10.6ms | 362ms | 1/60 (1.7%) |
+| Seek backward (forward into group 1, back into cached group 0, repeatedly) | 10 | 1.3ms | 1.3ms | 1.5ms | 1.5ms | 0/10 |
+| Pause (hold one frame, 20x) | 20 | 1.5ms | 1.4ms | 2.7ms | 2.7ms | 0/20 |
+| Resume (6 frames forward after pause) | 6 | 1.3ms | 1.3ms | 1.3ms | 1.3ms | 0/6 |
+
+**Every dropped frame in every test is a one-time, predictable cache miss
+— the first time a specific caption group is reached, whichever test
+reaches it first.** Once touched, a group never costs more than ~1-3ms
+again for the rest of that engine's lifetime, including after seeking
+away and back. This is a qualitatively different result from Phase E's
+naive per-frame re-render (100% dropped, every frame, every mode): caching
+plus transform-based interpolation makes animated playback and scrubbing
+real-time in this environment, with isolated, explainable exceptions
+rather than a systemic failure.
+
+Memory: Chromium RSS grew from 356MB to 513MB (~157MB) over the full test
+run, which captured and held all 3 groups' sprites simultaneously across
+playback + scrub + seek-back + pause/resume in one engine instance — in
+line with Phase E's per-group memory findings, not a new concern, though
+not stress-tested across a long multi-hour session with many more groups.
+
+**The one real product concern this surfaces**: a user who scrubs or plays
+into a caption group for the very first time will see one ~300-800ms stall
+(depending on resolution; higher at 1080p per Phase D/E) before that
+group's animation plays. This POC does not solve that — the natural fix,
+not built here, is prefetching: warm the *next* group's cache slightly
+before playback reaches it (a standard video-player pattern), which turns
+the one remaining stall into something that happens off-screen rather
+than on a frame the user is watching.
+
+### 7. Playable demonstration
+
+Published as an interactive artifact: **[Street Glow Hybrid
+Preview](https://claude.ai/artifact/3eKJXrUnK3pDo8axZUP5DX)**. Play,
+scrub, step frame-by-frame, or jump to each group's entrance/exit. A
+compare toggle swaps the live canvas to the nearest captured real libass
+render (26 available, spanning the same entrance/exit/transition windows
+tested above) with a labeled tag, so the real and hybrid renders can be
+viewed one at a time at the same timestamp. Built from the same real
+exported sprite PNGs and the same interpolation code as the test harness
+above — not a separate, prettier simplification.
+
+### 8. Does this extend to Doodle Marker and future word-level effects?
+
+**Partially proven, partially open — assessed honestly rather than
+assumed:**
+
+- **Transform-based effects** (scale, position, opacity — what Street Glow
+  uses, and what covers most "pop in," "slide in," "fade" style highlight
+  animations): directly covered by exactly this architecture, now proven
+  end to end.
+- **Doodle Marker's pill/loop reveal is structurally different** — it is
+  not a transform of a fixed shape, it is the shape itself growing
+  (currently implemented as 6 discrete stepped `Dialogue` events in
+  `captions.py`, specifically because of the `\clip`+`\p` investigation
+  from Phase E). Two credible paths, **neither built or tested in this
+  phase**: (a) cache the fully-grown decoration as a sprite and reveal it
+  with an animated CSS `clip-path` (a native, GPU-accelerated reveal
+  primitive distinct from scale/translate/opacity, but still "cache once,
+  animate via CSS"); or (b) keep using real libass rendering for these
+  specifically, since Phase E found animated `\clip`+`\p` reveals do
+  render correctly, and a single small word-level decoration shape is a
+  much cheaper render than a full-frame multi-layer composite — possibly
+  cheap enough to render live even without caching. Both are reasonable;
+  neither has been measured.
+- **General rule for future templates**: any effect expressible as a
+  transform or a CSS-native reveal (clip-path, mask) on a cached raster
+  fits this architecture with the same caching discipline proven in this
+  phase. An effect that changes the rasterized shape frame-by-frame in a
+  way CSS/canvas can't approximate — per-letter procedural distortion,
+  true particle effects — would not be cacheable this way, and this POC
+  has not found or tested a fix for that category. That is the one honest
+  ceiling on "10 templates" as asked: it bounds *effect design*, not
+  template count.
+
+### Phase F recommendation
+
+**Adopt the hybrid cache-and-interpolate architecture, with three specific,
+scoped limitations to close before integration:**
+
+1. **Prefetching isn't built.** The one-time per-group stall (~300-800ms)
+   is real and user-visible on first visit to a group. Needs a standard
+   look-ahead/prefetch strategy, not a redesign — low risk, not yet done.
+2. **Doodle Marker's reveal-by-growth effect needs its own prototype.**
+   Street Glow's transform-based animation is proven; a clip-path-based (or
+   continued-live-render) approach for shape-growth effects is proposed
+   but not measured.
+3. **Real GPU hardware is still unverified.** Every number in Phases D-F
+   comes from this sandbox's software WebGl (SwiftShader). The *shape* of
+   the result (caching solves steady state; transforms solve transitions;
+   a small, bounded, visually-subtle discrepancy exists during motion) is
+   expected to hold on real hardware, but the specific millisecond numbers
+   are a software-rendering worst case and should be the first thing
+   confirmed with real users' browsers before finalizing a go/no-go.
+
+None of these three are reasons to investigate a different rendering
+approach — they are the concrete, bounded remainder of de-risking an
+architecture whose hard parts (pixel-accurate geometry, resolution
+independence, caching correctness, and now animated-transition
+performance) are already proven across Phases D, E, and F.
