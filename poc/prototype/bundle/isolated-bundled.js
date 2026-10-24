@@ -831,7 +831,13 @@ var JASSUB = class _JASSUB {
 // isolated.js
 var params = new URLSearchParams(location.search);
 var sub = params.get("sub") || "captions.ass";
+var W = Number(params.get("w") || 720);
+var H = Number(params.get("h") || 1280);
 var canvas = document.getElementById("c");
+canvas.width = W;
+canvas.height = H;
+canvas.style.width = W + "px";
+canvas.style.height = H + "px";
 var fontMap = {
   "Anton": "/ground_truth/fonts/Anton-Regular.ttf",
   "Playfair Display SemiBold": "/ground_truth/fonts/PlayfairDisplay-Italic.ttf"
@@ -850,12 +856,12 @@ var fontMap = {
   });
   await instance.ready;
   const t1 = performance.now();
-  await instance.manualRender({ expectedDisplayTime: performance.now(), width: 720, height: 1280, mediaTime: 0.52 }, true);
+  await instance.manualRender({ expectedDisplayTime: performance.now(), width: W, height: H, mediaTime: 0.52 }, true);
   const t2 = performance.now();
   const times = [];
   for (let i = 0; i < 9; i++) {
     const ta = performance.now();
-    await instance.manualRender({ expectedDisplayTime: performance.now(), width: 720, height: 1280, mediaTime: 0.2 + i * 0.3 }, true);
+    await instance.manualRender({ expectedDisplayTime: performance.now(), width: W, height: H, mediaTime: 0.2 + i * 0.3 }, true);
     times.push(performance.now() - ta);
   }
   window.__timing = {

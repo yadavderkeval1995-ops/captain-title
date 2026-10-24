@@ -19,8 +19,20 @@ POC_DIR = Path(__file__).parent
 OUT_DIR = POC_DIR / "ground_truth"
 OUT_DIR.mkdir(exist_ok=True)
 
-SOURCE_VIDEO = (Path(__file__).parent / ".." / "backend" / "storage_data" / "captain-title" / "uploads"
-                 / "user_556b1b843dee" / "c0e2c86bfd5d422c8144cdc07ab62a53.mp4").resolve()
+SOURCE_VIDEO_720 = (Path(__file__).parent / ".." / "backend" / "storage_data" / "captain-title" / "uploads"
+                     / "user_556b1b843dee" / "c0e2c86bfd5d422c8144cdc07ab62a53.mp4").resolve()
+# _render's filter_complex sizes the glow/shadow mask canvases to video_width
+# x video_height but never itself resizes the source video stream to match -
+# a 720x1280 source with video_width/height=1080x1920 would silently
+# misalign the composited layers (a POC harness artifact, not a real app
+# bug: production's uploaded video and its project.width/height already
+# agree). Scaling the real test source up to the exact target resolution
+# first keeps this an apples-to-apples full-resolution comparison.
+SOURCE_VIDEO = OUT_DIR / "source_1080x1920.mp4"
+import subprocess
+subprocess.run([str(captions.FFMPEG), "-y", "-v", "error", "-i", str(SOURCE_VIDEO_720),
+                "-vf", "scale=1080:1920", "-c:v", "libx264", "-crf", "18", "-c:a", "aac",
+                str(SOURCE_VIDEO)], check=True)
 
 # Realistic Hinglish word timing (same phrase used earlier this session to
 # verify the grouping/spacing fixes) - two Street Glow lines' worth of
@@ -68,7 +80,7 @@ captions._render(
     quality="high", sfx_markers=[],
     shadow_alpha_path=shadow_alpha, shadow_color_path=shadow_color, shadow_blur=captions.STREET_GLOW_SHADOW_BLUR,
     glow_alpha_path=glow_alpha, glow_color_path=glow_color, glow_blur=captions.STREET_GLOW_GLOW_BLUR,
-    video_width=720, video_height=1280,
+    video_width=1080, video_height=1920,
 )
 print("Wrote", output_mp4)
 

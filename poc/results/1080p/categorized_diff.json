@@ -1,0 +1,23 @@
+{
+  "0.48": {
+    "whole_frame_diff_pct_(informational_only)": 0.1984,
+    "caption_region_crop_diff_pct": 3.726,
+    "core_text_IoU_pct": 65.19,
+    "halo_zone_px_count": 5525,
+    "halo_zone_mean_abs_diff_0to765": 3.26
+  },
+  "1.40": {
+    "whole_frame_diff_pct_(informational_only)": 0.2337,
+    "caption_region_crop_diff_pct": 4.39,
+    "core_text_IoU_pct": 55.0,
+    "halo_zone_px_count": 6323,
+    "halo_zone_mean_abs_diff_0to765": 5.2
+  },
+  "2.18": {
+    "whole_frame_diff_pct_(informational_only)": 0.2378,
+    "caption_region_crop_diff_pct": 4.467,
+    "core_text_IoU_pct": 66.39,
+    "halo_zone_px_count": 5377,
+    "halo_zone_mean_abs_diff_0to765": 3.58
+  }
+}
