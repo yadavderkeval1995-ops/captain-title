@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>libass-wasm parity POC</title>
+<style>
+  body { background: #000; color: #0f0; font-family: monospace; }
+  #stage { position: relative; width: 720px; height: 1280px; background: #15152b; }
+  canvas { position: absolute; top: 0; left: 0; width: 720px; height: 1280px; }
+  #log { white-space: pre-wrap; max-width: 720px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="bg" width="720" height="1280"></canvas>
+  <canvas id="out" width="720" height="1280"></canvas>
+  <!-- visibility:hidden (not display:none): JASSUB's internal resize()
+       reads the canvas's own clientWidth/clientHeight to size its actual
+       WebGL render target - display:none zeroes those, which silently
+       resizes the offscreen target to 0x0 and nothing ever draws. -->
+  <canvas id="main" width="720" height="1280" style="visibility:hidden"></canvas>
+  <canvas id="glowAlpha" width="720" height="1280" style="visibility:hidden"></canvas>
+  <canvas id="glowColor" width="720" height="1280" style="visibility:hidden"></canvas>
+  <canvas id="shadowAlpha" width="720" height="1280" style="visibility:hidden"></canvas>
+  <canvas id="shadowColor" width="720" height="1280" style="visibility:hidden"></canvas>
+</div>
+<div id="log"></div>
+<script type="module" src="./bundle/main-bundled.js"></script>
+</body>
+</html>

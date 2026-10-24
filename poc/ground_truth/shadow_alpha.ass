@@ -1,0 +1,12 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,Poppins,52,&H00FFFFFF,&H00007AFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,70,70,210,1
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+Dialogue: 0,0:00:00.40,0:00:02.22,Default,,0,0,0,,{\an5\move(540,1586,540,1568,0,220)\fad(120,80)\fnPlayfair Display SemiBold\fs44\fscx100\fscy100\bord0\shad0\blur0\c&H8C8C8C&}mein hain
+Dialogue: 0,0:00:02.25,0:00:04.07,Default,,0,0,0,,{\an5\move(540,1586,540,1568,0,220)\fad(120,80)\fnPlayfair Display SemiBold\fs44\fscx100\fscy100\bord0\shad0\blur0\c&H8C8C8C&}cheez pe
+Dialogue: 0,0:00:04.10,0:00:04.81,Default,,0,0,0,,{\an5\move(540,1586,540,1568,0,220)\fad(120,80)\fnPlayfair Display SemiBold\fs44\fscx100\fscy100\bord0\shad0\blur0\c&H8C8C8C&}karein
