@@ -941,16 +941,29 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   ].filter(Boolean).join(" ");
                   const doodleTier = theme === "doodle_marker" && ["key", "feature"].includes(word.emphasis) ? word.emphasis : null;
                   const relOnMs = Math.max(0, Math.round((word.start - visibleWords[0].start) * 1000));
-                  return <span key={word.index} className={doodleTier ? `doodle-decorated doodle-${doodleTier}` : undefined}>
+                  // The space before this word MUST be a sibling of the
+                  // word's own wrapper span, not a child nested inside it:
+                  // ".caption-overlay span" below sets display:inline-block
+                  // on every span, which makes the wrapper its own line box
+                  // - a leading-space TEXT NODE nested inside that box counts
+                  // as "start of line" and gets silently collapsed away by
+                  // the browser's own whitespace rules, gluing every word
+                  // together with no visible gap. A sibling space, directly
+                  // inside the row's own span instead, sits mid-line (the
+                  // previous word already rendered before it) and is never
+                  // collapsed.
+                  return <Fragment key={word.index}>
                     {wordIndex > 0 && " "}
-                    {doodleTier === "feature" && <svg className="doodle-loop" viewBox="0 0 100 40" style={{ animationDelay: `${relOnMs}ms` }}>
-                      <path d="M 10 20 C 10 8, 90 6, 92 20 C 94 34, 8 36, 14 18" fill="none" stroke="#EF4444" strokeWidth="3" strokeLinecap="round" pathLength="1" />
-                    </svg>}
-                    <span className={[className, doodleTier === "key" ? "doodle-pill" : ""].filter(Boolean).join(" ")}
-                      style={{ ...style, ...(doodleTier === "key" ? { animationDelay: `${relOnMs}ms` } : {}) }}
-                      onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
-                      data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>
-                  </span>;
+                    <span className={doodleTier ? `doodle-decorated doodle-${doodleTier}` : undefined}>
+                      {doodleTier === "feature" && <svg className="doodle-loop" viewBox="0 0 100 40" style={{ animationDelay: `${relOnMs}ms` }}>
+                        <path d="M 10 20 C 10 8, 90 6, 92 20 C 94 34, 8 36, 14 18" fill="none" stroke="#EF4444" strokeWidth="3" strokeLinecap="round" pathLength="1" />
+                      </svg>}
+                      <span className={[className, doodleTier === "key" ? "doodle-pill" : ""].filter(Boolean).join(" ")}
+                        style={{ ...style, ...(doodleTier === "key" ? { animationDelay: `${relOnMs}ms` } : {}) }}
+                        onClick={(e) => { e.stopPropagation(); if (dragMovedRef.current) { dragMovedRef.current = false; return; } openMoment(word.index); }}
+                        data-testid={`preview-caption-word-${word.index}`}>{scriptText(word)}</span>
+                    </span>
+                  </Fragment>;
                 })}
                 </span>
               </Fragment>)}

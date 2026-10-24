@@ -513,21 +513,11 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
             except Exception:
                 logger.exception("Sarvam text pass failed for chunk %s", chunk_path)
 
-            # MERGE-DEBUG: temporary diagnostic logging to trace exactly
-            # where multi-word tokens with no internal spacing first appear
-            # (Whisper's own word timing, Sarvam's raw transcript, or only
-            # after stitching) - remove once the merged-word bug is closed.
-            logger.info("MERGE-DEBUG whisper_tokens(chunk=%s)=%r", chunk_path,
-                        [w["original"] for w in whisper_candidate["words"]])
-            logger.info("MERGE-DEBUG sarvam_text(chunk=%s)=%r", chunk_path, sarvam_text)
-
             # If Sarvam fails for this one chunk, fall back to Whisper's own
             # words rather than losing the chunk entirely.
             stitched = _stitch_chunk(whisper_candidate["words"], sarvam_text) if sarvam_text else []
             if not stitched:
                 stitched = whisper_candidate["words"]
-
-            logger.info("MERGE-DEBUG stitched(chunk=%s)=%r", chunk_path, [w["original"] for w in stitched])
 
             scoring_words = [word for word in stitched if word["start"] >= skip_before]
             token_list = _tokens(" ".join(word["original"] for word in scoring_words))
@@ -569,7 +559,6 @@ async def transcribe_words(audio_path: str, speech_language: str = "auto"):
             word["index"] = len(words)
             words.append(word)
     words = _normalize_word_timings(words)
-    logger.info("MERGE-DEBUG final whisper+sarvam words (pre-GPT)=%r", [w["original"] for w in words])
     overall = _repetition_metrics(_tokens(" ".join(word["original"] for word in words)))
     if not words or (len(words) >= 12 and (overall["unique_ratio"] < .24 or overall["bigram_ratio"] > .30 or overall["ngram_repeat"] >= 3)):
         raise ValueError("No trustworthy transcript was found. The audio may be unclear, music-heavy, or repetitive.")
@@ -604,7 +593,6 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": f"{context_line}Convert these indexed words:\n{numbered}"}])
     raw = (response.choices[0].message.content or "").strip()
-    logger.info("MERGE-DEBUG gpt_raw_response=%r", raw)
     match = re.search(r"\[[\s\S]*\]", raw)
     if not match:
         raise ValueError("Hinglish conversion did not return valid JSON")
@@ -652,7 +640,6 @@ async def convert_to_hinglish(words: list[dict], context: str = ""):
         # Kept for templates/UI built around a simple on/off emphasis flag.
         word["important"] = emphasis != "support"
         word["uncertain"] = bool(item.get("uncertain", False))
-    logger.info("MERGE-DEBUG final hinglish words=%r", [(w["index"], w["text"]) for w in words])
     return words
 
 
