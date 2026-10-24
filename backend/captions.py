@@ -1080,7 +1080,12 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     # spoken. Both get the same more generous thresholds; explicit
     # words_per_caption still overrides both via strict_count.
     is_fixed_template = theme in ("street_glow", "doodle_marker")
-    default_max_words = 6 if is_fixed_template else 3
+    # Street Glow always splits across its own fixed 2 lines by design, so
+    # 6 words comfortably becomes 2 short lines. Doodle Marker is a SINGLE
+    # flowing line with no second row - 6 words of real speech routinely
+    # overflows one line's width, so it needs a tighter cap (mirrors
+    # CaptionStudio.jsx's groupWordsForDisplay exactly).
+    default_max_words = 6 if theme == "street_glow" else 3 if theme == "doodle_marker" else 3
     min_display = 1.5 if is_fixed_template else 0.35
     groups = _group_words_for_display(words, min_display=min_display,
                                       max_words=words_per_caption or default_max_words,

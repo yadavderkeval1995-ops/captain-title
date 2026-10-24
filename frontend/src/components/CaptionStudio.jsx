@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BookmarkSimple, ChatCircle, DotsThreeVertical, DownloadSimple, FileText, FloppyDisk, FrameCorners, Heart, Play, Share, SpinnerGap } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { api, API_ROOT, errorMessage } from "@/lib/api";
@@ -96,6 +96,16 @@ function isBoldCapableFont(family) {
   return family.includes("Poppins") || family.includes("Caveat");
 }
 
+// A single reused offscreen canvas context for measuring real rendered
+// text width via the font metrics directly (see doodleFitScale) - cheaper
+// than creating a new canvas per measurement and avoids the DOM shrink-
+// to-fit quirks of reading a live element's own layout width instead.
+let measureCanvasCtx = null;
+function getMeasureCanvasCtx() {
+  if (!measureCanvasCtx) measureCanvasCtx = document.createElement("canvas").getContext("2d");
+  return measureCanvasCtx;
+}
+
 function hexToRgba(hex, opacity) {
   const value = (hex || "#000000").replace("#", "");
   const r = parseInt(value.slice(0, 2), 16) || 0;
@@ -147,8 +157,16 @@ function groupWordsForDisplay(words, wordsPerCaption, theme) {
   // cut most cues off at 1 word well before a realistic phrase finishes
   // being spoken. Mirrors backend/captions.py's own per-theme override
   // exactly - explicit wordsPerCaption still overrides both via strict.
+  //
+  // Street Glow's own cap stays at 6 - it always splits across its own
+  // fixed 2 lines by design (that's the whole point of the template, per
+  // the reference design it was built from), so 6 words comfortably
+  // becomes 2 short lines of ~3. Doodle Marker is a SINGLE flowing line
+  // with no second row to fall back on, so it needs a tighter cap - 6
+  // words of real Hinglish speech routinely overflows one line's width
+  // and wraps, which is exactly what it's not supposed to do.
   const isFixedTemplate = theme === "street_glow" || theme === "doodle_marker";
-  const maxWords = wordsPerCaption || (isFixedTemplate ? 6 : MAX_WORDS_PER_LINE);
+  const maxWords = wordsPerCaption || (theme === "street_glow" ? 6 : theme === "doodle_marker" ? 3 : MAX_WORDS_PER_LINE);
   const minDisplay = isFixedTemplate ? 1.5 : MIN_DISPLAY_SECONDS;
   const strict = wordsPerCaption != null;
   const groups = [];
@@ -408,6 +426,47 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   }, [wordGroups, currentTime]);
   const anchorWord = visibleWords[0];
   const tiers = tiersById[theme];
+  // Doodle Marker is meant to be a SINGLE flowing line, never a wrap - the
+  // word-count cap (see groupWordsForDisplay) handles the common case, but
+  // a cap on word COUNT can't guarantee a fit on word WIDTH (a handful of
+  // long English loanwords like "automation"/"stability" can still overflow
+  // the caption box at full size). Shrinking the row down with a CSS
+  // transform - rather than fighting the browser's own line-wrap - is what
+  // actually guarantees one line regardless of word length, the same way a
+  // real caption tool auto-fits text to its box.
+  //
+  // The scale factor is computed from a Canvas measureText pass, not from
+  // reading the live DOM node's own width: with 3+ nested inline-block
+  // layers here (row span > word wrapper > decorated/plain span), each
+  // carrying its own percentage max-width from App.css's blanket
+  // ".caption-overlay span" rule, the browser's own shrink-to-fit sizing
+  // measurably under-reports the row's true single-line width (verified:
+  // forcing white-space:nowrap and explicitly cancelling max-width/
+  // overflow-wrap on the outer wrapper still left its measured width
+  // short of its own scrollWidth) - a CSS layout quirk from that nesting,
+  // not anything this effect can fix by changing which element it reads.
+  // Canvas measurement sidesteps the whole nested-layout question by
+  // computing the text's true rendered width directly from the font.
+  const [doodleFitScale, setDoodleFitScale] = useState(1);
+  useLayoutEffect(() => {
+    if (theme !== "doodle_marker" || !frameBox.w || visibleWords.length === 0) { setDoodleFitScale(1); return; }
+    const family = (tiers?.support?.font) || fontFamilyById[fontId];
+    const ctx = getMeasureCanvasCtx();
+    const wordSpacingPx = Math.max(3, 14 * previewScale);
+    let total = 0;
+    visibleWords.forEach((word, index) => {
+      const size = Math.max(20, word.font_size * previewScale);
+      const weight = bold && isBoldCapableFont(family) ? 800 : 400;
+      ctx.font = `${weight} ${size}px ${family}`;
+      const text = (scriptMode === "native" && word.original) ? word.original : word.text;
+      total += ctx.measureText(text).width;
+      if (word.emphasis === "key") total += 16; // .doodle-pill's padding:0 8px, both sides
+      if (index > 0) total += wordSpacingPx;
+    });
+    const available = frameBox.w * 0.84; // matches .caption-overlay's own max-width:84%
+    const scale = total > available ? Math.max(0.45, available / total) : 1;
+    setDoodleFitScale(scale);
+  }, [theme, visibleWords, previewScale, frameBox.w, bold, fontId, tiers, scriptMode]);
   // Mirrors _write_ass's own two-layer approach: a real browser already
   // blurs text-shadow independently of the glyph fill (unlike libass's
   // single \blur tag), so the preview doesn't need the backend's two-
@@ -903,6 +962,21 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   captionLines=2 midpoint, or a word's own manual new_line
                   override" mode instead. Mirrors _resolve_line_breaks's
                   own break_tiers override in captions.py exactly. */}
+              <span style={theme === "doodle_marker"
+                  // App.css's blanket ".caption-overlay span" rule sets
+                  // max-width:100% and overflow-wrap:anywhere on EVERY span
+                  // in here, this wrapper included - overflow-wrap:anywhere
+                  // creates an emergency break opportunity that kicks in
+                  // specifically when a box is width-constrained, which
+                  // overrides white-space:nowrap's "never break" and wraps
+                  // anyway. Both have to be explicitly cancelled here so
+                  // the row never breaks - doodleFitScale (computed from a
+                  // Canvas measurement, not this element's own layout
+                  // width - see its own comment on why) shrinks it to fit
+                  // instead of letting the browser wrap it.
+                  ? { display: "inline-block", whiteSpace: "nowrap", maxWidth: "none", overflowWrap: "normal",
+                      transform: `scale(${doodleFitScale})`, transformOrigin: "center" }
+                  : undefined}>
               {splitIntoRows(visibleWords, theme === "doodle_marker" ? null : tiers, captionLines).map((row, rowIndex) => <Fragment key={rowIndex}>
                 {rowIndex > 0 && <br />}
                 {/* BorderStyle=3's opaque box in libass draws around each
@@ -924,6 +998,14 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                   // only affects actual space characters, so it can't pull
                   // letters WITHIN a word apart, only push words apart.
                   wordSpacing: `${Math.max(3, 14 * previewScale)}px`,
+                  // This row span is ALSO matched by App.css's blanket
+                  // ".caption-overlay span" rule (max-width:100%,
+                  // overflow-wrap:anywhere) - those aren't inherited CSS
+                  // properties, so overriding them on the outer wrapper
+                  // above does nothing for THIS span one level in. Doodle
+                  // Marker needs them cancelled here too, or this row still
+                  // force-wraps regardless of the outer wrapper's nowrap.
+                  ...(theme === "doodle_marker" ? { maxWidth: "none", overflowWrap: "normal", whiteSpace: "nowrap" } : {}),
                   ...(textStyle.background_enabled
                     ? { backgroundColor: hexToRgba(textStyle.background_color, textStyle.background_opacity),
                         padding: "2px 10px", borderRadius: "3px", boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" }
@@ -980,6 +1062,7 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
                 })}
                 </span>
               </Fragment>)}
+              </span>
               <div className="selection-box">
                 {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={startResize(pos)} data-testid={`caption-resize-handle-${pos}`} />)}
               </div>
