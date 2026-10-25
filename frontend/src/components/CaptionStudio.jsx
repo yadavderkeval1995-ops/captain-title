@@ -236,6 +236,35 @@ function StreetGlowOverlay({ visibleWords, scriptMode, boxX, boxY, boxRotation, 
 // activates the new path.
 const STREET_GLOW_PROGRESSIVE_REVEAL = false;
 const STREET_GLOW_PROGRESSIVE_RED_WORDS = 2;
+// Mirrors backend/captions.py's STREET_GLOW_PROGRESSIVE_MAX_LINE_WIDTH/
+// MIN_SCALE exactly (940 / 0.55 at the 1080 canvas) - each line is
+// independently width-constrained so a long red headline and a long white
+// line never force each other to shrink.
+const STREET_GLOW_PROGRESSIVE_MAX_LINE_WIDTH = 940;
+const STREET_GLOW_PROGRESSIVE_MIN_SCALE = 0.55;
+
+// Measures a line's natural (unscaled) rendered width via its DOM box and
+// returns the scale factor (<=1, floored at MIN_SCALE) needed to fit it
+// under MAX_LINE_WIDTH - 1 if it already fits. Re-measures whenever the
+// line's own text content changes (word list identity, via `dep`), not on
+// every reveal tick, since every word is always mounted (see this
+// component's own comment above) so a line's rendered width is already its
+// FULL final width from the first frame, unaffected by reveal progress.
+function useLineFitScale(ref, previewScale, dep) {
+  const [scale, setScale] = useState(1);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) { setScale(1); return; }
+    const naturalWidth = el.scrollWidth / scale; // undo any previously-applied scale before re-measuring
+    const maxWidth = STREET_GLOW_PROGRESSIVE_MAX_LINE_WIDTH * previewScale;
+    const next = naturalWidth > maxWidth
+      ? Math.max(STREET_GLOW_PROGRESSIVE_MIN_SCALE, maxWidth / naturalWidth)
+      : 1;
+    if (next !== scale) setScale(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dep, previewScale]);
+  return scale;
+}
 
 // v1 visual baseline (approved design, mockup_FINAL.png): each line
 // independently centers on the SAME shared horizontal axis - NOT a shared
@@ -279,23 +308,37 @@ function StreetGlowProgressiveOverlay({ visibleWords, scriptMode, currentTime, b
     <span key={word.index} className="street-glow-progressive-word"
       style={{ opacity: currentTime >= word.start ? 1 : 0 }}>{wordText(word, upper)}</span>
   );
+  // Width-constrained, independently per line - mirrors backend/captions.py's
+  // STREET_GLOW_PROGRESSIVE_MAX_LINE_WIDTH/MIN_SCALE exactly (see
+  // useLineFitScale's own comment and that backend constant's comment).
+  const redKey = redWords[0]?.index;
+  const whiteKey = whiteWords[0]?.index;
+  const line1Ref = useRef(null);
+  const line2Ref = useRef(null);
+  const redScale = useLineFitScale(line1Ref, previewScale, redKey);
+  const whiteScale = useLineFitScale(line2Ref, previewScale, whiteKey);
   return (
     <div className="caption-overlay street-glow-overlay"
       style={{ left: `${boxX}%`, top: `${boxY}%`, transform: `translate(-50%,-50%) rotate(${boxRotation}deg)` }}
       onMouseDown={onMouseDown} data-testid="live-caption-preview">
       <div className="street-glow-progressive-stack">
-        {redWords.length > 0 && <div className="street-glow-progressive-line1" style={{ fontSize: `${80 * previewScale}px` }}>
+        {redWords.length > 0 && <div ref={line1Ref} className="street-glow-progressive-line1"
+          style={{ fontSize: `${80 * redScale * previewScale}px` }}>
           {redWords.map((word) => renderWord(word, true))}
         </div>}
-        {/* -32px margin-top is browser-calibrated (not the same -8 the
+        {/* -40px margin-top is browser-calibrated (not the same -8 the
             fixed-pop template uses) so the rendered gap between the red
-            baseline and the white line's x-height-top lands at the
-            approved mockup's measured 28px - CSS line-height:1's box
-            doesn't equal either font's visual cap-height/x-height, so this
-            couldn't be derived from the \fs values alone; verified via a
-            real Playwright screenshot + pixel measurement, same way as the
-            backend \pos offsets below it. */}
-        {whiteWords.length > 0 && <div className="street-glow-progressive-line2" style={{ fontSize: `${112 * previewScale}px`, marginTop: `${-32 * previewScale}px` }}>
+            line's bottom edge and the white line's x-height-top lands at
+            the approved ~20px gap (STREET_GLOW_PROGRESSIVE_GAP_RATIO's own
+            comment on backend/captions.py explains why it's positive, not
+            an overlap) - CSS line-height:1's box doesn't equal either
+            font's visual cap-height/x-height, so this couldn't be derived
+            from the font-size values alone; verified via a real Playwright
+            screenshot + pixel measurement, same way as the backend \pos
+            offsets. Scaled by the WHITE line's own fit-scale (not red's),
+            same as backend's LINE2_ANCHOR_DY * white_scale. */}
+        {whiteWords.length > 0 && <div ref={line2Ref} className="street-glow-progressive-line2"
+          style={{ fontSize: `${112 * whiteScale * previewScale}px`, marginTop: `${-40 * whiteScale * previewScale}px` }}>
           {whiteWords.map((word) => renderWord(word, false))}
         </div>}
       </div>
