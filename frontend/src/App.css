@@ -78,16 +78,23 @@ h1,h2,h3,.brand-lockup { font-family:'Outfit',sans-serif; letter-spacing:0; }
 .street-glow-line2 { font-family:'Playfair Display',serif;font-style:italic;font-weight:600;color:#FFFFFF;line-height:1;white-space:nowrap;text-shadow:0 2px 6px rgba(0,0,0,.6);animation:street-glow-glide 220ms cubic-bezier(.16,1,.3,1) both; }
 @keyframes street-glow-pop { 0%{ transform:scale(.85); } 70%{ transform:scale(1.08); } 100%{ transform:scale(1); } }
 @keyframes street-glow-glide { from{ transform:translateY(14px);opacity:0; } to{ transform:translateY(0);opacity:1; } }
-/* Progressive-reveal variant (STREET_GLOW_PROGRESSIVE_REVEAL, off by
-   default - see CaptionStudio.jsx's own comment on the flag). align-items:
-   flex-start (not center) is the whole trick: each word is a separate span,
-   conditionally mounted only once playback reaches its own start, and
-   normal left-to-right DOM flow keeps every earlier word exactly where it
-   already was - no manual position math needed on this side, unlike the
-   export side's precomputed cumulative-width \pos (see backend/captions.py's
-   _emit_street_glow_group_progressive). */
-.street-glow-progressive-stack { display:flex;flex-direction:column;align-items:flex-start; }
-.street-glow-progressive-line1 { font-family:'Anton',sans-serif;color:#FF2E2E;line-height:1;white-space:nowrap;text-shadow:0 0 14px rgba(255,46,46,.95),0 0 28px rgba(255,46,46,.6);display:flex;flex-wrap:nowrap;gap:0.22em; }
+/* Progressive-reveal v1 visual baseline (STREET_GLOW_PROGRESSIVE_REVEAL,
+   off by default - see CaptionStudio.jsx's own comment on the flag).
+   align-items:center (not flex-start) is the whole trick for independent
+   per-line centering on a shared axis: every word is ALWAYS mounted (only
+   its opacity toggles - see StreetGlowProgressiveOverlay), so each row's
+   flex width is always its FULL final width, never the width of however
+   many words currently happen to be visible. Centering full-width,
+   never-changing rows against each other this way reproduces the export
+   side's precomputed-width, center_x-anchored math (see backend/
+   captions.py's _emit_street_glow_group_progressive) without needing the
+   same manual cumulative-width positioning on this side. Colors/glow:
+   brand Cherry Red (#FF2D4D, App.css's own --cherry) + a tighter, more
+   controlled glow spread than the fixed-pop template's Captik-orange
+   #FF2E2E/wider halo - approved mockup (mockup_FINAL.png), not Captik's
+   own red. */
+.street-glow-progressive-stack { display:flex;flex-direction:column;align-items:center; }
+.street-glow-progressive-line1 { font-family:'Anton',sans-serif;color:#FF2D4D;line-height:1;white-space:nowrap;text-shadow:0 0 8px rgba(255,45,77,.9),0 0 16px rgba(255,45,77,.55);display:flex;flex-wrap:nowrap;gap:0.22em; }
 .street-glow-progressive-line2 { font-family:'Dancing Script',cursive;font-weight:700;color:#FFFFFF;line-height:1;white-space:nowrap;text-shadow:0 2px 6px rgba(0,0,0,.6);display:flex;flex-wrap:nowrap;gap:0.22em; }
 .street-glow-progressive-word { transition:opacity 80ms linear; }
 /* Doodle Marker: a yellow highlighter pill (left-to-right wipe reveal) and

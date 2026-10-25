@@ -237,21 +237,37 @@ function StreetGlowOverlay({ visibleWords, scriptMode, boxX, boxY, boxRotation, 
 const STREET_GLOW_PROGRESSIVE_REVEAL = false;
 const STREET_GLOW_PROGRESSIVE_RED_WORDS = 2;
 
-// Left-aligned, word-by-word reveal. First attempt conditionally mounted
-// each word only once currentTime reached its own start - but that shrinks
-// each line's flex row to however many words are CURRENTLY showing, so a
-// line's own width (and therefore the shared stack's shrink-wrapped width,
-// and therefore the centered .caption-overlay's left edge) changes as
-// words are added, which can shift an ALREADY-REVEALED word - exactly the
-// "must not shift" bug this was built to avoid. Fixed by always rendering
-// every word of the group (both lines reserve their FULL final width from
-// the first frame, same as the export side precomputing each line's full
-// width up front - see backend/captions.py's _emit_street_glow_group_
-// progressive) and fading each word's opacity via a CSS transition keyed
-// off currentTime, instead of mounting/unmounting it. An invisible
-// (opacity:0) word still occupies its layout box, so the row's width -
-// and every earlier word's position within it - never changes as later
-// words reveal.
+// v1 visual baseline (approved design, mockup_FINAL.png): each line
+// independently centers on the SAME shared horizontal axis - NOT a shared
+// left edge. First attempt conditionally mounted each word only once
+// currentTime reached its own start - but that shrinks each line's flex
+// row to however many words are CURRENTLY showing, so a line's own width
+// changes as words are added, which can shift an ALREADY-REVEALED word -
+// exactly the "must not shift" bug this was built to avoid. Fixed by
+// always rendering every word of the group (both lines reserve their FULL
+// final width from the first frame, same as the export side precomputing
+// each line's full width up front - see backend/captions.py's _emit_
+// street_glow_group_progressive) and fading each word's opacity via a CSS
+// transition keyed off currentTime, instead of mounting/unmounting it. An
+// invisible (opacity:0) word still occupies its layout box, so each row's
+// width - and every word's position within it - never changes as later
+// words reveal; align-items:center on .street-glow-progressive-stack (see
+// App.css) then centers each row on the stack's own axis using that same
+// always-full width, matching the export side's center_x math exactly -
+// not a per-word recentre, since neither row's width ever changes.
+// 80 / 112 here are CSS px (browser font metrics), calibrated via a real
+// Playwright screenshot + pixel measurement to the same 72px cap-height /
+// 46px x-height target backend/captions.py's STREET_GLOW_PROGRESSIVE_
+// LINE1_SIZE/LINE2_SIZE renders at the 1080 canvas - but NOT the same
+// numbers as those backend constants (146/162). A real libass render of
+// these bundled font files needs a much larger \fs than a browser needs
+// CSS font-size for the identical visual cap-height/x-height (verified:
+// libass's own font-metrics reading of Anton/Dancing Script runs well
+// under what PIL/FreeType - and a browser - predict for the same nominal
+// size; see that backend constant's own comment for the measured ratio).
+// Preview and export match on the RENDERED RESULT, not on sharing one
+// literal size number across two different text-rendering engines.
+// Same previewScale convention every other px value in this file uses.
 function StreetGlowProgressiveOverlay({ visibleWords, scriptMode, currentTime, boxX, boxY, boxRotation, previewScale, onMouseDown, onResize }) {
   const redWords = visibleWords.slice(0, STREET_GLOW_PROGRESSIVE_RED_WORDS);
   const whiteWords = visibleWords.slice(STREET_GLOW_PROGRESSIVE_RED_WORDS);
@@ -268,10 +284,18 @@ function StreetGlowProgressiveOverlay({ visibleWords, scriptMode, currentTime, b
       style={{ left: `${boxX}%`, top: `${boxY}%`, transform: `translate(-50%,-50%) rotate(${boxRotation}deg)` }}
       onMouseDown={onMouseDown} data-testid="live-caption-preview">
       <div className="street-glow-progressive-stack">
-        {redWords.length > 0 && <div className="street-glow-progressive-line1" style={{ fontSize: `${72 * previewScale}px` }}>
+        {redWords.length > 0 && <div className="street-glow-progressive-line1" style={{ fontSize: `${80 * previewScale}px` }}>
           {redWords.map((word) => renderWord(word, true))}
         </div>}
-        {whiteWords.length > 0 && <div className="street-glow-progressive-line2" style={{ fontSize: `${44 * previewScale}px`, marginTop: `${-8 * previewScale}px` }}>
+        {/* -32px margin-top is browser-calibrated (not the same -8 the
+            fixed-pop template uses) so the rendered gap between the red
+            baseline and the white line's x-height-top lands at the
+            approved mockup's measured 28px - CSS line-height:1's box
+            doesn't equal either font's visual cap-height/x-height, so this
+            couldn't be derived from the \fs values alone; verified via a
+            real Playwright screenshot + pixel measurement, same way as the
+            backend \pos offsets below it. */}
+        {whiteWords.length > 0 && <div className="street-glow-progressive-line2" style={{ fontSize: `${112 * previewScale}px`, marginTop: `${-32 * previewScale}px` }}>
           {whiteWords.map((word) => renderWord(word, false))}
         </div>}
       </div>

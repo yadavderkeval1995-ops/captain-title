@@ -848,6 +848,56 @@ STREET_GLOW_WORD_FADE_MS = 80
 STREET_GLOW_PROGRESSIVE_LINE2_FONT = "Dancing Script"  # connected cursive; NOT written into THEMES, so the
 # fallback path above keeps Playfair Display SemiBold exactly as it is today
 
+# --- v1 visual baseline (approved design, mockup_FINAL.png) --------------
+# Measured off three settled-state Captik reference frames, then corrected
+# onto a blend of mockup B's typography/readability proportions and mockup
+# C's cherry-red/tighter-glow treatment, per the approved static mockup.
+#
+# \fs values are libass's own ASS tag, calibrated by directly rendering
+# through the real ffmpeg "subtitles" filter and measuring the output
+# pixels - NOT via PIL/FreeType's font metrics. The two disagree
+# substantially for these specific bundled font files: PIL predicts Anton's
+# cap-height at \fs80 to be ~72px (a plausible, standard FreeType reading),
+# but a real libass render at \fs80 only produces a ~39px cap-height -
+# libass's own interpretation of this font's metrics runs roughly 1.8x
+# "smaller per \fs unit" than PIL's for Anton (and ~1.4x for Dancing
+# Script) - likely a units-per-em quirk specific to these font files that
+# libass and FreeType/PIL resolve differently, not a bug in this file's own
+# math. STREET_GLOW_PROGRESSIVE_LINE1_SIZE=146 is the \fs that actually
+# renders Anton's caps at a 72px cap-height (6.7% of the 1080 canvas) in a
+# REAL libass render (verified: 73px); LINE2_SIZE=162 is the \fs that
+# renders Dancing Script at a 46px x-height (ratio .64 vs the red line's
+# cap-height, verified: 46px exactly) - found by binary-searching real
+# ffmpeg output, not assumed from either font's nominal metrics. Because
+# _measure_text_width (used for the cumulative-width word positioning
+# below) goes through PIL, NOT libass, it must NOT be called with these
+# \fs values directly - see LINE1_MEASURE_SIZE/LINE2_MEASURE_SIZE below,
+# the separate PIL-equivalent sizes that reproduce libass's REAL rendered
+# pixel widths at LINE1_SIZE/LINE2_SIZE (also verified empirically, not
+# derived from the cap-height ratio, which does not transfer 1:1 to
+# width). CAP_HEIGHT/XHEIGHT/GAP_PX further below are the same visual
+# measurements, kept as their own constants purely for the vertical-layout
+# math in _emit_street_glow_group_progressive (which centers each line on
+# cap-height/x-height, not on raw \fs).
+STREET_GLOW_PROGRESSIVE_LINE1_SIZE = 146
+STREET_GLOW_PROGRESSIVE_LINE2_SIZE = 162
+STREET_GLOW_PROGRESSIVE_LINE1_MEASURE_SIZE = 82   # PIL size matching libass's real \fs146 width
+STREET_GLOW_PROGRESSIVE_LINE2_MEASURE_SIZE = 117  # PIL size matching libass's real \fs162 width
+STREET_GLOW_PROGRESSIVE_CAP_HEIGHT = 72    # LINE1_SIZE's measured cap-height
+STREET_GLOW_PROGRESSIVE_XHEIGHT = 46       # LINE2_SIZE's measured x-height
+STREET_GLOW_PROGRESSIVE_GAP_PX = 28        # red baseline -> white x-height-top
+# libass's \an4 anchors \pos's y at the font's own metric-based line-center,
+# not at the PIL glyph-bbox center the two constants above are measured
+# against - these two correct for that gap, calibrated against a real
+# rendered+measured export frame (see this flag's own history for the
+# verification render/measurement pass).
+STREET_GLOW_PROGRESSIVE_LINE1_ANCHOR_DY = 0    # verified: \an4 anchor already lands cap-height dead center
+STREET_GLOW_PROGRESSIVE_LINE2_ANCHOR_DY = -20  # verified: libass's \an4 anchor for Dancing Script sits ~20px
+# below its own visual x-height-center; -20 corrects it to the approved mockup's exact 28px measured gap
+STREET_GLOW_PROGRESSIVE_RED_COLOR = "#FF2D4D"  # brand Cherry Red (App.css --cherry), not THEMES's Captik-orange #FF2E2E
+STREET_GLOW_PROGRESSIVE_GLOW_BLUR = 7      # tighter/more controlled than the fixed-pop template's 10
+STREET_GLOW_PROGRESSIVE_GLOW_OPACITY = 0.80
+
 
 def _mask_dialogue_pair(tags, text, dialogue_time, opacity, color):
     """One alpha-mask + one colour-mask Dialogue line sharing the same
@@ -945,32 +995,43 @@ def _emit_street_glow_group_progressive(lines, shadow_alpha_lines, shadow_color_
     same _measure_text_width helper against the real bundled font file -
     rather than left to ASS/libass's own text flow, so a word's position is
     fixed the moment it's computed and never shifts as later words reveal.
-    Both lines anchor to the same center_x the fixed-pop variant uses (so
-    the user's chosen caption position still determines where the block
-    sits), but each line's own left edge is set from ITS OWN full final
-    width - computed once, up front, since the whole group's text is
-    already known at generation time - so the fully-revealed line ends up
-    centered on center_x even though it grew from a fixed left edge while
-    revealing, one word at a time."""
+    Both lines independently center on the same center_x (the user's
+    chosen caption position) - NOT a shared left edge. Verified against the
+    Captik reference: each line's own full-width center lands within ~2% of
+    the frame width of the other's, across every settled frame checked, so
+    "independently centered on a shared axis" is the measured behavior, not
+    a left-aligned stack. Each line's own center offset is computed from
+    ITS OWN full final width - summed once, up front, since the whole
+    group's text is already known at generation time - so the fully-
+    revealed line ends up centered on center_x even though it grew from a
+    fixed left edge while revealing, one word at a time; no word's position
+    depends on how many of its neighbours have revealed yet."""
     red_words = group[:STREET_GLOW_PROGRESSIVE_RED_WORDS]
     white_words = group[STREET_GLOW_PROGRESSIVE_RED_WORDS:]
-    row2_height = STREET_GLOW_LINE2_SIZE if white_words else 0
-    gap = STREET_GLOW_GAP_PX if white_words else 0
-    total_height = STREET_GLOW_LINE1_SIZE + row2_height + gap
-    top = center_y - total_height / 2
-    cy1 = round(top + STREET_GLOW_LINE1_SIZE / 2)
-    cy2 = round(top + STREET_GLOW_LINE1_SIZE + gap + row2_height / 2)
+    # Vertical layout works in VISUAL metrics (cap-height / x-height), not
+    # raw \fs - see STREET_GLOW_PROGRESSIVE_LINE2_SIZE's own comment on why
+    # the white line's \fs is a poor stand-in for its on-screen height.
+    xheight = STREET_GLOW_PROGRESSIVE_XHEIGHT if white_words else 0
+    gap = STREET_GLOW_PROGRESSIVE_GAP_PX if white_words else 0
+    total_height = STREET_GLOW_PROGRESSIVE_CAP_HEIGHT + gap + xheight
+    cap_top = center_y - total_height / 2
+    cy1 = round(cap_top + STREET_GLOW_PROGRESSIVE_CAP_HEIGHT / 2 + STREET_GLOW_PROGRESSIVE_LINE1_ANCHOR_DY)
+    cy2 = round(cap_top + STREET_GLOW_PROGRESSIVE_CAP_HEIGHT + gap + xheight / 2 + STREET_GLOW_PROGRESSIVE_LINE2_ANCHOR_DY)
     group_end_time = _ass_time(group[-1]["end"])
 
-    def layout_line(words, upper, family, size):
+    def layout_line(words, upper, family, measure_size):
+        """measure_size is the PIL-equivalent size for _measure_text_width
+        (LINE1/LINE2_MEASURE_SIZE) - NOT the \\fs value written into the ASS
+        tags by the caller below, which goes through libass, not PIL/
+        FreeType (see STREET_GLOW_PROGRESSIVE_LINE1_SIZE's own comment)."""
         texts, fonts = [], []
         for word in words:
             text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
             text = text.replace("{", "").replace("}", "")
             texts.append(text.upper() if upper else text)
             fonts.append(_street_glow_word_font(word, script_mode, family))
-        widths = [_measure_text_width(t, f, size) for t, f in zip(texts, fonts)]
-        space_w = _measure_text_width(" ", family, size) or size * 0.28
+        widths = [_measure_text_width(t, f, measure_size) for t, f in zip(texts, fonts)]
+        space_w = _measure_text_width(" ", family, measure_size) or measure_size * 0.28
         total_width = sum(widths) + space_w * max(0, len(words) - 1)
         cursor = center_x - total_width / 2
         placed = []
@@ -980,27 +1041,27 @@ def _emit_street_glow_group_progressive(lines, shadow_alpha_lines, shadow_color_
         return placed
 
     if red_words:
-        line1 = THEMES["street_glow"]["line1"]
-        for word, text, font, x in layout_line(red_words, True, line1["font"], STREET_GLOW_LINE1_SIZE):
+        line1_font = THEMES["street_glow"]["line1"]["font"]  # Anton - font family only; color is this variant's own
+        for word, text, font, x in layout_line(red_words, True, line1_font, STREET_GLOW_PROGRESSIVE_LINE1_MEASURE_SIZE):
             start_time = _ass_time(word["start"])
             word_time = f"{start_time},{group_end_time}"
-            geometry = (f"\\an4\\pos({x},{cy1})\\fn{font}\\fs{STREET_GLOW_LINE1_SIZE}"
+            geometry = (f"\\an4\\pos({x},{cy1})\\fn{font}\\fs{STREET_GLOW_PROGRESSIVE_LINE1_SIZE}"
                         f"\\fscx100\\fscy100\\bord0\\shad0\\blur0\\fad({STREET_GLOW_WORD_FADE_MS},0)")
-            lines.append(f"Dialogue: 0,{word_time},Default,,0,0,0,,{{{geometry}\\c{_ass_color(line1['color'])}}}{text}\n")
+            lines.append(f"Dialogue: 0,{word_time},Default,,0,0,0,,{{{geometry}\\c{_ass_color(STREET_GLOW_PROGRESSIVE_RED_COLOR)}}}{text}\n")
             glow_alpha, glow_color = _mask_dialogue_pair(geometry, text, word_time,
-                                                          STREET_GLOW_GLOW_OPACITY, line1["color"])
+                                                          STREET_GLOW_PROGRESSIVE_GLOW_OPACITY, STREET_GLOW_PROGRESSIVE_RED_COLOR)
             glow_alpha_lines.append(glow_alpha)
             glow_color_lines.append(glow_color)
 
     if not white_words:
         return
-    line2 = THEMES["street_glow"]["line2"]
-    for word, text, font, x in layout_line(white_words, False, STREET_GLOW_PROGRESSIVE_LINE2_FONT, STREET_GLOW_LINE2_SIZE):
+    line2_color = THEMES["street_glow"]["line2"]["color"]  # #FFFFFF - unchanged by the v1 baseline
+    for word, text, font, x in layout_line(white_words, False, STREET_GLOW_PROGRESSIVE_LINE2_FONT, STREET_GLOW_PROGRESSIVE_LINE2_MEASURE_SIZE):
         start_time = _ass_time(word["start"])
         word_time = f"{start_time},{group_end_time}"
-        geometry = (f"\\an4\\pos({x},{cy2})\\fn{font}\\fs{STREET_GLOW_LINE2_SIZE}"
+        geometry = (f"\\an4\\pos({x},{cy2})\\fn{font}\\fs{STREET_GLOW_PROGRESSIVE_LINE2_SIZE}"
                     f"\\fscx100\\fscy100\\bord0\\shad0\\blur0\\fad({STREET_GLOW_WORD_FADE_MS},0)")
-        lines.append(f"Dialogue: 0,{word_time},Default,,0,0,0,,{{{geometry}\\c{_ass_color(line2['color'])}}}{text}\n")
+        lines.append(f"Dialogue: 0,{word_time},Default,,0,0,0,,{{{geometry}\\c{_ass_color(line2_color)}}}{text}\n")
         shadow_alpha, shadow_color = _mask_dialogue_pair(geometry, text, word_time,
                                                           STREET_GLOW_SHADOW_OPACITY, "#000000")
         shadow_alpha_lines.append(shadow_alpha)
@@ -1700,7 +1761,8 @@ async def render(project_id: str, request: Request, user=Depends(current_user)):
         # somewhere for _render's gblur sigma, though, so it's overridden
         # here to the template's own fixed values instead.
         if project["theme"] == "street_glow":
-            shadow_blur, glow_blur = STREET_GLOW_SHADOW_BLUR, STREET_GLOW_GLOW_BLUR
+            shadow_blur = STREET_GLOW_SHADOW_BLUR
+            glow_blur = STREET_GLOW_PROGRESSIVE_GLOW_BLUR if STREET_GLOW_PROGRESSIVE_REVEAL else STREET_GLOW_GLOW_BLUR
         else:
             shadow_blur = project.get("shadow_blur", 2)
             glow_blur = project.get("glow_blur", 8)
