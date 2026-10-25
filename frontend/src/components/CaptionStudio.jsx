@@ -193,6 +193,129 @@ function groupWordsForDisplay(words, wordsPerCaption, theme) {
   return groups;
 }
 
+// DP global-optimization grouping for Street Glow's progressive reveal -
+// a direct line-for-line port of backend/captions.py's
+// _group_words_for_street_glow_progressive (and its _street_glow_*
+// helpers), kept in exact sync (same word lists, same cost weights) so
+// the live preview groups words identically to the real export. Without
+// this, the live preview fell back to groupWordsForDisplay's plain
+// greedy scan above - which the backend no longer uses for this
+// theme+flag combination - and showed different caption boundaries than
+// the exported video (e.g. 4 white words on screen from two different
+// export-side groups at once). Scoped to theme==="street_glow" &&
+// STREET_GLOW_PROGRESSIVE_REVEAL only; every other theme/path still
+// uses groupWordsForDisplay untouched.
+const STREET_GLOW_ATTACHES_BACKWARD = new Set([
+  "pe", "par", "ko", "se", "ka", "ki", "ke", "mein", "me", "tak", "liye",
+  "wala", "wali", "wale",
+  "hai", "hain", "tha", "thi", "the", "raha", "rahi", "rahe",
+  "gaya", "gayi", "gaye", "jata", "jati", "jate", "jana", "jaa",
+  "chuka", "chuki", "chuke", "sakta", "sakti", "sakte",
+  "hoga", "hogi", "honge", "hota", "hoti", "hote", "hua", "hui", "hue", "ho",
+  "diya", "liya", "li", "lo", "do", "karo",
+]);
+const STREET_GLOW_CLAUSE_STARTERS = new Set([
+  "aur", "lekin", "par", "kyunki", "toh", "to", "phir", "jab", "agar",
+  "because", "but", "and", "so", "then", "jaise", "waise",
+]);
+
+function streetGlowCleanWord(word) {
+  return (word.text || "").replace(/^[.,!?।॥]+|[.,!?।॥]+$/g, "").toLowerCase();
+}
+
+function streetGlowPauseSegments(words, hardGap = 0.5) {
+  const segments = [];
+  let current = [];
+  words.forEach((word, index) => {
+    current.push(word);
+    if (index + 1 < words.length) {
+      const gap = words[index + 1].start - word.end;
+      if (gap >= hardGap || endsSentence(word)) {
+        segments.push(current);
+        current = [];
+      }
+    }
+  });
+  if (current.length) segments.push(current);
+  return segments;
+}
+
+function streetGlowAtoms(segment) {
+  const atoms = [];
+  let index = 0;
+  const total = segment.length;
+  while (index < total) {
+    let end = index + 1;
+    while (end < total && segment[end].new_caption === false) end += 1;
+    atoms.push([index, end]);
+    index = end;
+  }
+  return atoms;
+}
+
+const STREET_GLOW_SIZE_PENALTY = { 1: 6.0, 2: 2.5, 3: 0.0, 4: 0.0, 5: 1.5 };
+function streetGlowGroupCost(segment, start, end) {
+  const size = end - start;
+  let cost = STREET_GLOW_SIZE_PENALTY[size] ?? 6.0;
+  const lastWord = segment[end - 1];
+  if (end < segment.length) {
+    const following = segment[end];
+    const followingText = streetGlowCleanWord(following);
+    const gap = following.start - lastWord.end;
+    if (STREET_GLOW_ATTACHES_BACKWARD.has(followingText)) cost += 4.0;
+    if (STREET_GLOW_CLAUSE_STARTERS.has(followingText)) cost -= 2.2;
+    cost -= Math.min(gap, 0.4) * 2.0;
+  }
+  if (endsSentence(lastWord)) cost -= 2.0;
+  return cost;
+}
+
+function groupWordsForStreetGlowProgressive(words, maxWords) {
+  const allGroups = [];
+  streetGlowPauseSegments(words).forEach((rawSegment) => {
+    const chunks = [];
+    let current = [];
+    rawSegment.forEach((word) => {
+      if (word.new_caption === true && current.length) {
+        chunks.push(current);
+        current = [];
+      }
+      current.push(word);
+    });
+    if (current.length) chunks.push(current);
+    chunks.forEach((segment) => {
+      const atoms = streetGlowAtoms(segment);
+      const totalAtoms = atoms.length;
+      const dp = new Array(totalAtoms + 1).fill(Infinity);
+      const choice = new Array(totalAtoms + 1).fill(0);
+      dp[0] = 0;
+      for (let later = 1; later <= totalAtoms; later++) {
+        for (let earlier = later - 1; earlier >= 0; earlier--) {
+          const wordStart = atoms[earlier][0];
+          const wordEnd = atoms[later - 1][1];
+          const singleAtom = later - earlier === 1;
+          if (wordEnd - wordStart > maxWords && !singleAtom) continue;
+          const cost = streetGlowGroupCost(segment, wordStart, wordEnd);
+          if (dp[earlier] + cost < dp[later]) {
+            dp[later] = dp[earlier] + cost;
+            choice[later] = earlier;
+          }
+        }
+      }
+      const bounds = [];
+      let later = totalAtoms;
+      while (later > 0) {
+        const earlier = choice[later];
+        bounds.push([atoms[earlier][0], atoms[later - 1][1]]);
+        later = earlier;
+      }
+      bounds.reverse();
+      bounds.forEach(([wordStart, wordEnd]) => allGroups.push(segment.slice(wordStart, wordEnd)));
+    });
+  });
+  return allGroups;
+}
+
 // Street Glow is LINE-based (two fixed, independently-animated roles: a
 // condensed glow headline + a cursive subline), not word-based - it never
 // goes through the generic tiers-driven caption-overlay render at all (see
@@ -236,6 +359,10 @@ function StreetGlowOverlay({ visibleWords, scriptMode, boxX, boxY, boxRotation, 
 // activates the new path.
 const STREET_GLOW_PROGRESSIVE_REVEAL = false;
 const STREET_GLOW_PROGRESSIVE_RED_WORDS = 2;
+// Mirrors backend/captions.py's STREET_GLOW_PROGRESSIVE_MAX_WORDS - the DP
+// grouping's per-group cap (5), used as groupWordsForStreetGlowProgressive's
+// default when no explicit wordsPerCaption override is set.
+const STREET_GLOW_PROGRESSIVE_MAX_WORDS = 5;
 // Mirrors backend/captions.py's STREET_GLOW_PROGRESSIVE_MAX_LINE_WIDTH/
 // MIN_SCALE exactly (940 / 0.55 at the 1080 canvas) - each line is
 // independently width-constrained so a long red headline and a long white
@@ -532,7 +659,11 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   }, [currentTime, playing, sfxMarkers]);
 
   const activeIndex = words.findIndex((word) => currentTime >= word.start && currentTime <= word.end);
-  const wordGroups = useMemo(() => groupWordsForDisplay(words, wordsPerCaption, theme), [words, wordsPerCaption, theme]);
+  const wordGroups = useMemo(() => (
+    theme === "street_glow" && STREET_GLOW_PROGRESSIVE_REVEAL
+      ? groupWordsForStreetGlowProgressive(words, wordsPerCaption || STREET_GLOW_PROGRESSIVE_MAX_WORDS)
+      : groupWordsForDisplay(words, wordsPerCaption, theme)
+  ), [words, wordsPerCaption, theme]);
   // The Captions list and the Timeline's "Lines" view both show the same
   // cue grouping the live preview and the final render use, each word
   // paired with its real position in `words` (not reconstructed by identity
