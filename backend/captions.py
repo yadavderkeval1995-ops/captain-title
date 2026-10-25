@@ -937,6 +937,169 @@ STREET_GLOW_PROGRESSIVE_MIN_SCALE = 0.55
 # by red_scale/white_scale, intentionally: the glow doesn't shrink either.
 STREET_GLOW_PROGRESSIVE_MIN_WORD_GAP = 22
 
+# --- Progressive-reveal caption grouping (global DP optimization) --------
+# _group_words_for_display above decides each group's end greedily, one
+# word at a time, only ever looking at the group it's currently building -
+# it can't see that cutting here strands an awkward short fragment on the
+# OTHER side of the cut. Street Glow's progressive reveal instead scores
+# every possible way to cut a whole pause-delimited speech segment into
+# groups, and keeps the lowest-total-cost segmentation - the same shape as
+# optimal paragraph line-breaking (dp[j] = min over valid i of
+# dp[i] + cost(i, j)). This is what a greedy scan structurally cannot do:
+# it only ever commits to a boundary once, based on what's in front of it,
+# so a locally-convenient cut (e.g. ending a group right after "aur") can
+# leave a short, awkward fragment behind it with no way to reconsider. The
+# DP has no semantic understanding of Hindi/Hinglish - it only recognizes
+# two small closed-class word lists below, plus measured pause length,
+# punctuation, and word count, as weighted signals that lower or raise a
+# candidate cut's cost.
+
+# Postpositions and auxiliary/light verbs that attach BACKWARD onto the
+# word before them in spoken Hindi/Hinglish - a boundary landing right
+# before one of these splits a single spoken unit in two (e.g. "toe" |
+# "pe", "impact absorb" | "ho jata hai", "face" | "karte ho"). Matched
+# against the already-romanized caption text (lowercased, punctuation
+# stripped), not the original script - this is plain membership testing
+# in a fixed word list, not grammatical parsing.
+STREET_GLOW_ATTACHES_BACKWARD = {
+    "pe", "par", "ko", "se", "ka", "ki", "ke", "mein", "me", "tak", "liye",
+    "wala", "wali", "wale",
+    "hai", "hain", "tha", "thi", "the", "raha", "rahi", "rahe",
+    "gaya", "gayi", "gaye", "jata", "jati", "jate", "jana", "jaa",
+    "chuka", "chuki", "chuke", "sakta", "sakti", "sakte",
+    "hoga", "hogi", "honge", "hota", "hoti", "hote", "hua", "hui", "hue", "ho",
+    "diya", "liya", "li", "lo", "do", "karo",
+}
+
+# Words that naturally OPEN a new clause/breath group - a boundary landing
+# right before one of these is a natural place to cut, not a forced one.
+STREET_GLOW_CLAUSE_STARTERS = {
+    "aur", "lekin", "par", "kyunki", "toh", "to", "phir", "jab", "agar",
+    "because", "but", "and", "so", "then", "jaise", "waise",
+}
+
+
+def _street_glow_clean_word(word):
+    return (word.get("text") or "").strip(".,!?।॥").lower()
+
+
+def _street_glow_pause_segments(words, hard_gap=0.5):
+    """Split on a real silence/punctuation break (the same hard_gap the
+    original proposal used) into independent chunks the DP runs over -
+    this keeps each DP search small and guarantees a group never spans an
+    actual pause."""
+    segments, current = [], []
+    for index, word in enumerate(words):
+        current.append(word)
+        if index + 1 < len(words):
+            gap = words[index + 1]["start"] - word["end"]
+            if gap >= hard_gap or _ends_sentence(word):
+                segments.append(current)
+                current = []
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _street_glow_atoms(segment):
+    """Collapse each run of manually-forced-merge words (new_caption:
+    False) onto the word before them into one atomic span the DP can
+    never cut through - the same "False always stays in the previous
+    group, even past max_words" rule _group_words_for_display itself
+    follows for a manual Merge edit."""
+    atoms = []
+    index, total = 0, len(segment)
+    while index < total:
+        end = index + 1
+        while end < total and segment[end].get("new_caption") is False:
+            end += 1
+        atoms.append((index, end))
+        index = end
+    return atoms
+
+
+def _street_glow_group_cost(segment, start, end, max_words):
+    """Cost of making segment[start:end] (end exclusive) one caption
+    group - lower is better. Every term below reads only word count,
+    measured gap length, trailing punctuation, or plain membership in the
+    two closed-class lists above; none of it is semantic understanding."""
+    size = end - start
+    cost = {1: 6.0, 2: 2.5, 3: 0.0, 4: 0.0, 5: 1.5}.get(size, 6.0)
+    last_word = segment[end - 1]
+    if end < len(segment):
+        following = segment[end]
+        following_text = _street_glow_clean_word(following)
+        gap = following["start"] - last_word["end"]
+        if following_text in STREET_GLOW_ATTACHES_BACKWARD:
+            # Cutting here strands "following" as the first word of the
+            # NEXT group, split away from the word it attaches to.
+            cost += 4.0
+        if following_text in STREET_GLOW_CLAUSE_STARTERS:
+            # Must clearly outweigh the 1.5 size_penalty gap between a
+            # 5-word and a 3-word group, not just tie it - a tie leaves
+            # the choice to iteration order instead of to this signal.
+            cost -= 2.2
+        cost -= min(gap, 0.4) * 2.0  # reward a longer breath, capped
+    if _ends_sentence(last_word):
+        cost -= 2.0
+    return cost
+
+
+def _group_words_for_street_glow_progressive(words, max_words=None):
+    """DP global-optimization grouping for Street Glow's progressive
+    reveal, used in place of the generic _group_words_for_display for
+    this theme+flag combination only. Within each pause-delimited segment
+    (_street_glow_pause_segments), finds the minimum-total-cost way to
+    cut it into groups of 1..max_words atoms via
+    dp[j] = min over i of dp[i] + _street_glow_group_cost(i, j) - scoring
+    every full segmentation of the segment at once, rather than committing
+    to one boundary at a time, so a short fragment only survives when
+    every alternative scores worse, not just because it was locally
+    convenient when the scan passed it. A word's own new_caption still
+    overrides this entirely, exactly like _group_words_for_display: True
+    always starts a new group right there (handled by the chunk split
+    below, same as a pause/sentence-end hard break); False always merges
+    it into the previous group, even past max_words (_street_glow_atoms).
+    Every word is consumed exactly once, in its original order, with its
+    original timing untouched - grouping only decides where the cuts go."""
+    max_words = max_words or STREET_GLOW_PROGRESSIVE_MAX_WORDS
+    all_groups = []
+    for raw_segment in _street_glow_pause_segments(words):
+        chunks, current = [], []
+        for word in raw_segment:
+            if word.get("new_caption") is True and current:
+                chunks.append(current)
+                current = []
+            current.append(word)
+        if current:
+            chunks.append(current)
+        for segment in chunks:
+            atoms = _street_glow_atoms(segment)
+            total_atoms = len(atoms)
+            dp = [float("inf")] * (total_atoms + 1)
+            choice = [0] * (total_atoms + 1)
+            dp[0] = 0.0
+            for later in range(1, total_atoms + 1):
+                for earlier in range(later - 1, -1, -1):
+                    word_start, word_end = atoms[earlier][0], atoms[later - 1][1]
+                    single_atom = (later - earlier == 1)
+                    if word_end - word_start > max_words and not single_atom:
+                        continue  # infeasible, unless a forced-merge atom alone demands it
+                    cost = _street_glow_group_cost(segment, word_start, word_end, max_words)
+                    if dp[earlier] + cost < dp[later]:
+                        dp[later] = dp[earlier] + cost
+                        choice[later] = earlier
+            bounds = []
+            later = total_atoms
+            while later > 0:
+                earlier = choice[later]
+                bounds.append((atoms[earlier][0], atoms[later - 1][1]))
+                later = earlier
+            bounds.reverse()
+            for word_start, word_end in bounds:
+                all_groups.append(segment[word_start:word_end])
+    return all_groups
+
 
 def _mask_dialogue_pair(tags, text, dialogue_time, opacity, color):
     """One alpha-mask + one colour-mask Dialogue line sharing the same
@@ -1367,9 +1530,16 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     default_max_words = ((STREET_GLOW_PROGRESSIVE_MAX_WORDS if STREET_GLOW_PROGRESSIVE_REVEAL else 6)
                           if theme == "street_glow" else 3 if theme == "doodle_marker" else 3)
     min_display = 1.5 if is_fixed_template else 0.35
-    groups = _group_words_for_display(words, min_display=min_display,
-                                      max_words=words_per_caption or default_max_words,
-                                      strict_count=words_per_caption is not None)
+    if theme == "street_glow" and STREET_GLOW_PROGRESSIVE_REVEAL:
+        # The DP global-optimization grouping (see its own comment above)
+        # replaces the generic greedy grouping for this theme+flag
+        # combination only - every other theme/path is untouched.
+        groups = _group_words_for_street_glow_progressive(
+            words, max_words=words_per_caption or default_max_words)
+    else:
+        groups = _group_words_for_display(words, min_display=min_display,
+                                          max_words=words_per_caption or default_max_words,
+                                          strict_count=words_per_caption is not None)
     for group in groups:
         center_x, center_y = _group_center(group, caption_position)
         # Street Glow is LINE-based (two independently-animated, fixed
