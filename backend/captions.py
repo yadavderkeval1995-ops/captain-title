@@ -96,9 +96,41 @@ def _has_devanagari(text):
     return bool(_DEVANAGARI_RE.search(text or ""))
 
 
+# Explicit family -> bundled-file mapping for _pil_font below. The naive
+# f"{family}-Bold.ttf" guess only happens to match a handful of single-word
+# families (Caveat, Hind, Kalam) - every other bundled font's actual
+# filename (weight suffix, spacing, casing) differs, so without this map
+# _measure_text_width silently falls through to its rough per-character
+# estimate for most fonts, which isn't tight enough for the cumulative-width
+# word positioning Street Glow's progressive reveal needs.
+FONT_FILES = {
+    "Anton": "Anton-Regular.ttf",
+    "Archivo Black": "ArchivoBlack-Regular.ttf",
+    "Baloo 2 ExtraBold": "Baloo2-ExtraBold.ttf",
+    "Bebas Neue": "BebasNeue-Regular.ttf",
+    "Caveat": "Caveat-Bold.ttf",
+    "Dancing Script": "DancingScript-Bold.ttf",
+    "Hind": "Hind-Bold.ttf",
+    "IBM Plex Sans": "IBMPlexSans-Bold.ttf",
+    "Kalam": "Kalam-Bold.ttf",
+    "Mukta ExtraBold": "Mukta-ExtraBold.ttf",
+    "Noto Sans Devanagari": "NotoSansDevanagari-Bold.ttf",
+    "Noto Sans Devanagari Black": "NotoSansDevanagari-Black.ttf",
+    "Outfit": "Outfit-Bold.ttf",
+    "Permanent Marker": "PermanentMarker-Regular.ttf",
+    "Playfair Display SemiBold": "PlayfairDisplay-Italic.ttf",
+    "Poppins": "Poppins-Bold.ttf",
+    "Rozha One": "RozhaOne-Regular.ttf",
+    "Space Grotesk": "SpaceGrotesk-Bold.ttf",
+    "Tiro Devanagari Hindi": "TiroDevanagariHindi-Regular.ttf",
+    "Yatra One": "YatraOne-Regular.ttf",
+}
+
+
 @functools.lru_cache(maxsize=32)
 def _pil_font(family, size):
-    path = FONTS_DIR / f"{family}-Bold.ttf"
+    filename = FONT_FILES.get(family, f"{family}-Bold.ttf")
+    path = FONTS_DIR / filename
     return ImageFont.truetype(str(path), size)
 
 
@@ -797,6 +829,25 @@ STREET_GLOW_SHADOW_BLUR = 3
 STREET_GLOW_GLOW_OPACITY = 0.85
 STREET_GLOW_SHADOW_OPACITY = 0.55
 
+# --- Progressive-reveal variant (internal, off by default) ---------------
+# Behavioral spec v1, reviewed and approved against a reference-video
+# comparison (see git history around this flag's introduction): first 2
+# words of a group red/left-aligned/Anton, remaining words white/left-
+# aligned/script font, each word fading in independently at its own
+# transcript timestamp instead of the whole line popping/sliding in at
+# once. Gated behind this single module constant - flipping it to True is
+# the only thing that activates the new path; everything above (the
+# original _emit_street_glow_group) is untouched and remains the default
+# so existing projects/exports are byte-for-byte unaffected. Not wired into
+# the project schema/API yet - internal review only, per the explicit
+# "do not enable by default" instruction this was built under.
+STREET_GLOW_PROGRESSIVE_REVEAL = False
+STREET_GLOW_PROGRESSIVE_MAX_WORDS = 5  # target 2-4 words/group, allow a 5th rather than break mid-phrase
+STREET_GLOW_PROGRESSIVE_RED_WORDS = 2  # first N words red; rest white - positional, not semantic (see spec)
+STREET_GLOW_WORD_FADE_MS = 80
+STREET_GLOW_PROGRESSIVE_LINE2_FONT = "Dancing Script"  # connected cursive; NOT written into THEMES, so the
+# fallback path above keeps Playfair Display SemiBold exactly as it is today
+
 
 def _mask_dialogue_pair(tags, text, dialogue_time, opacity, color):
     """One alpha-mask + one colour-mask Dialogue line sharing the same
@@ -867,6 +918,93 @@ def _emit_street_glow_group(lines, shadow_alpha_lines, shadow_color_lines,
                                                       STREET_GLOW_SHADOW_OPACITY, "#000000")
     shadow_alpha_lines.append(shadow_alpha)
     shadow_color_lines.append(shadow_color)
+
+
+def _street_glow_word_font(word, script_mode, fallback_family):
+    """Same glyph-coverage override word_tags() already applies generically
+    (see its own comment) - a word's display text may be Devanagari even
+    when the line's base font (Anton / the progressive-reveal script font)
+    doesn't cover it, so that one word falls back to DEVANAGARI_FONT while
+    its neighbours keep the line's normal font."""
+    text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+    if _has_devanagari(text) and fallback_family not in DEVANAGARI_CAPABLE_FONTS:
+        return DEVANAGARI_FONT
+    return fallback_family
+
+
+def _emit_street_glow_group_progressive(lines, shadow_alpha_lines, shadow_color_lines,
+                                         glow_alpha_lines, glow_color_lines,
+                                         group, center_x, center_y, script_mode):
+    """Progressive-reveal variant, active only when STREET_GLOW_PROGRESSIVE_
+    REVEAL is True (see that flag's own comment above) - the fixed-pop
+    _emit_street_glow_group above is untouched and remains the default.
+
+    Each word is its own Dialogue, positioned at a precomputed left-to-right
+    cumulative offset - the same cursor-accumulation technique
+    _emit_doodle_decorations already uses for per-word placement, via the
+    same _measure_text_width helper against the real bundled font file -
+    rather than left to ASS/libass's own text flow, so a word's position is
+    fixed the moment it's computed and never shifts as later words reveal.
+    Both lines anchor to the same center_x the fixed-pop variant uses (so
+    the user's chosen caption position still determines where the block
+    sits), but each line's own left edge is set from ITS OWN full final
+    width - computed once, up front, since the whole group's text is
+    already known at generation time - so the fully-revealed line ends up
+    centered on center_x even though it grew from a fixed left edge while
+    revealing, one word at a time."""
+    red_words = group[:STREET_GLOW_PROGRESSIVE_RED_WORDS]
+    white_words = group[STREET_GLOW_PROGRESSIVE_RED_WORDS:]
+    row2_height = STREET_GLOW_LINE2_SIZE if white_words else 0
+    gap = STREET_GLOW_GAP_PX if white_words else 0
+    total_height = STREET_GLOW_LINE1_SIZE + row2_height + gap
+    top = center_y - total_height / 2
+    cy1 = round(top + STREET_GLOW_LINE1_SIZE / 2)
+    cy2 = round(top + STREET_GLOW_LINE1_SIZE + gap + row2_height / 2)
+    group_end_time = _ass_time(group[-1]["end"])
+
+    def layout_line(words, upper, family, size):
+        texts, fonts = [], []
+        for word in words:
+            text = (word.get("original") or word["text"]) if script_mode == "native" else word["text"]
+            text = text.replace("{", "").replace("}", "")
+            texts.append(text.upper() if upper else text)
+            fonts.append(_street_glow_word_font(word, script_mode, family))
+        widths = [_measure_text_width(t, f, size) for t, f in zip(texts, fonts)]
+        space_w = _measure_text_width(" ", family, size) or size * 0.28
+        total_width = sum(widths) + space_w * max(0, len(words) - 1)
+        cursor = center_x - total_width / 2
+        placed = []
+        for word, text, font, width in zip(words, texts, fonts, widths):
+            placed.append((word, text, font, round(cursor)))
+            cursor += width + space_w
+        return placed
+
+    if red_words:
+        line1 = THEMES["street_glow"]["line1"]
+        for word, text, font, x in layout_line(red_words, True, line1["font"], STREET_GLOW_LINE1_SIZE):
+            start_time = _ass_time(word["start"])
+            word_time = f"{start_time},{group_end_time}"
+            geometry = (f"\\an4\\pos({x},{cy1})\\fn{font}\\fs{STREET_GLOW_LINE1_SIZE}"
+                        f"\\fscx100\\fscy100\\bord0\\shad0\\blur0\\fad({STREET_GLOW_WORD_FADE_MS},0)")
+            lines.append(f"Dialogue: 0,{word_time},Default,,0,0,0,,{{{geometry}\\c{_ass_color(line1['color'])}}}{text}\n")
+            glow_alpha, glow_color = _mask_dialogue_pair(geometry, text, word_time,
+                                                          STREET_GLOW_GLOW_OPACITY, line1["color"])
+            glow_alpha_lines.append(glow_alpha)
+            glow_color_lines.append(glow_color)
+
+    if not white_words:
+        return
+    line2 = THEMES["street_glow"]["line2"]
+    for word, text, font, x in layout_line(white_words, False, STREET_GLOW_PROGRESSIVE_LINE2_FONT, STREET_GLOW_LINE2_SIZE):
+        start_time = _ass_time(word["start"])
+        word_time = f"{start_time},{group_end_time}"
+        geometry = (f"\\an4\\pos({x},{cy2})\\fn{font}\\fs{STREET_GLOW_LINE2_SIZE}"
+                    f"\\fscx100\\fscy100\\bord0\\shad0\\blur0\\fad({STREET_GLOW_WORD_FADE_MS},0)")
+        lines.append(f"Dialogue: 0,{word_time},Default,,0,0,0,,{{{geometry}\\c{_ass_color(line2['color'])}}}{text}\n")
+        shadow_alpha, shadow_color = _mask_dialogue_pair(geometry, text, word_time,
+                                                          STREET_GLOW_SHADOW_OPACITY, "#000000")
+        shadow_alpha_lines.append(shadow_alpha)
+        shadow_color_lines.append(shadow_color)
 
 
 # Doodle Marker's uniform base size (project px at the 1080x1920 canvas) -
@@ -1085,7 +1223,8 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
     # flowing line with no second row - 6 words of real speech routinely
     # overflows one line's width, so it needs a tighter cap (mirrors
     # CaptionStudio.jsx's groupWordsForDisplay exactly).
-    default_max_words = 6 if theme == "street_glow" else 3 if theme == "doodle_marker" else 3
+    default_max_words = ((STREET_GLOW_PROGRESSIVE_MAX_WORDS if STREET_GLOW_PROGRESSIVE_REVEAL else 6)
+                          if theme == "street_glow" else 3 if theme == "doodle_marker" else 3)
     min_display = 1.5 if is_fixed_template else 0.35
     groups = _group_words_for_display(words, min_display=min_display,
                                       max_words=words_per_caption or default_max_words,
@@ -1099,9 +1238,11 @@ def _write_ass(path, words, theme, font_id="poppins", words_per_caption=None,
         # "tiers" falls back to it too, so a legacy/unknown theme id on an
         # older saved project still renders instead of crashing.
         if not tiers:
-            _emit_street_glow_group(lines, shadow_alpha_lines, shadow_color_lines,
-                                     glow_alpha_lines, glow_color_lines,
-                                     group, center_x, center_y, script_mode)
+            emit_fn = (_emit_street_glow_group_progressive if STREET_GLOW_PROGRESSIVE_REVEAL
+                       else _emit_street_glow_group)
+            emit_fn(lines, shadow_alpha_lines, shadow_color_lines,
+                    glow_alpha_lines, glow_color_lines,
+                    group, center_x, center_y, script_mode)
             continue
         rotation = _group_rotation(group)
         # Doodle Marker uses ONE uniform font size for every tier - only

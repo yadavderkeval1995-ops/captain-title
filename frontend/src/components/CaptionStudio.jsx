@@ -226,6 +226,62 @@ function StreetGlowOverlay({ visibleWords, scriptMode, boxX, boxY, boxRotation, 
   );
 }
 
+// Progressive-reveal variant (internal, off by default) - mirrors backend/
+// captions.py's STREET_GLOW_PROGRESSIVE_REVEAL flag exactly: first 2 words
+// of a group red/Anton, remaining words white/script font, each word
+// fading in independently at its own word.start instead of the whole line
+// popping/sliding in at once. The ORIGINAL StreetGlowOverlay above is
+// completely untouched - this is a separate component, dispatched
+// alongside it below, so flipping this flag is the only thing that
+// activates the new path.
+const STREET_GLOW_PROGRESSIVE_REVEAL = false;
+const STREET_GLOW_PROGRESSIVE_RED_WORDS = 2;
+
+// Left-aligned, word-by-word reveal. First attempt conditionally mounted
+// each word only once currentTime reached its own start - but that shrinks
+// each line's flex row to however many words are CURRENTLY showing, so a
+// line's own width (and therefore the shared stack's shrink-wrapped width,
+// and therefore the centered .caption-overlay's left edge) changes as
+// words are added, which can shift an ALREADY-REVEALED word - exactly the
+// "must not shift" bug this was built to avoid. Fixed by always rendering
+// every word of the group (both lines reserve their FULL final width from
+// the first frame, same as the export side precomputing each line's full
+// width up front - see backend/captions.py's _emit_street_glow_group_
+// progressive) and fading each word's opacity via a CSS transition keyed
+// off currentTime, instead of mounting/unmounting it. An invisible
+// (opacity:0) word still occupies its layout box, so the row's width -
+// and every earlier word's position within it - never changes as later
+// words reveal.
+function StreetGlowProgressiveOverlay({ visibleWords, scriptMode, currentTime, boxX, boxY, boxRotation, previewScale, onMouseDown, onResize }) {
+  const redWords = visibleWords.slice(0, STREET_GLOW_PROGRESSIVE_RED_WORDS);
+  const whiteWords = visibleWords.slice(STREET_GLOW_PROGRESSIVE_RED_WORDS);
+  const wordText = (word, upper) => {
+    const text = (scriptMode === "native" && word.original) ? word.original : word.text;
+    return upper ? text.toUpperCase() : text;
+  };
+  const renderWord = (word, upper) => (
+    <span key={word.index} className="street-glow-progressive-word"
+      style={{ opacity: currentTime >= word.start ? 1 : 0 }}>{wordText(word, upper)}</span>
+  );
+  return (
+    <div className="caption-overlay street-glow-overlay"
+      style={{ left: `${boxX}%`, top: `${boxY}%`, transform: `translate(-50%,-50%) rotate(${boxRotation}deg)` }}
+      onMouseDown={onMouseDown} data-testid="live-caption-preview">
+      <div className="street-glow-progressive-stack">
+        {redWords.length > 0 && <div className="street-glow-progressive-line1" style={{ fontSize: `${72 * previewScale}px` }}>
+          {redWords.map((word) => renderWord(word, true))}
+        </div>}
+        {whiteWords.length > 0 && <div className="street-glow-progressive-line2" style={{ fontSize: `${44 * previewScale}px`, marginTop: `${-8 * previewScale}px` }}>
+          {whiteWords.map((word) => renderWord(word, false))}
+        </div>}
+      </div>
+      <div className="selection-box">
+        {["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].map((pos) => <i key={pos} className={`resize-handle handle-${pos}`} onMouseDown={onResize(pos)} data-testid={`caption-resize-handle-${pos}`} />)}
+      </div>
+    </div>
+  );
+}
+
 export const CaptionStudio = ({ initialProject, onNew }) => {
   const [project, setProject] = useState(initialProject);
   const [words, setWords] = useState(initialProject.words);
@@ -924,10 +980,13 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
               </div>
               <div className="safe-zone-meta" />
             </div>}
-            {visibleWords.length > 0 && theme === "street_glow" && <StreetGlowOverlay
+            {visibleWords.length > 0 && theme === "street_glow" && (STREET_GLOW_PROGRESSIVE_REVEAL ? <StreetGlowProgressiveOverlay
+              visibleWords={visibleWords} scriptMode={scriptMode} currentTime={currentTime}
+              boxX={boxX} boxY={boxY} boxRotation={boxRotation} previewScale={previewScale}
+              onMouseDown={startCaptionDrag} onResize={startResize} /> : <StreetGlowOverlay
               visibleWords={visibleWords} scriptMode={scriptMode}
               boxX={boxX} boxY={boxY} boxRotation={boxRotation} previewScale={previewScale}
-              onMouseDown={startCaptionDrag} onResize={startResize} />}
+              onMouseDown={startCaptionDrag} onResize={startResize} />)}
             {visibleWords.length > 0 && theme !== "street_glow" && <div className={`caption-overlay theme-${theme} ${(captionLines === 2 || tiers) ? "lines-2" : ""}`}
               style={{ left: `${boxX}%`, top: `${boxY}%`,
                       transform: `translate(-50%,-50%) rotate(${boxRotation}deg)`, lineHeight: NATIVE_LINE_HEIGHT,
