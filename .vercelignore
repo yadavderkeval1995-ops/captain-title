@@ -1,0 +1,9 @@
+# Only the React app in frontend/ is deployed - keep the backend and the
+# large test media out of the Vercel build upload.
+backend
+tests
+test_reports
+memory
+*.mp4
+*.wav
+*.webm

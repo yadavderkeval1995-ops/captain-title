@@ -1,6 +1,8 @@
 import axios from "axios";
 
-export const API_ROOT = `${process.env.REACT_APP_BACKEND_URL}/api`;
+// Falls back to the local backend so a deploy without REACT_APP_BACKEND_URL
+// set still works against `uvicorn` running on this machine.
+export const API_ROOT = `${process.env.REACT_APP_BACKEND_URL || "http://localhost:8000"}/api`;
 export const api = axios.create({ baseURL: API_ROOT, withCredentials: true });
 
 export const errorMessage = (error) => {
