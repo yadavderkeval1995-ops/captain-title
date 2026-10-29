@@ -13,6 +13,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
   const [progress, setProgress] = useState(0);
   const [processingLabel, setProcessingLabel] = useState("");
   const [speechLanguage, setSpeechLanguage] = useState("auto");
+  const [sttEngine, setSttEngine] = useState("sarvam");
 
   const inspect = (selected) => {
     if (!selected) return;
@@ -38,6 +39,7 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
   const generate = async () => {
     const form = new FormData();
     form.append("file", file); form.append("theme", "street_glow"); form.append("speech_language", speechLanguage);
+    form.append("stt_engine", sttEngine);
     setProcessing(true);
     setProgress(2);
     setProcessingLabel("Uploading video");
@@ -68,7 +70,14 @@ export const UploadStage = ({ onCreated, onPaywall }) => {
       <section className="upload-copy">
         <p className="eyebrow" data-testid="workspace-status-label"><Waveform size={17} /> NEW CAPTION SESSION</p>
         <h1 data-testid="upload-page-heading">Drop a video.<br /><span>Captain the words.</span></h1>
-        <p data-testid="upload-page-description">Whisper-1 listens to the video first. You’ll see exactly what it heard before GPT 5.6 Terra converts Hindi into Roman Hinglish and styles the key moments.</p>
+        <p data-testid="upload-page-description">Sarvam listens to the video word by word. You’ll see exactly what it heard before it’s converted into Roman Hinglish and styled.</p>
+        <div className="language-selector" data-testid="stt-engine-selector">
+          <span>SPEECH ENGINE</span>
+          <select className="engine-select" value={sttEngine} onChange={(e) => setSttEngine(e.target.value)} disabled={processing} data-testid="stt-engine-select">
+            <option value="sarvam">Sarvam · no OpenAI key needed</option>
+            <option value="whisper">Whisper timing + Sarvam text · needs OpenAI key</option>
+          </select>
+        </div>
         <div className="language-selector" data-testid="speech-language-selector">
           <span data-testid="speech-language-label">SPEECH MODE</span>
           <button className={speechLanguage === "auto" ? "active" : ""} onClick={() => setSpeechLanguage("auto")} data-testid="speech-language-auto-button">Adaptive Hinglish · Recommended</button>
