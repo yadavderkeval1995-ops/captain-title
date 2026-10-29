@@ -1,10 +1,18 @@
-# Captain Title
+# Tadaaam
 
 A word-by-word Hinglish caption generator and editor: upload a short video, get
 an auto-transcribed, word-timed caption track you can restyle and re-time, then
 burn it into an exported MP4. Auth, usage limits, and Stripe-based paid plans
 (single video pass / monthly Basic) are already wired up for turning this into
 a subscription product later.
+
+**Documentation:** start with [`CLAUDE.md`](CLAUDE.md) (rules for agents and
+developers), then [`docs/SUMMARY.md`](docs/SUMMARY.md). Full picture:
+[`docs/COMPREHENSIVE.md`](docs/COMPREHENSIVE.md) · internals:
+[`docs/IN_DEPTH.md`](docs/IN_DEPTH.md) · why things are this way:
+[`docs/DECISIONS.md`](docs/DECISIONS.md) · open work:
+[`docs/TRACKER.md`](docs/TRACKER.md) · blurbs:
+[`docs/DESCRIPTION.md`](docs/DESCRIPTION.md).
 
 ## Stack
 
