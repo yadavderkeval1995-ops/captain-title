@@ -10,7 +10,7 @@ export const EditorHeader = ({ user, usage, onPricing, onLogout }) => {
   const credits = (usage?.free_remaining || 0) + (usage?.oneoff_credits || 0) + (usage?.basic_credits || 0);
   return (
     <header className="editor-header" data-testid="editor-header">
-      <div className="brand-lockup" data-testid="editor-brand"><span className="brand-mark"><ClosedCaptioning size={22} weight="fill" /></span> CAPTAIN TITLE</div>
+      <div className="brand-lockup" data-testid="editor-brand"><span className="brand-mark"><ClosedCaptioning size={22} weight="fill" /></span> TADAAAM</div>
       <div className="header-actions">
         <button className="usage-meter" onClick={onPricing} data-testid="usage-meter-button">
           <span data-testid="usage-credit-count">{!usage ? "Checking access…" : usage.unlimited_testing ? "Unlimited tests" : `${credits} credits`}</span>

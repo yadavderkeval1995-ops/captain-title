@@ -46,7 +46,7 @@ export const AuthScreen = ({ onAuth }) => {
   return (
     <main className="auth-page" data-testid="authentication-page">
       <section className="auth-brand" data-testid="captain-title-brand-panel">
-        <div className="brand-lockup"><span className="brand-mark"><ClosedCaptioning size={26} weight="fill" /></span> CAPTAIN TITLE</div>
+        <div className="brand-lockup"><span className="brand-mark"><ClosedCaptioning size={26} weight="fill" /></span> TADAAAM</div>
         <div className="brand-copy">
           <p className="eyebrow" data-testid="brand-eyebrow"><Sparkle size={16} /> WORDS THAT HIT ON BEAT</p>
           <h1 data-testid="brand-heading">Turn every spoken word into a visual hook.</h1>

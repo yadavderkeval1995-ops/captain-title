@@ -695,14 +695,14 @@ export const CaptionStudio = ({ initialProject, onNew }) => {
   const download = async () => {
     const response = await api.get(`/projects/${project.project_id}/download`, { responseType: "blob" });
     const url = URL.createObjectURL(response.data); const anchor = document.createElement("a");
-    anchor.href = url; anchor.download = "captain-title.mp4"; anchor.click(); URL.revokeObjectURL(url);
+    anchor.href = url; anchor.download = "tadaaam.mp4"; anchor.click(); URL.revokeObjectURL(url);
   };
   const downloadSrt = async () => {
     try {
       await api.put(`/projects/${project.project_id}`, payload());
       const response = await api.get(`/projects/${project.project_id}/srt`, { responseType: "blob" });
       const url = URL.createObjectURL(response.data); const anchor = document.createElement("a");
-      anchor.href = url; anchor.download = "captain-title.srt"; anchor.click(); URL.revokeObjectURL(url);
+      anchor.href = url; anchor.download = "tadaaam.srt"; anchor.click(); URL.revokeObjectURL(url);
     } catch (error) { toast.error(errorMessage(error)); }
   };
   const togglePlayback = () => videoRef.current?.paused ? videoRef.current.play() : videoRef.current.pause();

@@ -23,7 +23,7 @@ class TestHealth:
         assert r.status_code == 200
         body = r.json()
         assert body.get("status") == "ok"
-        assert body.get("service") == "Captain Title"
+        assert body.get("service") == "Tadaaam"
 
 
 # ---- Auth ------------------------------------------------------------------

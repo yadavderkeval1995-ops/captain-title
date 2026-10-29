@@ -45,7 +45,7 @@ async def lifespan(application: FastAPI):
     client.close()
 
 
-app = FastAPI(title="Captain Title API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Tadaaam API", version="1.1.0", lifespan=lifespan)
 app.state.db = db
 app.include_router(auth_router)
 app.include_router(projects_router)
@@ -63,4 +63,4 @@ app.add_middleware(
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "Captain Title"}
+    return {"status": "ok", "service": "Tadaaam"}

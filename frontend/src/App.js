@@ -20,7 +20,7 @@ function AppRouter() {
     api.get("/auth/me").then(({ data }) => setUser(data)).catch(() => setUser(null)).finally(() => setChecking(false));
   }, []);
 
-  if (checking) return <div className="auth-loading" data-testid="auth-checking-status">Loading Captain Title…</div>;
+  if (checking) return <div className="auth-loading" data-testid="auth-checking-status">Loading Tadaaam…</div>;
 
   return (
     <Routes>

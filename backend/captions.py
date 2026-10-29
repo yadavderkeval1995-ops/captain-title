@@ -578,7 +578,7 @@ async def export_srt(project_id: str, request: Request, user=Depends(current_use
         raise HTTPException(422, "No captions to export yet")
     srt = _write_srt(project["words"], project.get("script_mode", "roman"))
     return Response(srt, media_type="application/x-subrip",
-                    headers={"Content-Disposition": "attachment; filename=captain-title.srt"})
+                    headers={"Content-Disposition": "attachment; filename=tadaaam.srt"})
 
 
 @projects_router.post("/projects/{project_id}/retranscribe")
@@ -1675,4 +1675,4 @@ async def download(project_id: str, request: Request, user=Depends(current_user)
     if not project or not project.get("render_path"):
         raise HTTPException(404, "Rendered video not found")
     data, _ = await asyncio.to_thread(get_object, project["render_path"])
-    return Response(data, media_type="video/mp4", headers={"Content-Disposition": "attachment; filename=captain-title.mp4"})
+    return Response(data, media_type="video/mp4", headers={"Content-Disposition": "attachment; filename=tadaaam.mp4"})
