@@ -14,6 +14,7 @@ load_dotenv(ROOT_DIR / ".env")
 from auth import auth_router
 from captions import projects_router, resume_pending_projects
 from payments import payments_router
+from speech.api import fail_interrupted_transcriptions, speech_router
 from storage_service import init_storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -31,12 +32,15 @@ async def lifespan(application: FastAPI):
     await db.projects.create_index([("user_id", 1), ("created_at", -1)])
     await db.usage.create_index("user_id", unique=True)
     await db.payment_transactions.create_index("session_id", unique=True)
+    await db.transcriptions.create_index("job_id", unique=True)
+    await db.transcriptions.create_index([("user_id", 1), ("created_at", -1)])
     try:
         init_storage()
         logger.info("Object storage initialized")
     except Exception as exc:
         logger.warning("Object storage will retry on first request: %s", exc)
     await resume_pending_projects(db)
+    await fail_interrupted_transcriptions(db)
     yield
     client.close()
 
@@ -46,6 +50,7 @@ app.state.db = db
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(payments_router)
+app.include_router(speech_router)
 
 app.add_middleware(
     CORSMiddleware,

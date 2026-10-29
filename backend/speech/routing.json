@@ -1,0 +1,16 @@
+{
+  "_comment": "Which provider transcribes which language. First matching route wins; '*' matches anything. Edit without code changes. A request's explicit provider overrides this. Whisper is a timing source only and is never routed to for text.",
+  "default": "sarvam",
+  "routes": [
+    {
+      "languages": ["hi", "bn", "ta", "te", "kn", "ml", "mr", "gu", "pa", "or", "as", "ur", "ne", "kok", "ks", "sd", "sa", "mai", "doi", "mni", "brx", "sat", "en"],
+      "provider": "sarvam",
+      "fallback": []
+    },
+    {
+      "languages": ["*"],
+      "provider": "sarvam",
+      "fallback": []
+    }
+  ]
+}

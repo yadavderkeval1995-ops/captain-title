@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "AudioInfo": {
+      "properties": {
+        "duration": {
+          "title": "Duration",
+          "type": "number"
+        },
+        "sample_rate": {
+          "default": 16000,
+          "title": "Sample Rate",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "duration"
+      ],
+      "title": "AudioInfo",
+      "type": "object"
+    },
+    "Diagnostics": {
+      "properties": {
+        "chunks_total": {
+          "default": 0,
+          "title": "Chunks Total",
+          "type": "integer"
+        },
+        "chunks_used": {
+          "default": 0,
+          "title": "Chunks Used",
+          "type": "integer"
+        },
+        "unique_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Ratio"
+        },
+        "bigram_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bigram Ratio"
+        },
+        "ngram_repeat": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ngram Repeat"
+        },
+        "cost_inr": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Inr"
+        }
+      },
+      "title": "Diagnostics",
+      "type": "object"
+    },
+    "LanguageInfo": {
+      "properties": {
+        "requested": {
+          "default": "auto",
+          "title": "Requested",
+          "type": "string"
+        },
+        "detected": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detected"
+        },
+        "code_mix": {
+          "default": true,
+          "title": "Code Mix",
+          "type": "boolean"
+        }
+      },
+      "title": "LanguageInfo",
+      "type": "object"
+    },
+    "ProviderInfo": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "timing": {
+          "title": "Timing",
+          "type": "string"
+        },
+        "fallbacks_used": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Fallbacks Used",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "timing"
+      ],
+      "title": "ProviderInfo",
+      "type": "object"
+    },
+    "TranscriptWord": {
+      "properties": {
+        "i": {
+          "title": "I",
+          "type": "integer"
+        },
+        "start": {
+          "title": "Start",
+          "type": "number"
+        },
+        "end": {
+          "title": "End",
+          "type": "number"
+        },
+        "native": {
+          "title": "Native",
+          "type": "string"
+        },
+        "roman": {
+          "title": "Roman",
+          "type": "string"
+        },
+        "display": {
+          "title": "Display",
+          "type": "string"
+        },
+        "script": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Script"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "timing_confidence": {
+          "default": "estimated",
+          "enum": [
+            "measured",
+            "estimated"
+          ],
+          "title": "Timing Confidence",
+          "type": "string"
+        },
+        "uncertain": {
+          "default": false,
+          "title": "Uncertain",
+          "type": "boolean"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "emphasis": {
+          "anyOf": [
+            {
+              "enum": [
+                "support",
+                "feature",
+                "key"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Emphasis"
+        },
+        "speaker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker"
+        }
+      },
+      "required": [
+        "i",
+        "start",
+        "end",
+        "native",
+        "roman",
+        "display"
+      ],
+      "title": "TranscriptWord",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema": {
+      "default": "tadaaam.transcript/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "job_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job Id"
+    },
+    "audio": {
+      "$ref": "#/$defs/AudioInfo"
+    },
+    "language": {
+      "$ref": "#/$defs/LanguageInfo"
+    },
+    "provider": {
+      "$ref": "#/$defs/ProviderInfo"
+    },
+    "output_script": {
+      "default": "roman",
+      "enum": [
+        "roman",
+        "native"
+      ],
+      "title": "Output Script",
+      "type": "string"
+    },
+    "words": {
+      "items": {
+        "$ref": "#/$defs/TranscriptWord"
+      },
+      "title": "Words",
+      "type": "array"
+    },
+    "diagnostics": {
+      "$ref": "#/$defs/Diagnostics"
+    }
+  },
+  "required": [
+    "audio",
+    "language",
+    "provider",
+    "words"
+  ],
+  "title": "CanonicalTranscript",
+  "type": "object",
+  "$id": "tadaaam.transcript/v1"
+}

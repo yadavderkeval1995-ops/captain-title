@@ -1,0 +1,8 @@
+{
+  "_comment": "Evaluation clips (paths relative to backend/eval/). language: null = auto-detect.",
+  "clips": [
+    {"path": "../../frontend/captain-title/toe-protector-source.mp4", "language": null},
+    {"path": "../../flying-beast-source.mp4", "language": null},
+    {"path": "../../hindi-hinglish-test.mp4", "language": null}
+  ]
+}

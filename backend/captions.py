@@ -18,7 +18,9 @@ from PIL import ImageFont
 import imageio_ffmpeg
 
 from auth import current_user
-from caption_ai import convert_to_hinglish, reassign_emphasis, transcribe_words
+from caption_ai import (STT_ENGINES, TranscriptionAuthError, convert_to_hinglish, reassign_emphasis,
+                        transcribe_words)
+from speech.errors import ProviderUnsupportedError
 from storage_service import APP_NAME, get_object, put_object
 
 projects_router = APIRouter(prefix="/api", tags=["captions"])
@@ -302,6 +304,8 @@ class ProjectEdit(BaseModel):
 
 class RetranscribeRequest(BaseModel):
     speech_language: str = "auto"
+    # None keeps whichever engine the project was last transcribed with.
+    stt_engine: str | None = None
 
 
 def _public_project(project: dict):
@@ -380,16 +384,22 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
             Path(source).write_bytes(data)
             await asyncio.to_thread(_extract_audio, source, audio)
             preview_task = asyncio.create_task(asyncio.to_thread(_create_browser_preview, source, preview))
-            await db.projects.update_one({"project_id": project_id}, {"$set": {
-                "progress": 28, "processing_label": "Listening word by word"}})
-            words, transcription = await transcribe_words(audio, project.get("speech_language", "auto"))
-            source_transcript = " ".join(word["original"] for word in words)
-            await db.projects.update_one({"project_id": project_id}, {"$set": {
-                "progress": 78, "processing_label": "Creating Roman Hinglish"}})
-            words = await convert_to_hinglish(words, project.get("name", ""))
-            preview_bytes = await preview_task
+            try:
+                await db.projects.update_one({"project_id": project_id}, {"$set": {
+                    "progress": 28, "processing_label": "Listening word by word"}})
+                words, transcription = await transcribe_words(audio, project.get("speech_language", "auto"),
+                                                              project.get("stt_engine", "sarvam"))
+                source_transcript = " ".join(word["original"] for word in words)
+                await db.projects.update_one({"project_id": project_id}, {"$set": {
+                    "progress": 78, "processing_label": "Creating Roman Hinglish"}})
+                words = await convert_to_hinglish(words, project.get("name", ""))
+            finally:
+                # On a failure above, the preview ffmpeg is still writing
+                # preview.webm - Windows can't delete an open file, so leaving
+                # the temp dir before it exits masks the real error.
+                preview_bytes = (await asyncio.gather(preview_task, return_exceptions=True))[0]
             preview_result = None
-            if preview_bytes:
+            if isinstance(preview_bytes, bytes):
                 preview_storage_path = f"{APP_NAME}/previews/{project['user_id']}/{uuid.uuid4().hex}.webm"
                 preview_result = await asyncio.to_thread(
                     put_object, preview_storage_path, preview_bytes, "video/webm")
@@ -411,9 +421,12 @@ async def _run_caption_job(db, project_id: str, consume_credit: bool):
                 await db.usage.update_one({"user_id": project["user_id"]}, {"$inc": {field: -1, "videos_created": 1}})
     except Exception as exc:
         logger.exception("Background caption job failed for %s", project_id)
-        message = ("No trustworthy transcript was found. Try clearer speech or less background music."
-                   if "trustworthy transcript" in str(exc).lower()
-                   else "Caption processing could not finish. Please try Re-listen.")
+        if isinstance(exc, (TranscriptionAuthError, ProviderUnsupportedError)):
+            message = str(exc)
+        elif "trustworthy transcript" in str(exc).lower():
+            message = "No trustworthy transcript was found. Try clearer speech or less background music."
+        else:
+            message = "Caption processing could not finish. Please try Re-listen."
         await db.projects.update_one({"project_id": project_id}, {"$set": {
             "status": "failed", "progress": 100, "processing_label": "Processing failed",
             "error_message": message, "updated_at": datetime.now(timezone.utc).isoformat()}})
@@ -446,7 +459,7 @@ async def usage(request: Request, user=Depends(current_user)):
 @projects_router.post("/projects/process")
 async def process_video(request: Request, file: UploadFile = File(...),
                         theme: str = Form("street_glow"), font_id: str = Form("poppins"),
-                        speech_language: str = Form("auto"),
+                        speech_language: str = Form("auto"), stt_engine: str = Form("sarvam"),
                         user=Depends(current_user)):
     if theme not in THEMES:
         raise HTTPException(400, "Unknown caption theme")
@@ -454,6 +467,8 @@ async def process_video(request: Request, file: UploadFile = File(...),
         raise HTTPException(400, "Unknown caption font")
     if speech_language not in {"hi", "auto"}:
         raise HTTPException(400, "Speech language must be Hindi/Hinglish or Auto")
+    if stt_engine not in STT_ENGINES:
+        raise HTTPException(400, "Speech engine must be Sarvam or Whisper")
     suffix = Path(file.filename or "video.mp4").suffix.lower()
     if suffix not in {".mp4", ".mov"}:
         raise HTTPException(415, "Upload an MP4 or MOV video")
@@ -496,7 +511,7 @@ async def process_video(request: Request, file: UploadFile = File(...),
                    "background_enabled": False, "background_color": "#000000", "background_opacity": 0.6,
                    "bold": True, "italic": False,
                    "words": [], "source_transcript": "",
-                   "speech_language": speech_language, "transcription_mode": None,
+                   "speech_language": speech_language, "stt_engine": stt_engine, "transcription_mode": None,
                    "transcription_quality": None, "source_path": stored["path"],
                    "content_type": file.content_type or "video/mp4", "credit_type": credit,
                    "render_path": None, "status": "queued", "progress": 5,
@@ -571,13 +586,17 @@ async def retranscribe_project(project_id: str, payload: RetranscribeRequest, re
                                user=Depends(current_user)):
     if payload.speech_language not in {"hi", "auto"}:
         raise HTTPException(400, "Speech language must be Hindi only or Adaptive Hinglish")
+    if payload.stt_engine is not None and payload.stt_engine not in STT_ENGINES:
+        raise HTTPException(400, "Speech engine must be Sarvam or Whisper")
     db = request.app.state.db
     project = await db.projects.find_one(
         {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0})
     if not project:
         raise HTTPException(404, "Project not found")
     await db.projects.update_one({"project_id": project_id}, {"$set": {
-        "speech_language": payload.speech_language, "status": "queued", "progress": 5,
+        "speech_language": payload.speech_language,
+        "stt_engine": payload.stt_engine or project.get("stt_engine", "sarvam"),
+        "status": "queued", "progress": 5,
         "processing_label": "Re-listen queued", "error_message": None, "words": [],
         "source_transcript": "",
         "updated_at": datetime.now(timezone.utc).isoformat()}})
